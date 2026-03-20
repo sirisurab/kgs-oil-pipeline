@@ -137,7 +137,7 @@ class TestReadRawFiles:
         assert not isinstance(result, pd.DataFrame)
 
     @pytest.mark.unit
-    def test_read_raw_files_skips_corrupt_file(self, tmp_path: Path, caplog: object) -> None:  # type: ignore[name-defined]
+    def test_read_raw_files_skips_corrupt_file(self, tmp_path: Path, caplog) -> None:  # type: ignore[name-defined]
         """Given one corrupt and one valid file, assert warns and reads the valid one."""
         csv_content_1 = "LEASE_KID,MONTH-YEAR\nL001,1-2020\n"
         csv_content_2 = "invalid\x00binary\x00content"  # Corrupt
@@ -147,7 +147,7 @@ class TestReadRawFiles:
         f1.write_text(csv_content_1)
         f2.write_bytes(csv_content_2.encode())
 
-        with caplog.at_level("WARNING"):  # type: ignore[union-attr]
+        with caplog.at_level("WARNING"):  # type: ignore[attr-defined]
             result = read_raw_files([f1, f2])
 
         # Should still have read the valid file

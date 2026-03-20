@@ -50,17 +50,17 @@ class TestReadProcessedParquet:
             read_processed_parquet(tmp_path)
 
     @pytest.mark.unit
-    def test_read_processed_parquet_logs_partitions(self, tmp_path: Path, caplog: object) -> None:  # type: ignore[name-defined]
+    def test_read_processed_parquet_logs_partitions(self, tmp_path: Path, caplog) -> None:  # type: ignore[name-defined]
         """Assert logs partition count at INFO level."""
         df = pd.DataFrame({"well_id": ["W1"], "col1": [1]})
         wells_dir = tmp_path / "wells"
         wells_dir.mkdir()
         df.to_parquet(str(wells_dir / "data.parquet"))
 
-        with caplog.at_level("INFO"):  # type: ignore[union-attr]
+        with caplog.at_level("INFO"):  # type: ignore[attr-defined]
             read_processed_parquet(tmp_path)
 
-        assert "partitions" in caplog.text.lower()  # type: ignore[union-attr]
+        assert "partitions" in caplog.text.lower()  # type: ignore[attr-defined]
 
 
 class TestComputeTimeFeatures:
@@ -460,7 +460,7 @@ class TestEncodeCategoricalFeatures:
         })
         ddf = dd.from_pandas(df, npartitions=1)
 
-        encoding_map = {
+        encoding_map: dict = {
             "county": {"Allen": 0, "Barton": 1},
             "field": {"F1": 0},
             "producing_zone": {"Z1": 0},
@@ -699,7 +699,7 @@ class TestRunFeaturesPipeline:
                                     mock_roll.return_value = mock_ddf
                                     mock_dec.return_value = mock_ddf
 
-                                    enc_map = {"county": {}}
+                                    enc_map: dict = {"county": {}}
                                     mock_enc.return_value = (mock_ddf, enc_map)
                                     mock_save.return_value = output_dir / "encoding_map.json"
                                     mock_write.return_value = output_dir
