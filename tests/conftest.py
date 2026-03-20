@@ -106,11 +106,11 @@ def dask_dataframe_small() -> dd.DataFrame:
     return dd.from_pandas(df, npartitions=1)
 
 
-def pytest_configure(config: object) -> None:
+def pytest_configure(config: pytest.Config) -> None:  # type: ignore[name-defined]
     """Register custom markers."""
-    config.addinivalue_line(  # type: ignore[union-attr]
+    config.addinivalue_line(
         "markers", "unit: mark test as a unit test"
     )
-    config.addinivalue_line(  # type: ignore[union-attr]
+    config.addinivalue_line(
         "markers", "integration: mark test as an integration test"
     )

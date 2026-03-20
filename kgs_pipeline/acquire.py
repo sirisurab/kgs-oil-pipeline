@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 import pandas as pd  # type: ignore[import-untyped]
 from dask import delayed
 import dask
@@ -58,7 +58,7 @@ async def scrape_lease_page(
     lease_url: str,
     output_dir: Path,
     semaphore: asyncio.Semaphore,
-    playwright_instance: object,
+    playwright_instance: Any,
 ) -> Optional[Path]:
     """
     Asynchronously scrape one KGS lease page and download the monthly data file.
@@ -67,7 +67,7 @@ async def scrape_lease_page(
         lease_url: The URL of the lease page to scrape.
         output_dir: Directory to write the downloaded file to.
         semaphore: Asyncio semaphore to limit concurrent requests.
-        playwright_instance: Playwright async browser instance.
+        playwright_instance: Playwright async browser context.
 
     Returns:
         Path to the downloaded file, or None if the download could not be completed.
@@ -84,7 +84,7 @@ async def scrape_lease_page(
 
         page = None
         try:
-            page = await playwright_instance.new_page()
+            page = await playwright_instance.new_page()  # type: ignore[attr-defined]
             logger.debug(f"Navigating to lease page: {lease_url}")
             await page.goto(lease_url, wait_until="networkidle")
 
@@ -134,7 +134,7 @@ async def scrape_lease_page(
 
             # Download the file
             logger.debug(f"Downloading {filename} for {lease_kid} from {download_url}")
-            async with playwright_instance.api_request.get(download_url) as response:
+            async with playwright_instance.api_request.get(download_url) as response:  # type: ignore[attr-defined]
                 if response.ok:
                     content = await response.body()
                     output_file.write_bytes(content)
