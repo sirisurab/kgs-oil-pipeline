@@ -3,7 +3,7 @@ import time
 import json
 from pathlib import Path
 from typing import Optional, Tuple
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import numpy as np
 import dask.dataframe as dd
 from kgs_pipeline.config import PROCESSED_DATA_DIR, FEATURES_DATA_DIR

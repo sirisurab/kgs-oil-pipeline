@@ -1,14 +1,14 @@
 """Pytest configuration and fixtures."""
 
 import pytest
-import tempfile
+import tempfile  # noqa: F401
 from pathlib import Path
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import dask.dataframe as dd
 
 
 @pytest.fixture
-def sample_lease_data():
+def sample_lease_data() -> pd.DataFrame:
     """Sample lease data for testing."""
     return pd.DataFrame({
         "LEASE_KID": ["L001", "L002", "L001"],
@@ -21,7 +21,7 @@ def sample_lease_data():
 
 
 @pytest.fixture
-def sample_raw_data():
+def sample_raw_data() -> pd.DataFrame:
     """Sample raw monthly data."""
     return pd.DataFrame({
         "LEASE_KID": ["L001", "L001"],
@@ -36,7 +36,7 @@ def sample_raw_data():
 
 
 @pytest.fixture
-def sample_interim_data():
+def sample_interim_data() -> pd.DataFrame:
     """Sample interim (ingested) data."""
     return pd.DataFrame({
         "well_id": ["15-131-20143", "15-131-20143", "15-131-20089", "15-131-20089"],
@@ -57,7 +57,7 @@ def sample_interim_data():
 
 
 @pytest.fixture
-def sample_processed_data():
+def sample_processed_data() -> pd.DataFrame:
     """Sample processed (transformed) data."""
     return pd.DataFrame({
         "well_id": ["W1", "W1", "W2", "W2"],
@@ -79,7 +79,7 @@ def sample_processed_data():
 
 
 @pytest.fixture
-def tmp_parquet_dir(tmp_path):
+def tmp_parquet_dir(tmp_path: Path) -> Path:
     """Create a temporary directory with parquet files."""
     df = pd.DataFrame({
         "col1": [1, 2, 3],
@@ -91,7 +91,7 @@ def tmp_parquet_dir(tmp_path):
 
 
 @pytest.fixture
-def dask_dataframe_small():
+def dask_dataframe_small() -> dd.DataFrame:
     """Small Dask DataFrame for testing."""
     df = pd.DataFrame({
         "well_id": ["W1", "W1", "W2"],
@@ -106,11 +106,11 @@ def dask_dataframe_small():
     return dd.from_pandas(df, npartitions=1)
 
 
-def pytest_configure(config):
+def pytest_configure(config: object) -> None:
     """Register custom markers."""
-    config.addinivalue_line(
+    config.addinivalue_line(  # type: ignore[union-attr]
         "markers", "unit: mark test as a unit test"
     )
-    config.addinivalue_line(
+    config.addinivalue_line(  # type: ignore[union-attr]
         "markers", "integration: mark test as an integration test"
     )

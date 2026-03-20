@@ -2,7 +2,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Optional
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import dask.dataframe as dd
 from kgs_pipeline.config import RAW_DATA_DIR, INTERIM_DATA_DIR
 
@@ -51,7 +51,7 @@ def read_raw_files(file_paths: list[Path]) -> dd.DataFrame:
     if not file_paths:
         raise ValueError("No raw files provided for ingestion")
 
-    dfs = []
+    dfs: list[dd.DataFrame] = []
 
     for file_path in file_paths:
         try:

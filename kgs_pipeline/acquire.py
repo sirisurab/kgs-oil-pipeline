@@ -2,10 +2,9 @@ import logging
 import asyncio
 from pathlib import Path
 from typing import Optional
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 from dask import delayed
 import dask
-from playwright.async_api import async_playwright
 from kgs_pipeline.config import MAX_CONCURRENT_SCRAPES
 
 logger = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ async def scrape_lease_page(
     lease_url: str,
     output_dir: Path,
     semaphore: asyncio.Semaphore,
-    playwright_instance,
+    playwright_instance: object,
 ) -> Optional[Path]:
     """
     Asynchronously scrape one KGS lease page and download the monthly data file.
@@ -170,11 +169,13 @@ async def _scrape_batch(
     Returns:
         Tuple of (downloaded_paths, failed_urls, skipped_paths).
     """
+    from playwright.async_api import async_playwright  # type: ignore[import-not-found]
+
     output_dir.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
-    downloaded = []
-    failed = []
-    skipped = []
+    downloaded: list[Path] = []
+    failed: list[str] = []
+    skipped: list[Path] = []
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -192,7 +193,7 @@ async def _scrape_batch(
                 failed.append(url)
             elif result is None:
                 failed.append(url)
-            elif result.exists():
+            elif isinstance(result, Path) and result.exists():
                 if result.stat().st_size > 0:
                     downloaded.append(result)
                 else:
@@ -276,9 +277,9 @@ def run_scrape_pipeline(leases_file: Path, output_dir: Path) -> dict:
         results = []
 
     # Aggregate results
-    downloaded_all = []
-    failed_all = []
-    skipped_all = []
+    downloaded_all: list[Path] = []
+    failed_all: list[str] = []
+    skipped_all: list[Path] = []
 
     for result in results:
         if isinstance(result, dict):

@@ -2,7 +2,8 @@ import logging
 import time
 from pathlib import Path
 from typing import Optional
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
+import numpy as np
 import dask.dataframe as dd
 from kgs_pipeline.config import INTERIM_DATA_DIR, PROCESSED_DATA_DIR
 
@@ -276,7 +277,7 @@ def fill_date_gaps(ddf: dd.DataFrame) -> dd.DataFrame:
         if df.empty:
             return df
 
-        all_wells = []
+        all_wells: list[pd.DataFrame] = []
 
         for well_id in df["well_id"].unique():
             well_df = df[df["well_id"] == well_id].copy()
