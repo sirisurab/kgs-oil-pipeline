@@ -68,7 +68,7 @@ def filter_2020_2025(ddf: dd.DataFrame) -> dd.DataFrame:
     if "production_date" not in ddf.columns:
         raise KeyError("production_date column not found")
 
-    def filter_dates(df):
+    def filter_dates(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         return df[
             (df["production_date"] >= "2020-01-01")
             & (df["production_date"] <= "2025-12-31")
@@ -103,7 +103,7 @@ def aggregate_by_well_month(ddf: dd.DataFrame) -> dd.DataFrame:
     if missing:
         raise KeyError(f"Missing columns: {missing}")
 
-    def agg_partition(df):
+    def agg_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # Create year_month for grouping
         df["year_month"] = df["production_date"].dt.to_period("M")
 
@@ -156,13 +156,13 @@ def rolling_averages(ddf: dd.DataFrame, window: int = 12) -> dd.DataFrame:
     if "production_sum_month" not in ddf.columns:
         raise KeyError("production_sum_month column not found")
 
-    def rolling_partition(df):
+    def rolling_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # Must sort by well and date first
         df = df.sort_values(by=["well_id", "year_month", "product"])
 
         # Group by well and product
-        def compute_rolling(group):
-            group["rolling_avg_{}mo".format(window)] = (
+        def compute_rolling(group: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+            group[f"rolling_avg_{window}mo"] = (
                 group["production_sum_month"].rolling(window=window, min_periods=1).mean()
             )
             return group
@@ -198,10 +198,10 @@ def cumulative_production(ddf: dd.DataFrame) -> dd.DataFrame:
     if "production_sum_month" not in ddf.columns:
         raise KeyError("production_sum_month column not found")
 
-    def cum_prod_partition(df):
+    def cum_prod_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         df = df.sort_values(by=["well_id", "year_month", "product"])
 
-        def compute_cumsum(group):
+        def compute_cumsum(group: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
             group["cumulative_production"] = group["production_sum_month"].cumsum()
             return group
 
@@ -236,8 +236,8 @@ def production_trend(ddf: dd.DataFrame) -> dd.DataFrame:
     if "rolling_avg_12mo" not in ddf.columns:
         raise KeyError("rolling_avg_12mo column not found")
 
-    def trend_partition(df):
-        def compute_trend(group):
+    def trend_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+        def compute_trend(group: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
             # Compare last vs first non-null rolling avg
             valid_idx = group["rolling_avg_12mo"].notna()
             if valid_idx.sum() < 2:
@@ -289,8 +289,8 @@ def compute_well_lifetime(ddf: dd.DataFrame) -> dd.DataFrame:
     if "year_month" not in ddf.columns:
         raise KeyError("year_month column not found")
 
-    def lifetime_partition(df):
-        def compute_lifetime(group):
+    def lifetime_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+        def compute_lifetime(group: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
             if len(group) > 0:
                 group["well_lifetime_months"] = len(group)
             else:
@@ -327,7 +327,7 @@ def standardize_numerics(ddf: dd.DataFrame) -> dd.DataFrame:
         "well_lifetime_months",
     ]
 
-    def standardize_partition(df):
+    def standardize_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         for col in numeric_cols:
             if col in df.columns and df[col].dtype in ["float64", "int64"]:
                 mean = df[col].mean()

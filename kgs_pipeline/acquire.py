@@ -6,7 +6,7 @@ from pathlib import Path
 
 import dask
 import pandas as pd
-import playwright.async_api
+import playwright.async_api  # type: ignore[import]
 
 from kgs_pipeline.config import (
     KGS_BASE_URL,
@@ -75,7 +75,7 @@ async def scrape_lease_page(
     url: str,
     output_dir: Path,
     semaphore: asyncio.Semaphore,
-    browser: playwright.async_api.Browser,
+    browser: "playwright.async_api.Browser",  # type: ignore[name-defined]
 ) -> Path | None:
     """
     Scrape monthly data for a single lease and download the .txt file.
@@ -155,7 +155,7 @@ async def scrape_lease_page(
             logger.info(f"Downloaded {filename} for lease {lease_kid}")
             return output_path
 
-        except playwright.async_api.TimeoutError:
+        except playwright.async_api.TimeoutError:  # type: ignore[attr-defined]
             logger.error(f"Timeout scraping lease {lease_kid} at {url}")
             return None
         except ScrapingError:
@@ -190,8 +190,8 @@ def _scrape_one_lease(
     """
     try:
 
-        async def _async_scrape():
-            async with playwright.async_api.async_playwright() as pw:
+        async def _async_scrape() -> Path | None:
+            async with playwright.async_api.async_playwright() as pw:  # type: ignore[attr-defined]
                 browser = await pw.chromium.launch()
                 semaphore = asyncio.Semaphore(SCRAPE_CONCURRENCY)
                 result = await scrape_lease_page(

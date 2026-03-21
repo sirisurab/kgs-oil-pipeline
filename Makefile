@@ -17,12 +17,13 @@ help:
 install:
 	pip install --upgrade pip
 	pip install -r requirements.txt
+	python -m mypy --install-types
 
 lint:
 	ruff check kgs_pipeline tests --fix
 
 type:
-	mypy kgs_pipeline --ignore-missing-imports
+	mypy kgs_pipeline --config-file mypy.ini
 
 test:
 	pytest tests -v --cov=kgs_pipeline --cov-report=html

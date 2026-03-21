@@ -39,17 +39,17 @@ def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:
         raise FileNotFoundError(f"Raw data directory not found: {raw_dir}")
 
     glob_pattern = str(raw_dir / "lp*.txt")
-    
+
     # Try to read files; catch if none match
     try:
-        ddf = dd.read_csv(glob_pattern, dtype=str, assume_missing=True)
+        ddf = dd.read_csv(glob_pattern, dtype=str, assume_missing=True)  # type: ignore[call-overload]
     except (ValueError, FileNotFoundError) as e:
         raise FileNotFoundError(
             f"No raw lease files found matching {glob_pattern}"
         ) from e
 
     # Add source_file column with filename
-    def add_source_file(df):
+    def add_source_file(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # For Dask, we need to extract filenames; use map_partitions metadata
         # Since we read via glob, we'll add a column based on partition metadata
         # For simplicity, derive from the first row's data or use a simpler approach
@@ -69,7 +69,7 @@ def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:
         df["source_file"] = file.name
         dfs.append(df)
 
-    raw_df = pd.concat(dfs, ignore_index=True)
+    raw_df = pd.concat(dfs, ignore_index=True)  # type: ignore[arg-type]
     ddf = dd.from_pandas(raw_df, npartitions=max(1, len(files) // 4 or 1))
 
     logger.info(
@@ -102,7 +102,7 @@ def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:
     if not lease_index_path.exists():
         raise FileNotFoundError(f"Lease index file not found: {lease_index_path}")
 
-    ddf = dd.read_csv(lease_index_path, dtype=str, assume_missing=True)
+    ddf = dd.read_csv(lease_index_path, dtype=str, assume_missing=True)  # type: ignore[call-overload]
 
     # Check required columns
     required = [
@@ -131,7 +131,7 @@ def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:
         ddf = ddf.rename(columns={"MONTH-YEAR": "MONTH_YEAR"})
 
     # Filter out yearly (month=0) and starting cumulative (month=-1)
-    def filter_non_monthly(df):
+    def filter_non_monthly(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         if "MONTH_YEAR" in df.columns:
             # Parse month from "M-YYYY" format
             month = df["MONTH_YEAR"].str.split("-").str[0]
@@ -181,7 +181,7 @@ def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:
     else:
         raise KeyError("Expected column 'MONTH_YEAR' or 'MONTH-YEAR' not found")
 
-    def filter_records(df):
+    def filter_records(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # Parse month from "M-YYYY" format
         month = df[month_col].str.split("-", expand=True)[0]
         # Keep only valid months (not "0" or "-1")

@@ -7,7 +7,7 @@ from pathlib import Path
 import dask.dataframe as dd
 import numpy as np
 import pandas as pd
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import]
 
 from kgs_pipeline.config import (
     GAS_UNIT,
@@ -79,7 +79,7 @@ def parse_dates(ddf: dd.DataFrame) -> dd.DataFrame:
     if "MONTH-YEAR" in ddf.columns:
         ddf = ddf.rename(columns={"MONTH-YEAR": "MONTH_YEAR"})
 
-    def parse_month_year(df):
+    def parse_month_year(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # Convert "M-YYYY" to "1-M-YYYY" (day-month-year format) for parsing
         date_str = "1-" + df["MONTH_YEAR"]
         df["production_date"] = pd.to_datetime(
@@ -146,7 +146,7 @@ def cast_and_rename_columns(ddf: dd.DataFrame) -> dd.DataFrame:
     ddf = ddf.rename(columns=available_rename)
 
     # Cast and clean
-    def cast_columns(df):
+    def cast_columns(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # String columns: strip whitespace
         str_cols = [
             "lease_kid",
@@ -213,7 +213,7 @@ def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:
     if "api_number" not in ddf.columns:
         raise KeyError("api_number column not found")
 
-    def explode_partition(df):
+    def explode_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # Split and explode
         df["api_number"] = df["api_number"].str.split(",")
         df = df.explode("api_number")
@@ -259,7 +259,7 @@ def validate_physical_bounds(ddf: dd.DataFrame) -> dd.DataFrame:
     if "product" not in ddf.columns:
         raise KeyError("product column not found")
 
-    def validate_partition(df):
+    def validate_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         # Negative production → NaN
         neg_mask = df["production"] < 0
         if neg_mask.any():
@@ -312,7 +312,7 @@ def deduplicate_records(ddf: dd.DataFrame) -> dd.DataFrame:
     if "production_date" not in ddf.columns:
         raise KeyError("production_date column not found")
 
-    def dedup_partition(df):
+    def dedup_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         dedup_cols = ["well_id", "production_date", "product"]
         df = df.sort_values(by=dedup_cols)
         df = df.drop_duplicates(subset=dedup_cols, keep="first")
@@ -345,7 +345,7 @@ def add_unit_column(ddf: dd.DataFrame) -> dd.DataFrame:
     if "product" not in ddf.columns:
         raise KeyError("product column not found")
 
-    def add_units(df):
+    def add_units(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         df["unit"] = np.where(
             df["product"] == "O",
             OIL_UNIT,
@@ -386,7 +386,7 @@ def sort_by_well_and_date(ddf: dd.DataFrame) -> dd.DataFrame:
     ddf = ddf.set_index("well_id", sorted=False, drop=False)
 
     # Sort within each partition
-    def sort_partition(df):
+    def sort_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
         return df.sort_values(by=["well_id", "production_date", "product"])
 
     ddf = ddf.map_partitions(sort_partition)
