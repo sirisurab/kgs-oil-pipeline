@@ -1,169 +1,213 @@
 # KGS Oil & Gas Well Data Pipeline
 
-A comprehensive data pipeline for processing Kansas Geological Survey (KGS) oil and gas well production data. The pipeline orchestrates data acquisition, ingestion, transformation, and feature engineering using Dask for distributed processing.
+A data engineering pipeline for processing Kansas Geological Survey (KGS) oil and gas well production data. The pipeline scrapes lease-level monthly data from the KGS portal, ingests and transforms it into a structured format, and engineers features for modeling.
 
 ## Project Structure
 
 ```
 kgs/
-├── data/
-│   ├── raw/                 # Downloaded lease data files (.txt)
-│   ├── interim/             # Ingested and parsed data (Parquet)
-│   ├── processed/           # Transformed well-level data (Parquet)
-│   ├── external/            # Oil leases archive file
-│   └── features/            # Engineered features for modeling
-├── kgs_pipeline/
+├── kgs_pipeline/          # Main pipeline package
 │   ├── __init__.py
-│   ├── config.py            # Configuration and paths
-│   ├── acquire.py           # Data scraping and downloading
-│   ├── ingest.py            # Raw file reading and parsing
-│   ├── transform.py         # Data cleaning and transformation
-│   └── features.py          # Feature engineering
-├── tests/
+│   ├── config.py          # Project configuration and paths
+│   ├── acquire.py         # Web scraping and data acquisition
+│   ├── ingest.py          # Raw data reading and parsing
+│   ├── transform.py       # Data cleaning and preprocessing
+│   └── features.py        # Feature engineering
+├── tests/                 # Test suite
 │   ├── test_acquire.py
 │   ├── test_ingest.py
 │   ├── test_transform.py
 │   └── test_features.py
-└── README.md
+├── data/                  # Data directories
+│   ├── raw/               # Raw .txt files from KGS portal
+│   ├── interim/           # Interim Parquet datasets
+│   ├── processed/         # Processed well-partitioned data
+│   └── external/          # Oil leases lookup file
+├── requirements.txt       # Python dependencies
+├── Makefile               # Convenience commands
+└── README.md              # This file
 ```
-
-## Components
-
-### 1. Acquire (`kgs_pipeline/acquire.py`)
-
-Orchestrates the scraping and downloading of KGS lease data from web pages.
-
-**Functions:**
-- `extract_lease_urls(leases_file)` - Extract unique lease URLs from archive file
-- `scrape_lease_page(lease_url, output_dir, semaphore, playwright_instance)` - Async scraper for single lease
-- `run_scrape_pipeline(leases_file, output_dir)` - Parallel orchestration using Dask
-
-**Output:** Downloaded `.txt` files in `data/raw/`
-
-### 2. Ingest (`kgs_pipeline/ingest.py`)
-
-Reads raw per-lease `.txt` files and converts to a unified Dask DataFrame.
-
-**Functions:**
-- `discover_raw_files(raw_dir)` - Scan for available raw files
-- `read_raw_files(file_paths)` - Read all files into Dask DataFrame
-- `parse_month_year(ddf)` - Parse month-year and filter non-monthly records
-- `explode_api_numbers(ddf)` - Transform lease-level rows to well-level rows
-- `write_interim_parquet(ddf, output_dir)` - Write to Parquet
-- `run_ingest_pipeline(raw_dir, output_dir)` - Top-level entry point
-
-**Output:** Parquet dataset at `data/interim/kgs_monthly_raw.parquet`
-
-### 3. Transform (`kgs_pipeline/transform.py`)
-
-Cleans, validates, and structures data into well-month grain.
-
-**Functions:**
-- `read_interim_parquet(interim_dir)` - Read ingest output
-- `cast_column_types(ddf)` - Type casting with coercion
-- `deduplicate(ddf)` - Remove duplicates by (well_id, production_date, product)
-- `validate_physical_bounds(ddf)` - Domain-specific validation
-- `pivot_product_columns(ddf)` - Convert to wide format (oil, gas columns)
-- `fill_date_gaps(ddf)` - Insert missing months
-- `compute_cumulative_production(ddf)` - Cumulative sums per well
-- `write_processed_parquet(ddf, output_dir)` - Write partitioned by well_id
-- `run_transform_pipeline(interim_dir, output_dir)` - Top-level entry point
-
-**Output:** Parquet dataset at `data/processed/wells/` (partitioned by well_id)
-
-### 4. Features (`kgs_pipeline/features.py`)
-
-Computes ML-ready features for modeling.
-
-**Functions:**
-- `read_processed_parquet(processed_dir)` - Read transform output
-- `compute_time_features(ddf)` - Months since first prod, producing months, phase
-- `compute_rolling_features(ddf)` - 3, 6, 12-month rolling means
-- `compute_decline_and_gor(ddf)` - Month-on-month decline rates and gas-oil ratio
-- `encode_categorical_features(ddf, encoding_map)` - Label encoding with optional map
-- `save_encoding_map(encoding_map, output_dir)` - Persist encoding map to JSON
-- `load_encoding_map(output_dir)` - Load encoding map from JSON
-- `write_feature_parquet(ddf, output_dir)` - Write partitioned features
-- `run_features_pipeline(processed_dir, output_dir)` - Top-level entry point
-
-**Output:** Feature Parquet dataset at `data/features/` with `encoding_map.json`
 
 ## Installation
 
+### Prerequisites
+- Python 3.11+
+- pip
+
+### Setup
 ```bash
+# Clone or enter the project directory
+cd kgs
+
+# Install dependencies
+make install
+
+# Or manually:
 pip install -r requirements.txt
+playwright install
 ```
 
-## Running Tests
+## Usage
 
+### Running Tests
 ```bash
-pytest tests/
-```
+# Run all tests
+make test
 
-Run specific component tests:
-
-```bash
+# Run specific test file
 pytest tests/test_acquire.py -v
-pytest tests/test_ingest.py -v
-pytest tests/test_transform.py -v
-pytest tests/test_features.py -v
+
+# Run with coverage
+pytest tests/ --cov=kgs_pipeline
 ```
+
+### Running Linters
+```bash
+# Run ruff and mypy
+make lint
+
+# Ruff only
+ruff check kgs_pipeline tests
+
+# MyPy only
+mypy kgs_pipeline --ignore-missing-imports
+```
+
+### Pipeline Stages
+
+The pipeline consists of four main stages:
+
+#### 1. Acquire (`kgs_pipeline/acquire.py`)
+- Scrapes lease URLs from the KGS portal
+- Downloads per-lease monthly production .txt files
+- Uses Playwright for browser automation and Dask for parallelization
+
+**Key Functions:**
+- `extract_lease_urls(leases_file)` - Parse lease IDs and URLs
+- `scrape_lease_page(lease_url, output_dir, semaphore, playwright_instance)` - Download data for one lease
+- `run_scrape_pipeline(leases_file, output_dir)` - Orchestrate full scraping
+
+**Output:** Raw .txt files in `data/raw/`
+
+#### 2. Ingest (`kgs_pipeline/ingest.py`)
+- Reads all raw .txt files into a Dask DataFrame
+- Parses month_year field and filters non-monthly records
+- Explodes API numbers to well level
+- Normalizes column names
+
+**Key Functions:**
+- `discover_raw_files(raw_dir)` - Find .txt files
+- `read_raw_files(file_paths)` - Read and combine into Dask DataFrame
+- `parse_month_year(ddf)` - Parse production dates
+- `explode_api_numbers(ddf)` - Expand to well level
+- `run_ingest_pipeline(raw_dir, output_dir)` - Orchestrate ingestion
+
+**Output:** Partitioned Parquet at `data/interim/kgs_monthly_raw.parquet`
+
+#### 3. Transform (`kgs_pipeline/transform.py`)
+- Casts columns to correct types
+- Deduplicates on (well_id, production_date, product)
+- Validates physical bounds (coordinates, production rates)
+- Pivots product column to oil_bbl and gas_mcf columns
+- Fills monthly date gaps per well
+- Computes cumulative production
+
+**Key Functions:**
+- `read_interim_parquet(interim_dir)` - Load interim data
+- `cast_column_types(ddf)` - Type conversion
+- `deduplicate(ddf)` - Remove duplicates
+- `validate_physical_bounds(ddf)` - Domain validation
+- `pivot_product_columns(ddf)` - Long to wide format
+- `fill_date_gaps(ddf)` - Complete monthly time series
+- `compute_cumulative_production(ddf)` - Cumulative sums
+- `run_transform_pipeline(interim_dir, output_dir)` - Orchestrate transformation
+
+**Output:** Well-partitioned Parquet at `data/processed/wells`
+
+#### 4. Features (`kgs_pipeline/features.py`)
+- Computes time-based features (months since first production, production phase)
+- Computes rolling production statistics (3, 6, 12-month rolling means)
+- Computes decline rates and gas-oil ratio (GOR)
+- Label-encodes categorical columns
+- Saves encoding map for inference
+
+**Key Functions:**
+- `read_processed_parquet(processed_dir)` - Load processed data
+- `compute_time_features(ddf)` - Time-based features
+- `compute_rolling_features(ddf)` - Rolling statistics
+- `compute_decline_and_gor(ddf)` - Decline rates and GOR
+- `encode_categorical_features(ddf, encoding_map=None)` - Categorical encoding
+- `save_encoding_map(encoding_map, output_dir)` - Persist encoding map
+- `write_feature_parquet(ddf, output_dir)` - Write output
+- `run_features_pipeline(processed_dir, output_dir)` - Orchestrate engineering
+
+**Output:** Feature-engineered Parquet at `data/processed/features`
 
 ## Configuration
 
-All paths and settings are defined in `kgs_pipeline/config.py`:
+Edit `kgs_pipeline/config.py` to customize:
+- Data directory paths
+- Number of concurrent web scrapes (default: 5)
 
-```python
-PROJECT_ROOT  # Root directory
-RAW_DATA_DIR  # data/raw/
-INTERIM_DATA_DIR  # data/interim/
-PROCESSED_DATA_DIR  # data/processed/
-FEATURES_DATA_DIR  # data/processed/features/
-MAX_CONCURRENT_SCRAPES  # Default: 5
+## Dependencies
+
+Core libraries:
+- **pandas**: Data manipulation
+- **dask**: Distributed dataframe operations
+- **playwright**: Browser automation for web scraping
+- **pytest**: Unit and integration testing
+- **ruff**: Fast Python linter
+- **mypy**: Static type checking
+
+## Testing
+
+All components have comprehensive test suites with unit and integration tests:
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test class
+pytest tests/test_transform.py::TestPivotProductColumns -v
+
+# Run with markers
+pytest tests/ -m unit         # Unit tests only
+pytest tests/ -m integration  # Integration tests only
 ```
 
-## Key Design Principles
+## Logging
 
-1. **Lazy Evaluation**: All pipelines use Dask and return lazy DataFrames; `.compute()` is only called when necessary
-2. **Partitioning**: Data is partitioned by well_id for efficient distributed processing
-3. **Idempotency**: Pipelines can be re-run safely (downloads skip existing files, writes use overwrite mode)
-4. **Logging**: All operations are logged at INFO/WARNING/ERROR levels
-5. **Error Handling**: Explicit error types (ScrapeError, etc.) and graceful degradation
-6. **Testing**: Comprehensive unit and integration tests with mocking where appropriate
+The pipeline uses Python's standard logging module. To enable logging:
 
-## Data Schema
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+```
 
-### Input (Raw Lease Files)
-- LEASE_KID, URL, MONTH_YEAR, API_NUMBER, PRODUCTION, PRODUCT, etc.
+## Error Handling
 
-### Interim (After Ingest)
-- Lease-level rows exploded to well-level by API_NUMBER
-- MONTH_YEAR parsed to production_date (datetime)
-- Columns normalized (lowercase, no hyphens)
+- **ScrapeError**: Raised when critical scraping failures occur (e.g., button not found)
+- **FileNotFoundError**: When required input files don't exist
+- **KeyError**: When required columns are missing
+- **ValueError**: When data validation fails
 
-### Processed (After Transform)
-- Well-month grain
-- oil_bbl, gas_mcf columns (pivoted by product)
-- cumulative_oil_bbl, cumulative_gas_mcf
-- Date gaps filled with forward-filled metadata
+## Architecture Notes
 
-### Features (After Feature Engineering)
-- All features from transform plus:
-- months_since_first_prod, producing_months_count, production_phase
-- oil_bbl_roll3/6/12, gas_mcf_roll3/6/12
-- oil_decline_rate_mom, gas_decline_rate_mom, gor
-- county_encoded, field_encoded, producing_zone_encoded, operator_encoded
+- **Parallelization**: Dask is used for parallel processing of large datasets
+- **Partitioning**: Processed and feature datasets are partitioned by well_id for efficient queries
+- **Idempotency**: The acquire step checks for existing files and skips re-downloading
+- **Type Safety**: MyPy type hints throughout the codebase
+- **Lazy Evaluation**: Dask operations are lazy; computation is triggered only at write time
 
-## Performance Considerations
+## Contributing
 
-- Dask uses threads scheduler for I/O-heavy operations (reading Parquet, writing CSV)
-- Max 5 concurrent browser instances for web scraping (configurable)
-- Intermediate DataFrames are not computed; only final outputs are materialized
-- Partitioning by well_id balances load for distributed processing
+When adding new features:
+1. Update the appropriate module (acquire.py, ingest.py, etc.)
+2. Add corresponding test cases in tests/
+3. Run linters: `make lint`
+4. Run tests: `make test`
+5. Ensure all tests pass before committing
 
-## Future Enhancements
+## License
 
-- Add caching layer for intermediate outputs
-- Support incremental updates (only scrape/ingest new leases)
-- Add data quality reporting and anomaly detection
-- Implement streaming aggregations for large datasets
+See LICENSE file for details.

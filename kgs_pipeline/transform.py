@@ -1,10 +1,14 @@
+"""
+Transform component: Clean, structure, and preprocess interim Parquet into processed Parquet.
+"""
+
 import logging
 import time
 from pathlib import Path
 from typing import Optional
-import pandas as pd  # type: ignore[import-untyped]
-import numpy as np
-import dask.dataframe as dd
+import pandas as pd  # type: ignore
+import dask.dataframe as dd  # type: ignore
+
 from kgs_pipeline.config import INTERIM_DATA_DIR, PROCESSED_DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -12,31 +16,26 @@ logger = logging.getLogger(__name__)
 
 def read_interim_parquet(interim_dir: Path) -> dd.DataFrame:
     """
-    Read the interim Parquet dataset produced by the ingest step.
+    Read the interim Parquet dataset into a Dask DataFrame.
 
     Args:
-        interim_dir: Path to the interim data directory.
+        interim_dir: Directory containing interim Parquet files.
 
     Returns:
-        Dask DataFrame from the interim Parquet file.
+        Dask DataFrame from the interim Parquet.
 
     Raises:
-        FileNotFoundError: If the interim Parquet path does not exist.
+        FileNotFoundError: If the interim Parquet does not exist.
     """
-    parquet_path = interim_dir / "kgs_monthly_raw.parquet"
+    interim_parquet = interim_dir / "kgs_monthly_raw.parquet"
 
-    if not parquet_path.exists():
-        raise FileNotFoundError(f"Interim Parquet not found at {parquet_path}")
+    if not interim_parquet.exists():
+        raise FileNotFoundError(f"Interim Parquet not found: {interim_parquet}")
 
-    try:
-        ddf = dd.read_parquet(str(parquet_path), engine="pyarrow")
-        logger.info(
-            f"Read interim Parquet with {ddf.npartitions} partitions from {parquet_path}"
-        )
-        return ddf
-    except Exception as e:
-        logger.error(f"Failed to read interim Parquet: {type(e).__name__}: {e}")
-        raise
+    ddf = dd.read_parquet(str(interim_parquet))
+    logger.info(f"Read interim Parquet with {ddf.npartitions} partitions")
+
+    return ddf
 
 
 def cast_column_types(ddf: dd.DataFrame) -> dd.DataFrame:
@@ -44,54 +43,50 @@ def cast_column_types(ddf: dd.DataFrame) -> dd.DataFrame:
     Cast all columns to their correct types per the output schema.
 
     Args:
-        ddf: Input Dask DataFrame with all columns as str.
+        ddf: Dask DataFrame from ingest with all columns as str.
 
     Returns:
-        Dask DataFrame with correctly typed columns.
+        Dask DataFrame with properly cast columns.
     """
 
     def _cast_partition(df: pd.DataFrame) -> pd.DataFrame:
-        """Cast column types in a single partition."""
+        """Cast columns in a single partition."""
         df = df.copy()
 
-        # Numeric columns with coercion
+        # Numeric casts
         for col in ["latitude", "longitude", "production", "wells"]:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+                if col == "production":
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                elif col == "wells":
+                    df["wells_count"] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.drop(columns=[col])
+                else:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Strip whitespace from string columns
+        # String casts (strip whitespace)
         string_cols = [
-            "well_id",
-            "lease_kid",
-            "lease",
-            "dor_code",
-            "field",
-            "producing_zone",
-            "operator",
-            "county",
-            "township",
-            "twn_dir",
-            "range",
-            "range_dir",
-            "spot",
-            "product",
-            "source_file",
+            "well_id", "lease_kid", "lease", "dor_code", "field",
+            "producing_zone", "operator", "county", "twn_dir",
+            "range_dir", "spot", "product", "source_file"
         ]
         for col in string_cols:
             if col in df.columns:
+                df[col] = df[col].str.strip()
+
+        # PLSS numeric string columns (keep as str but strip)
+        for col in ["township", "range", "section"]:
+            if col in df.columns:
                 df[col] = df[col].astype(str).str.strip()
 
-        # Validate production_date is datetime64[ns]
+        # production_date should already be datetime64; validate
         if "production_date" in df.columns:
-            df["production_date"] = pd.to_datetime(df["production_date"], errors="coerce")
-
-        # Rename 'wells' to 'wells_count'
-        if "wells" in df.columns:
-            df = df.rename(columns={"wells": "wells_count"})
+            if df["production_date"].dtype != "datetime64[ns]":
+                df["production_date"] = pd.to_datetime(df["production_date"], errors="coerce")
 
         return df
 
-    result = ddf.map_partitions(_cast_partition)
+    result = ddf.map_partitions(_cast_partition, meta=ddf._meta)
     logger.info("Cast column types")
     return result
 
@@ -101,277 +96,306 @@ def deduplicate(ddf: dd.DataFrame) -> dd.DataFrame:
     Remove duplicate rows based on (well_id, production_date, product).
 
     Args:
-        ddf: Input Dask DataFrame.
+        ddf: Dask DataFrame.
 
     Returns:
         Deduplicated Dask DataFrame.
 
     Raises:
-        KeyError: If required columns are missing.
+        KeyError: If required subset columns are missing.
     """
-    required_cols = {"well_id", "production_date", "product"}
-    missing = required_cols - set(ddf.columns)
-    if missing:
-        raise KeyError(f"Missing columns for deduplication: {missing}")
+    required = ["well_id", "production_date", "product"]
+    missing = [col for col in required if col not in ddf.columns]
 
-    result = ddf.drop_duplicates(subset=["well_id", "production_date", "product"])
-    logger.info("Deduplicated data")
+    if missing:
+        raise KeyError(f"Missing required columns for deduplication: {missing}")
+
+    result = ddf.drop_duplicates(subset=required, keep="first")
+    logger.info("Deduplicated rows")
     return result
 
 
 def validate_physical_bounds(ddf: dd.DataFrame) -> dd.DataFrame:
     """
-    Enforce domain-specific physical constraints on production and coordinates.
+    Enforce domain-specific physical constraints on production values.
 
     Args:
-        ddf: Input Dask DataFrame.
+        ddf: Dask DataFrame.
 
     Returns:
-        Dask DataFrame with bounds-validated columns.
+        Validated Dask DataFrame with is_suspect_rate column added.
 
     Raises:
-        KeyError: If required columns are missing.
+        KeyError: If production or product column is missing.
     """
-    required_cols = {"production", "product"}
-    missing = required_cols - set(ddf.columns)
-    if missing:
-        raise KeyError(f"Missing columns for bounds validation: {missing}")
+    if "production" not in ddf.columns or "product" not in ddf.columns:
+        raise KeyError("Missing 'production' or 'product' column")
 
     def _validate_partition(df: pd.DataFrame) -> pd.DataFrame:
         """Validate physical bounds in a single partition."""
         df = df.copy()
 
+        # Initialize is_suspect_rate column
+        df["is_suspect_rate"] = False
+
         # Non-negative production
-        if "production" in df.columns:
-            mask = df["production"] < 0
-            if mask.any():
-                logger.warning(f"Found {mask.sum()} negative production values, setting to NaN")
-                df.loc[mask, "production"] = None
+        neg_mask = df["production"] < 0
+        if neg_mask.any():
+            logger.warning(f"Found {neg_mask.sum()} negative production values; setting to NaN")
+            df.loc[neg_mask, "production"] = pd.NA
 
-        # Oil rate ceiling
-        if "product" in df.columns and "production" in df.columns:
-            df["is_suspect_rate"] = False
-            mask = (df["product"] == "O") & (df["production"] > 50000.0)
-            df.loc[mask, "is_suspect_rate"] = True
+        # Oil rate ceiling (>50000 BBL/month is suspect)
+        oil_mask = (df["product"] == "O") & (df["production"] > 50000.0)
+        df.loc[oil_mask, "is_suspect_rate"] = True
 
-        # Coordinate bounds
+        # Validate coordinates (Kansas bounds)
         if "latitude" in df.columns:
-            mask = (df["latitude"] < 35.0) | (df["latitude"] > 40.5)
-            if mask.any():
-                df.loc[mask, "latitude"] = None
+            lat_bad = (df["latitude"] < 35.0) | (df["latitude"] > 40.5)
+            if lat_bad.any():
+                logger.warning(f"Found {lat_bad.sum()} latitude values outside Kansas bounds; setting to NaN")
+                df.loc[lat_bad, "latitude"] = pd.NA
 
         if "longitude" in df.columns:
-            mask = (df["longitude"] < -102.5) | (df["longitude"] > -94.5)
-            if mask.any():
-                df.loc[mask, "longitude"] = None
+            lon_bad = (df["longitude"] < -102.5) | (df["longitude"] > -94.5)
+            if lon_bad.any():
+                logger.warning(f"Found {lon_bad.sum()} longitude values outside Kansas bounds; setting to NaN")
+                df.loc[lon_bad, "longitude"] = pd.NA
 
         return df
 
-    result = ddf.map_partitions(_validate_partition)
+    # Create meta with is_suspect_rate column
+    meta = ddf._meta.copy()
+    meta["is_suspect_rate"] = False
+
+    result = ddf.map_partitions(_validate_partition, meta=meta)
     logger.info("Validated physical bounds")
     return result
 
 
 def pivot_product_columns(ddf: dd.DataFrame) -> dd.DataFrame:
     """
-    Transform long-format data (one row per well × month × product) into wide format
-    (one row per well × month with separate oil_bbl and gas_mcf columns).
+    Pivot long-format (product column) into wide format (oil_bbl and gas_mcf columns).
 
     Args:
-        ddf: Input Dask DataFrame with product column.
+        ddf: Dask DataFrame in long format.
 
     Returns:
-        Dask DataFrame with pivoted product columns.
+        Wide-format Dask DataFrame.
 
     Raises:
-        ValueError: If neither "O" nor "G" appears in product column.
+        ValueError: If neither O nor G product is found.
         KeyError: If required columns are missing.
     """
-    required_cols = {
-        "well_id",
-        "production_date",
-        "product",
-        "production",
-        "lease_kid",
-    }
-    missing = required_cols - set(ddf.columns)
+    required = ["well_id", "production_date", "product", "production"]
+    missing = [col for col in required if col not in ddf.columns]
     if missing:
-        raise KeyError(f"Missing columns for pivot: {missing}")
+        raise KeyError(f"Missing required columns for pivot: {missing}")
 
     def _pivot_partition(df: pd.DataFrame) -> pd.DataFrame:
-        """Pivot product column in a single partition."""
-        if df.empty:
-            df["oil_bbl"] = pd.Series(dtype="float64")
-            df["gas_mcf"] = pd.Series(dtype="float64")
-            return df.drop(columns=["product", "production"], errors="ignore")
+        """Pivot a single partition."""
+        if len(df) == 0:
+            # Empty partition; return with schema
+            result = df.copy()
+            result["oil_bbl"] = pd.Series([], dtype="float64")
+            result["gas_mcf"] = pd.Series([], dtype="float64")
+            for col in ["product", "production"]:
+                if col in result.columns:
+                    result = result.drop(columns=[col])
+            return result
 
-        # Index columns for groupby (all except product and production)
-        index_cols = [c for c in df.columns if c not in ["product", "production"]]
+        # Check products present
+        products = df["product"].unique()
+        if not any(p in ("O", "G") for p in products):
+            raise ValueError("No recognized product types (O or G) found in partition")
 
-        # Pivot using groupby and unstack
-        try:
-            pivoted = df.groupby(index_cols + ["product"])["production"].first().unstack(
-                fill_value=None
-            )
-        except Exception:
-            pivoted = df.groupby(index_cols)["production"].first().unstack(fill_value=None)
+        # Group-by columns (all except product and production)
+        group_cols = [
+            "well_id", "production_date", "lease_kid", "lease", "dor_code",
+            "field", "producing_zone", "operator", "county", "township",
+            "twn_dir", "range", "range_dir", "section", "spot",
+            "latitude", "longitude", "wells_count", "is_suspect_rate", "source_file"
+        ]
+        # Filter to columns that exist
+        group_cols = [col for col in group_cols if col in df.columns]
 
-        # Reset index to get index columns back as regular columns
-        pivoted = pivoted.reset_index()
+        # Pivot
+        pivoted = df.pivot_table(
+            index=group_cols,
+            columns="product",
+            values="production",
+            aggfunc="first"
+        )
 
-        # Rename product columns
+        # Rename columns
         if "O" in pivoted.columns:
             pivoted = pivoted.rename(columns={"O": "oil_bbl"})
         else:
-            pivoted["oil_bbl"] = None
+            pivoted["oil_bbl"] = pd.NA
 
         if "G" in pivoted.columns:
             pivoted = pivoted.rename(columns={"G": "gas_mcf"})
         else:
-            pivoted["gas_mcf"] = None
+            pivoted["gas_mcf"] = pd.NA
 
-        # Ensure both columns exist
-        if "oil_bbl" not in pivoted.columns:
-            pivoted["oil_bbl"] = None
-        if "gas_mcf" not in pivoted.columns:
-            pivoted["gas_mcf"] = None
+        # Reset index
+        result = pivoted.reset_index()
 
-        # Convert to float64
-        pivoted["oil_bbl"] = pivoted["oil_bbl"].astype("float64")
-        pivoted["gas_mcf"] = pivoted["gas_mcf"].astype("float64")
+        # Ensure dtypes
+        result["oil_bbl"] = result["oil_bbl"].astype("float64")
+        result["gas_mcf"] = result["gas_mcf"].astype("float64")
+        result["is_suspect_rate"] = result["is_suspect_rate"].astype(bool)
 
-        # Preserve is_suspect_rate if it exists
-        if "is_suspect_rate" in df.columns and "is_suspect_rate" not in pivoted.columns:
-            pivoted["is_suspect_rate"] = False
+        return result
 
-        return pivoted
+    # Create proper meta as an empty DataFrame
+    meta = ddf._meta.copy()
+    # Remove product and production columns
+    if "product" in meta.columns:
+        meta = meta.drop(columns=["product"])
+    if "production" in meta.columns:
+        meta = meta.drop(columns=["production"])
+    # Add new columns
+    meta["oil_bbl"] = pd.Series([], dtype="float64")
+    meta["gas_mcf"] = pd.Series([], dtype="float64")
 
-    result = ddf.map_partitions(_pivot_partition)
+    result = ddf.map_partitions(_pivot_partition, meta=meta)
     logger.info("Pivoted product columns")
     return result
 
 
 def fill_date_gaps(ddf: dd.DataFrame) -> dd.DataFrame:
     """
-    Fill missing monthly dates for each well with NaN production values.
+    Fill monthly date gaps per well with NaN for production columns.
 
     Args:
-        ddf: Input Dask DataFrame.
+        ddf: Wide-format Dask DataFrame.
 
     Returns:
-        Dask DataFrame with date gaps filled.
+        Gap-filled Dask DataFrame.
 
     Raises:
-        KeyError: If required columns are missing.
+        KeyError: If well_id or production_date columns are missing.
     """
-    required_cols = {"well_id", "production_date"}
-    missing = required_cols - set(ddf.columns)
-    if missing:
-        raise KeyError(f"Missing columns for date gap filling: {missing}")
-
-    # Repartition by well_id to ensure all rows for a well are in the same partition
-    ddf_indexed = ddf.set_index("well_id").reset_index()
+    if "well_id" not in ddf.columns or "production_date" not in ddf.columns:
+        raise KeyError("Missing 'well_id' or 'production_date' column")
 
     def _fill_gaps_partition(df: pd.DataFrame) -> pd.DataFrame:
-        """Fill date gaps for wells in a single partition."""
-        if df.empty:
-            return df
+        """Fill gaps per well in a partition."""
+        if len(df) == 0:
+            return df.copy()
 
-        all_wells: list[pd.DataFrame] = []
+        results = []
 
-        for well_id in df["well_id"].unique():
-            well_df = df[df["well_id"] == well_id].copy()
-            well_df = well_df.sort_values("production_date")
+        for well_id, well_data in df.groupby("well_id"):
+            well_data = well_data.sort_values("production_date").copy()
 
-            if len(well_df) <= 1:
-                all_wells.append(well_df)
+            if len(well_data) <= 1:
+                results.append(well_data)
                 continue
 
-            # Create full monthly date range
-            first_date = well_df["production_date"].min()
-            last_date = well_df["production_date"].max()
-            full_date_range = pd.date_range(
-                start=first_date, end=last_date, freq="MS"
-            )
+            # Create full monthly range
+            first_date = well_data["production_date"].min()
+            last_date = well_data["production_date"].max()
+            full_range = pd.date_range(start=first_date, end=last_date, freq="MS")
 
-            # Reindex to full date range
-            well_df = well_df.set_index("production_date")
-            well_df = well_df.reindex(full_date_range)
-            well_df = well_df.reset_index().rename(columns={"index": "production_date"})
+            # Reindex to full range
+            well_data = well_data.set_index("production_date")
+            well_data = well_data.reindex(full_range)
 
             # Forward-fill non-production metadata
-            non_prod_cols = [c for c in well_df.columns if c not in [
-                "oil_bbl", "gas_mcf", "production_date"
-            ]]
-            for col in non_prod_cols:
-                if col in well_df.columns:
-                    well_df[col] = well_df[col].fillna(method="ffill")
+            metadata_cols = [
+                "well_id", "lease_kid", "lease", "dor_code", "field",
+                "producing_zone", "operator", "county", "township",
+                "twn_dir", "range", "range_dir", "section", "spot",
+                "latitude", "longitude", "wells_count", "is_suspect_rate", "source_file"
+            ]
+            metadata_cols = [col for col in metadata_cols if col in well_data.columns]
+            well_data[metadata_cols] = well_data[metadata_cols].ffill()
 
-            all_wells.append(well_df)
+            # Reset index
+            well_data = well_data.reset_index()
+            well_data = well_data.rename(columns={"index": "production_date"})
 
-        result = pd.concat(all_wells, ignore_index=True) if all_wells else df
+            results.append(well_data)
+
+        result = pd.concat(results, ignore_index=True)
         return result
 
-    result = ddf_indexed.map_partitions(_fill_gaps_partition)
+    # Set index to well_id for grouping, then apply
+    ddf_indexed = ddf.set_index("well_id")
+
+    meta = ddf._meta.copy()
+    result = ddf_indexed.map_partitions(_fill_gaps_partition, meta=meta)
+
     logger.info("Filled date gaps")
     return result
 
 
 def compute_cumulative_production(ddf: dd.DataFrame) -> dd.DataFrame:
     """
-    Compute cumulative production per well, sorted by production_date.
+    Compute cumulative production columns per well.
 
     Args:
-        ddf: Input Dask DataFrame.
+        ddf: Gap-filled Dask DataFrame.
 
     Returns:
-        Dask DataFrame with cumulative production columns added.
+        Dask DataFrame with cumulative_oil_bbl and cumulative_gas_mcf columns.
 
     Raises:
         KeyError: If required columns are missing.
     """
-    required_cols = {"well_id", "production_date", "oil_bbl", "gas_mcf"}
-    missing = required_cols - set(ddf.columns)
+    required = ["oil_bbl", "gas_mcf", "production_date"]
+    missing = [col for col in required if col not in ddf.columns]
     if missing:
-        raise KeyError(f"Missing columns for cumulative production: {missing}")
+        raise KeyError(f"Missing required columns for cumulative: {missing}")
 
-    # Sort by well_id and production_date
-    ddf = ddf.sort_values(["well_id", "production_date"])
-
-    def _cumsum_partition(df: pd.DataFrame) -> pd.DataFrame:
-        """Compute cumulative sums in a single partition."""
-        df = df.copy()
-
-        if df.empty:
-            df["cumulative_oil_bbl"] = pd.Series(dtype="float64")
-            df["cumulative_gas_mcf"] = pd.Series(dtype="float64")
+    def _compute_cumsum_partition(df: pd.DataFrame) -> pd.DataFrame:
+        """Compute cumulative sums per well in a partition."""
+        if len(df) == 0:
+            df = df.copy()
+            df["cumulative_oil_bbl"] = pd.Series([], dtype="float64")
+            df["cumulative_gas_mcf"] = pd.Series([], dtype="float64")
             return df
 
-        # Compute cumulative sums per well, treating NaN as 0 for cumsum
-        df["cumulative_oil_bbl"] = df.groupby("well_id")["oil_bbl"].apply(
-            lambda x: x.fillna(0).cumsum(), include_groups=False
-        )
-        df["cumulative_gas_mcf"] = df.groupby("well_id")["gas_mcf"].apply(
-            lambda x: x.fillna(0).cumsum(), include_groups=False
-        )
+        df = df.copy()
+
+        # Sort by well_id and production_date
+        if "well_id" in df.columns:
+            df = df.sort_values(["well_id", "production_date"])
+
+            # Compute cumsum per well (treating NaN as 0 in the cumsum)
+            df["cumulative_oil_bbl"] = df.groupby("well_id")["oil_bbl"].transform(
+                lambda x: x.fillna(0).cumsum()
+            )
+            df["cumulative_gas_mcf"] = df.groupby("well_id")["gas_mcf"].transform(
+                lambda x: x.fillna(0).cumsum()
+            )
+        else:
+            # No well_id grouping; just cumsum across all rows
+            df["cumulative_oil_bbl"] = df["oil_bbl"].fillna(0).cumsum()
+            df["cumulative_gas_mcf"] = df["gas_mcf"].fillna(0).cumsum()
 
         return df
 
-    result = ddf.map_partitions(_cumsum_partition)
+    meta = ddf._meta.copy()
+    meta["cumulative_oil_bbl"] = pd.Series([], dtype="float64")
+    meta["cumulative_gas_mcf"] = pd.Series([], dtype="float64")
+
+    result = ddf.map_partitions(_compute_cumsum_partition, meta=meta)
     logger.info("Computed cumulative production")
     return result
 
 
 def write_processed_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
     """
-    Write the transformed Dask DataFrame to a well-partitioned Parquet dataset.
+    Write the transformed DataFrame to partitioned Parquet by well_id.
 
     Args:
-        ddf: Input Dask DataFrame.
+        ddf: Transformed Dask DataFrame.
         output_dir: Output directory.
 
     Returns:
-        Path to the wells output directory.
+        Path to the wells subdirectory.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     wells_dir = output_dir / "wells"
@@ -379,84 +403,89 @@ def write_processed_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
     try:
         ddf.to_parquet(
             str(wells_dir),
-            engine="pyarrow",
-            compression="snappy",
+            partition_on=["well_id"],
             write_index=False,
             overwrite=True,
-            partition_on=["well_id"],
+            compression="snappy",
         )
         logger.info(f"Wrote processed Parquet to {wells_dir}")
+        return wells_dir
     except Exception as e:
-        logger.error(f"Failed to write processed Parquet: {type(e).__name__}: {e}")
+        logger.error(f"Error writing processed Parquet: {e}")
         raise
 
-    return wells_dir
 
-
-def run_transform_pipeline(interim_dir: Path, output_dir: Path) -> Path:
+def run_transform_pipeline(
+    interim_dir: Path = INTERIM_DATA_DIR,
+    output_dir: Path = PROCESSED_DATA_DIR,
+) -> Path:
     """
-    Top-level entry point for the transform component.
-
-    Chains all transformation steps: read → cast → deduplicate → validate bounds →
-    pivot → fill gaps → compute cumulative → write.
+    Orchestrate the full transform pipeline.
 
     Args:
-        interim_dir: Path to interim data directory.
-        output_dir: Path to processed output directory.
+        interim_dir: Input interim Parquet directory.
+        output_dir: Output processed Parquet directory.
 
     Returns:
-        Path to the processed Parquet output directory.
+        Path to the processed wells Parquet directory.
     """
+    logger.info("Starting transform pipeline")
     start_time = time.time()
 
-    try:
-        logger.info("Starting transform pipeline...")
+    steps = []
 
-        # Step 1: Read interim parquet
-        step_start = time.time()
-        ddf = read_interim_parquet(interim_dir)
-        logger.info(f"Step 1 (read_interim_parquet) took {time.time() - step_start:.2f}s")
+    # Step 1: Read
+    logger.info("Step 1: Reading interim Parquet...")
+    step_start = time.time()
+    ddf = read_interim_parquet(interim_dir)
+    steps.append(("read_interim_parquet", time.time() - step_start))
 
-        # Step 2: Cast column types
-        step_start = time.time()
-        ddf = cast_column_types(ddf)
-        logger.info(f"Step 2 (cast_column_types) took {time.time() - step_start:.2f}s")
+    # Step 2: Cast types
+    logger.info("Step 2: Casting column types...")
+    step_start = time.time()
+    ddf = cast_column_types(ddf)
+    steps.append(("cast_column_types", time.time() - step_start))
 
-        # Step 3: Deduplicate
-        step_start = time.time()
-        ddf = deduplicate(ddf)
-        logger.info(f"Step 3 (deduplicate) took {time.time() - step_start:.2f}s")
+    # Step 3: Deduplicate
+    logger.info("Step 3: Deduplicating...")
+    step_start = time.time()
+    ddf = deduplicate(ddf)
+    steps.append(("deduplicate", time.time() - step_start))
 
-        # Step 4: Validate physical bounds
-        step_start = time.time()
-        ddf = validate_physical_bounds(ddf)
-        logger.info(f"Step 4 (validate_physical_bounds) took {time.time() - step_start:.2f}s")
+    # Step 4: Validate bounds
+    logger.info("Step 4: Validating physical bounds...")
+    step_start = time.time()
+    ddf = validate_physical_bounds(ddf)
+    steps.append(("validate_physical_bounds", time.time() - step_start))
 
-        # Step 5: Pivot product columns
-        step_start = time.time()
-        ddf = pivot_product_columns(ddf)
-        logger.info(f"Step 5 (pivot_product_columns) took {time.time() - step_start:.2f}s")
+    # Step 5: Pivot product
+    logger.info("Step 5: Pivoting product columns...")
+    step_start = time.time()
+    ddf = pivot_product_columns(ddf)
+    steps.append(("pivot_product_columns", time.time() - step_start))
 
-        # Step 6: Fill date gaps
-        step_start = time.time()
-        ddf = fill_date_gaps(ddf)
-        logger.info(f"Step 6 (fill_date_gaps) took {time.time() - step_start:.2f}s")
+    # Step 6: Fill date gaps
+    logger.info("Step 6: Filling date gaps...")
+    step_start = time.time()
+    ddf = fill_date_gaps(ddf)
+    steps.append(("fill_date_gaps", time.time() - step_start))
 
-        # Step 7: Compute cumulative production
-        step_start = time.time()
-        ddf = compute_cumulative_production(ddf)
-        logger.info(f"Step 7 (compute_cumulative_production) took {time.time() - step_start:.2f}s")
+    # Step 7: Compute cumulative
+    logger.info("Step 7: Computing cumulative production...")
+    step_start = time.time()
+    ddf = compute_cumulative_production(ddf)
+    steps.append(("compute_cumulative_production", time.time() - step_start))
 
-        # Step 8: Write processed parquet
-        step_start = time.time()
-        output_path = write_processed_parquet(ddf, output_dir)
-        logger.info(f"Step 8 (write_processed_parquet) took {time.time() - step_start:.2f}s")
+    # Step 8: Write output (triggers computation)
+    logger.info("Step 8: Writing processed Parquet...")
+    step_start = time.time()
+    output_path = write_processed_parquet(ddf, output_dir)
+    steps.append(("write_processed_parquet", time.time() - step_start))
 
-        total_time = time.time() - start_time
-        logger.info(f"Transform pipeline completed in {total_time:.2f}s")
+    total_time = time.time() - start_time
+    logger.info(f"Transform pipeline complete in {total_time:.2f}s")
 
-        return output_path
+    for step_name, step_time in steps:
+        logger.info(f"  {step_name}: {step_time:.2f}s")
 
-    except Exception as e:
-        logger.error(f"Transform pipeline failed: {type(e).__name__}: {e}")
-        raise
+    return output_path

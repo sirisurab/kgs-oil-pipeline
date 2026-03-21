@@ -1,9 +1,13 @@
+"""
+Ingest component: Read, parse, and combine raw .txt files into interim partitioned Parquet.
+"""
+
 import logging
-import time
 from pathlib import Path
 from typing import Optional
-import pandas as pd  # type: ignore[import-untyped]
-import dask.dataframe as dd
+import pandas as pd  # type: ignore
+import dask.dataframe as dd  # type: ignore
+
 from kgs_pipeline.config import RAW_DATA_DIR, INTERIM_DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -11,19 +15,19 @@ logger = logging.getLogger(__name__)
 
 def discover_raw_files(raw_dir: Path) -> list[Path]:
     """
-    Scan raw_dir and return a sorted list of all .txt files available for ingestion.
+    Scan the raw_dir directory and return a sorted list of all .txt files.
 
     Args:
-        raw_dir: Path to the raw data directory.
+        raw_dir: Directory to scan for .txt files.
 
     Returns:
-        Sorted list of Path objects for all .txt files in raw_dir.
+        Sorted list of Path objects for .txt files.
 
     Raises:
         FileNotFoundError: If raw_dir does not exist.
     """
     if not raw_dir.exists():
-        raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
+        raise FileNotFoundError(f"Raw data directory not found: {raw_dir}")
 
     txt_files = sorted(raw_dir.glob("*.txt"))
 
@@ -31,7 +35,7 @@ def discover_raw_files(raw_dir: Path) -> list[Path]:
         logger.warning(f"No .txt files found in {raw_dir}")
         return []
 
-    logger.info(f"Discovered {len(txt_files)} .txt files in {raw_dir}")
+    logger.info(f"Discovered {len(txt_files)} raw files in {raw_dir}")
     return txt_files
 
 
@@ -40,10 +44,10 @@ def read_raw_files(file_paths: list[Path]) -> dd.DataFrame:
     Read all per-lease .txt files into a single unified Dask DataFrame.
 
     Args:
-        file_paths: List of Path objects pointing to .txt files.
+        file_paths: List of Path objects to read.
 
     Returns:
-        Dask DataFrame with all files concatenated and source_file column added.
+        Dask DataFrame with all rows from input files.
 
     Raises:
         ValueError: If file_paths is empty.
@@ -51,207 +55,185 @@ def read_raw_files(file_paths: list[Path]) -> dd.DataFrame:
     if not file_paths:
         raise ValueError("No raw files provided for ingestion")
 
-    dfs: list[dd.DataFrame] = []
-
-    for file_path in file_paths:
+    dfs = []
+    for fpath in file_paths:
         try:
+            # Read file with all columns as strings
             df = dd.read_csv(
-                str(file_path),
+                str(fpath),
                 dtype=str,
-                blocksize=None,
+                blocksize=None,  # Don't split single files
             )
-            # Add source_file column with the stem of the filename
-            df["source_file"] = file_path.stem
+            # Add source_file column
+            df["source_file"] = fpath.stem
             dfs.append(df)
         except Exception as e:
-            logger.warning(
-                f"Failed to read {file_path.name}: {type(e).__name__}: {e}"
-            )
+            logger.warning(f"Error reading file {fpath}: {e}")
 
     if not dfs:
-        raise ValueError(
-            "No files could be successfully read from the provided file list"
-        )
+        raise ValueError("No files could be successfully read")
 
-    # Concatenate all DataFrames
-    combined_df = dd.concat(dfs, axis=0, ignore_index=True)
+    # Concatenate all dataframes
+    result = dd.concat(dfs, axis=0, interleave_partitions=True)
 
-    # Normalize column names: lowercase, replace - and spaces with _
-    combined_df.columns = [
+    # Normalize column names: lowercase, replace hyphens and spaces with underscores
+    result.columns = [
         col.strip().lower().replace("-", "_").replace(" ", "_")
-        for col in combined_df.columns
+        for col in result.columns
     ]
 
-    logger.info(f"Successfully read {len(file_paths)} files into Dask DataFrame")
-    return combined_df
+    logger.info(f"Read {len(file_paths)} files into Dask DataFrame")
+    return result
 
 
 def parse_month_year(ddf: dd.DataFrame) -> dd.DataFrame:
     """
-    Parse and filter the month_year column, converting to datetime and removing
-    non-monthly records (yearly aggregates with Month=0 or cumulative Month=-1).
+    Parse month_year column and filter out non-monthly records.
 
     Args:
-        ddf: Input Dask DataFrame with month_year column.
+        ddf: Dask DataFrame with month_year column.
 
     Returns:
-        Dask DataFrame with month_year parsed to production_date (datetime64[ns]).
+        Dask DataFrame with production_date column and monthly records only.
     """
 
-    def _filter_and_parse_partition(df: pd.DataFrame) -> pd.DataFrame:
-        """Filter out non-monthly records and parse dates in a single partition."""
-        # Filter: keep only rows where month_year doesn't start with "0-" or "-1-"
-        mask = ~(df["month_year"].astype(str).str.startswith(("0-", "-1-")))
-        df = df[mask].copy()
-
-        if df.empty:
-            # Return with production_date column as datetime, but empty
-            df["production_date"] = pd.to_datetime([], dtype="datetime64[ns]")
-            return df
+    def _parse_month_year_partition(df: pd.DataFrame) -> pd.DataFrame:
+        """Parse month_year for a single partition."""
+        # Filter out yearly (0-YYYY) and cumulative (-1-YYYY) records
+        df = df[~df["month_year"].str.startswith("0-")]
+        df = df[~df["month_year"].str.startswith("-1-")]
 
         # Parse month_year to datetime
-        try:
-            df["production_date"] = pd.to_datetime(
-                df["month_year"], format="%m-%Y", errors="coerce"
-            )
-        except Exception as e:
-            logger.warning(f"Error parsing month_year: {e}")
-            df["production_date"] = pd.NaT
+        df["production_date"] = pd.to_datetime(
+            df["month_year"], format="%m-%Y", errors="coerce"
+        )
 
-        # Drop the original month_year column
+        # Drop the old month_year column
         df = df.drop(columns=["month_year"])
 
         return df
 
-    filtered_ddf = ddf.map_partitions(_filter_and_parse_partition)
+    # Create meta for the result
+    meta = ddf._meta.copy()
+    meta = meta.drop(columns=["month_year"])
+    meta["production_date"] = pd.Series([], dtype="datetime64[ns]")
 
-    logger.info("Parsed month_year to production_date and filtered non-monthly records")
-    return filtered_ddf
+    result = ddf.map_partitions(_parse_month_year_partition, meta=meta)
+
+    logger.info("Parsed month_year and filtered non-monthly records")
+    return result
 
 
 def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:
     """
-    Transform lease-level rows into well-level rows by exploding comma-separated
-    api_number column.
+    Explode comma-separated API numbers into separate well rows.
 
     Args:
-        ddf: Input Dask DataFrame with api_number column.
+        ddf: Dask DataFrame with api_number column.
 
     Returns:
-        Dask DataFrame with exploded api_number renamed to well_id.
+        Dask DataFrame with well_id column (exploded from api_number).
 
     Raises:
         KeyError: If api_number column is missing.
     """
     if "api_number" not in ddf.columns:
-        raise KeyError("api_number column not found in input DataFrame")
+        raise KeyError("api_number column not found in DataFrame")
 
-    def _explode_partition(df: pd.DataFrame) -> pd.DataFrame:
-        """Explode api_number column in a single partition."""
-        # Split on comma, strip whitespace, and explode
+    def _explode_api_partition(df: pd.DataFrame) -> pd.DataFrame:
+        """Explode API numbers for a single partition."""
+        # Split and explode the api_number column
         df = df.copy()
-        df["api_number"] = df["api_number"].fillna("").astype(str)
-        df["api_number"] = df["api_number"].apply(
-            lambda x: [s.strip() for s in x.split(",") if s.strip()]
-            if x.strip()
-            else [None]
-        )
-        df = df.explode("api_number", ignore_index=True)
+        df["api_number"] = df["api_number"].fillna("")
+        df["api_number"] = df["api_number"].str.split(",")
 
-        # Rename to well_id
-        df = df.rename(columns={"api_number": "well_id"})
+        # Explode
+        df = df.explode("api_number", ignore_index=False)
+
+        # Strip whitespace and rename
+        df["well_id"] = df["api_number"].str.strip()
+        df = df.drop(columns=["api_number"])
+
+        # Reset index
+        df = df.reset_index(drop=True)
 
         return df
 
-    exploded_ddf = ddf.map_partitions(_explode_partition)
+    # Get meta (schema) for output
+    meta = ddf._meta.copy()
+    meta = meta.drop(columns=["api_number"])
+    meta["well_id"] = ""
 
-    logger.info("Exploded api_number to well_id (well-level rows)")
-    return exploded_ddf
+    result = ddf.map_partitions(_explode_api_partition, meta=meta)
+    logger.info("Exploded API numbers to well_id")
+    return result
 
 
 def write_interim_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
     """
-    Write the processed Dask DataFrame to a partitioned Parquet dataset.
+    Write the Dask DataFrame to a partitioned Parquet dataset.
 
     Args:
-        ddf: Input Dask DataFrame to write.
-        output_dir: Directory to write the Parquet dataset to.
+        ddf: Dask DataFrame to write.
+        output_dir: Directory to write Parquet files to.
 
     Returns:
         Path to the output Parquet directory.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "kgs_monthly_raw.parquet"
+    output_parquet = output_dir / "kgs_monthly_raw.parquet"
 
     try:
         ddf.to_parquet(
-            str(output_path),
-            engine="pyarrow",
-            compression="snappy",
+            str(output_parquet),
             write_index=False,
+            compression="snappy",
             overwrite=True,
         )
-        logger.info(
-            f"Successfully wrote {ddf.npartitions} partitions to {output_path}"
-        )
+        logger.info(f"Wrote interim Parquet to {output_parquet}")
+        return output_parquet
     except Exception as e:
-        logger.error(f"Failed to write Parquet to {output_path}: {e}")
+        logger.error(f"Error writing Parquet: {e}")
         raise
 
-    return output_path
 
-
-def run_ingest_pipeline(raw_dir: Path, output_dir: Path) -> Optional[Path]:
+def run_ingest_pipeline(
+    raw_dir: Path = RAW_DATA_DIR,
+    output_dir: Path = INTERIM_DATA_DIR,
+) -> Optional[Path]:
     """
-    Top-level entry point for the ingest component.
-
-    Chains: discover → read → parse_month_year → explode_api_numbers → write
+    Orchestrate the full ingest pipeline.
 
     Args:
-        raw_dir: Path to the raw data directory.
-        output_dir: Path to the interim output directory.
+        raw_dir: Directory containing raw .txt files.
+        output_dir: Directory to write interim Parquet.
 
     Returns:
-        Path to the output Parquet file, or None if no files were discovered.
+        Path to the interim Parquet directory, or None if no files to ingest.
     """
-    start_time = time.time()
+    logger.info("Starting ingest pipeline")
 
-    try:
-        # Step 1: Discover raw files
-        logger.info("Starting ingest pipeline...")
-        step_start = time.time()
-        file_list = discover_raw_files(raw_dir)
-        logger.info(f"Step 1 (discover_raw_files) took {time.time() - step_start:.2f}s")
+    # Step 1: Discover files
+    file_paths = discover_raw_files(raw_dir)
+    if not file_paths:
+        logger.warning("No raw files discovered; aborting ingest pipeline")
+        return None
 
-        if not file_list:
-            logger.warning("No raw files discovered; aborting ingest pipeline")
-            return None
+    # Step 2: Read files
+    logger.info("Reading raw files...")
+    ddf = read_raw_files(file_paths)
 
-        # Step 2: Read raw files
-        step_start = time.time()
-        ddf = read_raw_files(file_list)
-        logger.info(f"Step 2 (read_raw_files) took {time.time() - step_start:.2f}s")
+    # Step 3: Parse month_year
+    logger.info("Parsing production dates...")
+    ddf = parse_month_year(ddf)
 
-        # Step 3: Parse month_year
-        step_start = time.time()
-        ddf = parse_month_year(ddf)
-        logger.info(f"Step 3 (parse_month_year) took {time.time() - step_start:.2f}s")
+    # Step 4: Explode API numbers
+    logger.info("Exploding API numbers to well level...")
+    ddf = explode_api_numbers(ddf)
 
-        # Step 4: Explode api_numbers
-        step_start = time.time()
-        ddf = explode_api_numbers(ddf)
-        logger.info(f"Step 4 (explode_api_numbers) took {time.time() - step_start:.2f}s")
+    # Step 5: Write to interim Parquet
+    logger.info("Writing interim Parquet...")
+    output_path = write_interim_parquet(ddf, output_dir)
 
-        # Step 5: Write interim parquet
-        step_start = time.time()
-        output_path = write_interim_parquet(ddf, output_dir)
-        logger.info(f"Step 5 (write_interim_parquet) took {time.time() - step_start:.2f}s")
-
-        total_time = time.time() - start_time
-        logger.info(f"Ingest pipeline completed in {total_time:.2f}s")
-
-        return output_path
-
-    except Exception as e:
-        logger.error(f"Ingest pipeline failed: {type(e).__name__}: {e}")
-        raise
+    logger.info(f"Ingest pipeline complete. Output: {output_path}")
+    return output_path

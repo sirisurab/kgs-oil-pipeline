@@ -1,280 +1,391 @@
 # Implementation Summary
 
-## Overview
-This document summarizes the complete implementation of the KGS Oil & Gas Well Data Pipeline with all four components fully implemented.
+This document provides a comprehensive overview of the implementation of the KGS Oil & Gas Well Data Pipeline.
 
 ## Components Implemented
 
-### 1. Acquire Component ✓
-**Location:** `kgs_pipeline/acquire.py` and `tests/test_acquire.py`
+### 1. Project Configuration & Scaffolding (Task 01)
+- **File:** `kgs/kgs_pipeline/config.py`
+- **Status:** ✅ Complete
+- **What it does:**
+  - Defines all project paths (raw, interim, processed, features data directories)
+  - Configures constants like MAX_CONCURRENT_SCRAPES
+  - Automatically creates data directories on import
 
-**Tasks Completed:**
-- Task 01: Project scaffolding (.gitignore, __init__.py, config.py)
-- Task 02: Lease URL extraction (extract_lease_urls)
-- Task 03: Single-lease async page scraper (scrape_lease_page)
-- Task 04: Parallel scrape orchestrator (run_scrape_pipeline)
+### 2. Acquire Component (Tasks 01-04)
 
-**Key Functions:**
-- `extract_lease_urls(leases_file)` → DataFrame with lease_kid and URL
-- `scrape_lease_page(lease_url, output_dir, semaphore, playwright_instance)` → Path to downloaded file
-- `run_scrape_pipeline(leases_file, output_dir)` → Dict with download results
+#### Task 01: Project Scaffolding
+- **Files:** `.gitignore`, `requirements.txt`
+- **Status:** ✅ Complete
+- **Dependencies:** None (foundational)
 
-**Test Coverage:** 24 test cases (unit and integration)
+#### Task 02: Lease URL Extraction
+- **File:** `kgs/kgs_pipeline/acquire.py` → `extract_lease_urls()`
+- **Status:** ✅ Complete
+- **Function Signature:** `extract_lease_urls(leases_file: Path) -> pd.DataFrame`
+- **Key Features:**
+  - Reads oil_leases_2020_present.txt file
+  - Returns DataFrame with ['lease_kid', 'url'] columns
+  - Deduplicates on lease_kid (keeps first occurrence)
+  - Handles missing/null URLs
 
----
+#### Task 03: Lease Page Scraper
+- **File:** `kgs/kgs_pipeline/acquire.py` → `scrape_lease_page()` & `_scrape_chunk()`
+- **Status:** ✅ Complete
+- **Function Signature:** `scrape_lease_page(lease_url, output_dir, semaphore, playwright_instance) -> Optional[Path]`
+- **Key Features:**
+  - Uses Playwright for browser automation
+  - Finds and clicks "Save Monthly Data to File" button
+  - Downloads .txt file from link
+  - Implements idempotency (skips if file exists)
+  - Uses semaphore for rate limiting
+  - Handles errors gracefully (logs warnings, returns None)
+  - Raises ScrapeError for critical failures (missing button)
 
-### 2. Ingest Component ✓
-**Location:** `kgs_pipeline/ingest.py` and `tests/test_ingest.py`
+#### Task 04: Parallel Scraping Orchestrator
+- **File:** `kgs/kgs_pipeline/acquire.py` → `run_scrape_pipeline()`
+- **Status:** ✅ Complete
+- **Function Signature:** `run_scrape_pipeline(leases_file: Path, output_dir: Path) -> dict`
+- **Key Features:**
+  - Orchestrates full scraping pipeline
+  - Uses Dask to parallelize across lease chunks
+  - Returns summary dict with downloaded/failed/skipped counts
+  - Handles errors at scale
+  - Logs progress at each step
 
-**Tasks Completed:**
-- Task 01: Discover raw files (discover_raw_files)
-- Task 02: Read raw files into Dask (read_raw_files)
-- Task 03: Parse month-year column (parse_month_year)
-- Task 04: Explode API numbers (explode_api_numbers)
-- Task 05: Write interim Parquet (write_interim_parquet)
-- Task 06: Run ingest pipeline (run_ingest_pipeline)
+### 3. Ingest Component (Tasks 05-10)
 
-**Key Functions:**
-- `discover_raw_files(raw_dir)` → list of .txt file Paths
-- `read_raw_files(file_paths)` → Dask DataFrame with source_file column
-- `parse_month_year(ddf)` → Dask DataFrame with production_date (datetime) and filtered records
-- `explode_api_numbers(ddf)` → Dask DataFrame with exploded well_id column
-- `write_interim_parquet(ddf, output_dir)` → Path to output directory
-- `run_ingest_pipeline(raw_dir, output_dir)` → Path to parquet output
+#### Task 05: Raw File Discovery
+- **File:** `kgs/kgs_pipeline/ingest.py` → `discover_raw_files()`
+- **Status:** ✅ Complete
+- **Function Signature:** `discover_raw_files(raw_dir: Path) -> list[Path]`
+- **Key Features:**
+  - Scans raw_dir for .txt files
+  - Returns sorted list
+  - Handles missing directory
 
-**Test Coverage:** 35 test cases (unit and integration)
+#### Task 06: Raw File Reader
+- **File:** `kgs/kgs_pipeline/ingest.py` → `read_raw_files()`
+- **Status:** ✅ Complete
+- **Function Signature:** `read_raw_files(file_paths: list[Path]) -> dd.DataFrame`
+- **Key Features:**
+  - Reads all files into Dask DataFrame
+  - Adds source_file column
+  - Normalizes column names (lowercase, underscores)
+  - Handles read errors gracefully
 
----
+#### Task 07: Month-Year Parser
+- **File:** `kgs/kgs_pipeline/ingest.py` → `parse_month_year()`
+- **Status:** ✅ Complete
+- **Function Signature:** `parse_month_year(ddf: dd.DataFrame) -> dd.DataFrame`
+- **Key Features:**
+  - Parses M-YYYY format to datetime
+  - Filters out yearly (0-YYYY) records
+  - Filters out cumulative (-1-YYYY) records
+  - Produces production_date column
 
-### 3. Transform Component ✓
-**Location:** `kgs_pipeline/transform.py` and `tests/test_transform.py`
+#### Task 08: API Number Exploder
+- **File:** `kgs/kgs_pipeline/ingest.py` → `explode_api_numbers()`
+- **Status:** ✅ Complete
+- **Function Signature:** `explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame`
+- **Key Features:**
+  - Splits comma-separated API numbers
+  - Explodes to separate rows (one per well)
+  - Produces well_id column
+  - Handles null/empty values
 
-**Tasks Completed:**
-- Task 01: Read interim Parquet (read_interim_parquet)
-- Task 02: Cast column types (cast_column_types)
-- Task 03: Deduplicate records (deduplicate)
-- Task 04: Validate physical bounds (validate_physical_bounds)
-- Task 05: Pivot product columns (pivot_product_columns)
-- Task 06: Fill date gaps (fill_date_gaps)
-- Task 07: Compute cumulative production (compute_cumulative_production)
-- Task 08: Write processed Parquet (write_processed_parquet)
-- Task 09: Run transform pipeline (run_transform_pipeline)
+#### Task 09: Interim Parquet Writer
+- **File:** `kgs/kgs_pipeline/ingest.py` → `write_interim_parquet()`
+- **Status:** ✅ Complete
+- **Function Signature:** `write_interim_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path`
+- **Key Features:**
+  - Writes Dask DataFrame to Parquet
+  - Uses snappy compression
+  - Creates output directory if needed
 
-**Key Functions:**
-- `read_interim_parquet(interim_dir)` → Dask DataFrame
-- `cast_column_types(ddf)` → Dask DataFrame with correct types
-- `deduplicate(ddf)` → Dask DataFrame (dedup on well_id, production_date, product)
-- `validate_physical_bounds(ddf)` → Dask DataFrame with validated columns
-- `pivot_product_columns(ddf)` → Dask DataFrame with oil_bbl and gas_mcf columns
-- `fill_date_gaps(ddf)` → Dask DataFrame with full monthly date range
-- `compute_cumulative_production(ddf)` → Dask DataFrame with cumulative columns
-- `write_processed_parquet(ddf, output_dir)` → Path to output (partitioned by well_id)
-- `run_transform_pipeline(interim_dir, output_dir)` → Path to processed output
+#### Task 10: Ingest Pipeline Orchestrator
+- **File:** `kgs/kgs_pipeline/ingest.py` → `run_ingest_pipeline()`
+- **Status:** ✅ Complete
+- **Function Signature:** `run_ingest_pipeline(raw_dir, output_dir) -> Optional[Path]`
+- **Key Features:**
+  - Orchestrates all ingest steps
+  - Returns None if no files to process
+  - Logs progress at each step
 
-**Test Coverage:** 71 test cases (unit and integration)
+### 4. Transform Component (Tasks 11-19)
 
----
+#### Task 11: Processed Parquet Reader
+- **File:** `kgs/kgs_pipeline/transform.py` → `read_interim_parquet()`
+- **Status:** ✅ Complete
+- **Function Signature:** `read_interim_parquet(interim_dir: Path) -> dd.DataFrame`
 
-### 4. Features Component ✓
-**Location:** `kgs_pipeline/features.py` and `tests/test_features.py`
+#### Task 12: Column Type Caster
+- **File:** `kgs/kgs_pipeline/transform.py` → `cast_column_types()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Casts latitude/longitude to float64
+  - Casts production to float64
+  - Casts wells to wells_count (float64)
+  - Strips whitespace from strings
+  - Preserves production_date as datetime64
 
-**Tasks Completed:**
-- Task 01: Read processed Parquet (read_processed_parquet)
-- Task 02: Compute time features (compute_time_features)
-- Task 03: Compute rolling features (compute_rolling_features)
-- Task 04: Compute decline and GOR (compute_decline_and_gor)
-- Task 05: Encode categorical features (encode_categorical_features)
-- Task 06: Save encoding map (save_encoding_map)
-- Task 07: Load encoding map (load_encoding_map)
-- Task 08: Write feature Parquet (write_feature_parquet)
-- Task 09: Run features pipeline (run_features_pipeline)
+#### Task 13: Row Deduplicator
+- **File:** `kgs/kgs_pipeline/transform.py` → `deduplicate()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Deduplicates on (well_id, production_date, product)
+  - Keeps first occurrence
+  - Validates required columns
 
-**Key Functions:**
-- `read_processed_parquet(processed_dir)` → Dask DataFrame
-- `compute_time_features(ddf)` → Dask DataFrame with time-based features
-  - months_since_first_prod
-  - producing_months_count
-  - production_phase (early/mid/late)
-- `compute_rolling_features(ddf)` → Dask DataFrame with rolling features
-  - oil_bbl_roll3/6/12, gas_mcf_roll3/6/12
-- `compute_decline_and_gor(ddf)` → Dask DataFrame with decline rates and GOR
-  - oil_decline_rate_mom, gas_decline_rate_mom, gor
-- `encode_categorical_features(ddf, encoding_map)` → (Dask DataFrame, encoding_map dict)
-  - Encodes county, field, producing_zone, operator
-- `save_encoding_map(encoding_map, output_dir)` → Path to encoding_map.json
-- `load_encoding_map(output_dir)` → encoding_map dict
-- `write_feature_parquet(ddf, output_dir)` → Path to output (partitioned by well_id)
-- `run_features_pipeline(processed_dir, output_dir)` → Path to features output
+#### Task 14: Physical Bounds Validator
+- **File:** `kgs/kgs_pipeline/transform.py` → `validate_physical_bounds()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Flags negative production as NaN
+  - Flags oil production >50,000 BBL/month as suspect
+  - Validates lat/lon within Kansas bounds (35.0-40.5°N, -102.5 to -94.5°W)
+  - Adds is_suspect_rate column
 
-**Test Coverage:** 72 test cases (unit and integration)
+#### Task 15: Product Pivotter
+- **File:** `kgs/kgs_pipeline/transform.py` → `pivot_product_columns()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Pivots from long (product column) to wide format
+  - Creates oil_bbl and gas_mcf columns
+  - Handles missing products (NaN)
+  - Preserves metadata through pivot
 
----
+#### Task 16: Date Gap Filler
+- **File:** `kgs/kgs_pipeline/transform.py` → `fill_date_gaps()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Fills gaps in monthly time series per well
+  - Forward-fills metadata
+  - Leaves production columns as NaN for gaps
+  - Handles single-record wells gracefully
 
-## Project Structure
+#### Task 17: Cumulative Production Calculator
+- **File:** `kgs/kgs_pipeline/transform.py` -> `compute_cumulative_production()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Computes cumulative sums per well
+  - Treats NaN as 0 in cumsum
+  - Creates cumulative_oil_bbl and cumulative_gas_mcf columns
+  - Ensures monotonic non-decreasing sequences
+
+#### Task 18: Processed Parquet Writer
+- **File:** `kgs/kgs_pipeline/transform.py` → `write_processed_parquet()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Writes well-partitioned Parquet
+  - Partitions by well_id
+  - Uses snappy compression
+
+#### Task 19: Transform Pipeline Orchestrator
+- **File:** `kgs/kgs_pipeline/transform.py` → `run_transform_pipeline()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Orchestrates all transform steps in sequence
+  - Times each step
+  - Logs progress and timing
+
+### 5. Features Component (Tasks 20-27)
+
+#### Task 20: Processed Parquet Reader
+- **File:** `kgs/kgs_pipeline/features.py` → `read_processed_parquet()`
+- **Status:** ✅ Complete
+
+#### Task 21: Time Features Engineer
+- **File:** `kgs/kgs_pipeline/features.py` → `compute_time_features()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - months_since_first_prod: Months since well's first production
+  - producing_months_count: Cumulative count of producing months
+  - production_phase: Categorical label (early: ≤12mo, mid: 12-60mo, late: >60mo)
+
+#### Task 22: Rolling Features Engineer
+- **File:** `kgs/kgs_pipeline/features.py` → `compute_rolling_features()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - oil_bbl_roll3/6/12: 3, 6, 12-month rolling means of oil production
+  - gas_mcf_roll3/6/12: 3, 6, 12-month rolling means of gas production
+  - Uses min_periods=1 to avoid NaN in early records
+  - Computed independently per well
+
+#### Task 23: Decline & GOR Engineer
+- **File:** `kgs/kgs_pipeline/features.py` → `compute_decline_and_gor()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - oil_decline_rate_mom: Month-on-month oil production change rate
+  - gas_decline_rate_mom: Month-on-month gas production change rate
+  - gor: Gas-oil ratio (gas / oil), NaN when oil=0
+  - Handles division by zero safely
+
+#### Task 24: Categorical Encoder
+- **File:** `kgs/kgs_pipeline/features.py` → `encode_categorical_features()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Alphabetically encodes: county, field, producing_zone, operator
+  - Creates _encoded columns with int32 dtype
+  - Supports both training (compute map) and inference (use provided map)
+  - Encodes unseen values as -1
+
+#### Task 25: Encoding Map Saver
+- **File:** `kgs/kgs_pipeline/features.py` → `save_encoding_map()` & `load_encoding_map()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Saves encoding map to JSON sidecar
+  - Supports round-trip consistency
+  - Creates output directory if needed
+
+#### Task 26: Feature Parquet Writer
+- **File:** `kgs/kgs_pipeline/features.py` → `write_feature_parquet()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Writes feature-engineered DataFrame to Parquet
+  - Partitions by well_id
+  - Uses snappy compression
+
+#### Task 27: Features Pipeline Orchestrator
+- **File:** `kgs/kgs_pipeline/features.py` → `run_features_pipeline()`
+- **Status:** ✅ Complete
+- **Key Features:**
+  - Orchestrates all feature steps in sequence
+  - Times each step
+  - Logs progress and timing
+
+## Test Coverage
+
+All 27 tasks have comprehensive test suites:
+
+- **test_acquire.py**: 25+ test cases covering scraping, URL extraction, error handling
+- **test_ingest.py**: 35+ test cases covering file discovery, parsing, deduplication
+- **test_transform.py**: 45+ test cases covering type casting, validation, pivoting, gap filling
+- **test_features.py**: 50+ test cases covering temporal, rolling, and categorical features
+
+### Test Types:
+- **Unit Tests** (@pytest.mark.unit): Test individual functions in isolation
+- **Integration Tests** (@pytest.mark.integration): Test file I/O and round-trip consistency
+
+### Running Tests:
+```bash
+pytest tests/ -v                    # Run all tests
+pytest tests/ -m unit              # Unit tests only
+pytest tests/ -m integration       # Integration tests only
+pytest tests/test_acquire.py -v    # Specific module
+```
+
+## File Structure Created
 
 ```
 kgs/
-├── .gitignore
-├── Makefile
-├── README.md
-├── pytest.ini
-├── requirements.txt
-├── IMPLEMENTATION_SUMMARY.md
-├── test_imports.py
-├── kgs_pipeline/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── acquire.py
-│   ├── ingest.py
-│   ├── transform.py
-│   └── features.py
-├── tests/
-│   ├── test_acquire.py
-│   ├── test_ingest.py
-│   ├── test_transform.py
-│   └── test_features.py
-└── data/
-    ├── raw/
-    ├── interim/
-    ├── processed/
-    ├── external/
-    └── references/
+├── .gitignore                          # Project gitignore
+├── README.md                           # Project documentation
+├── Makefile                            # Convenience commands
+├── requirements.txt                    # Python dependencies
+├── IMPLEMENTATION_SUMMARY.md           # This file
+│
+├── kgs_pipeline/                       # Main package
+│   ├── __init__.py                     # Empty init
+│   ├── config.py                       # Configuration & paths
+│   ├── acquire.py                      # Scraping & download (Tasks 01-04)
+│   ├── ingest.py                       # Raw data reading (Tasks 05-10)
+│   ├── transform.py                    # Cleaning & preprocessing (Tasks 11-19)
+│   └── features.py                     # Feature engineering (Tasks 20-27)
+│
+├── tests/                              # Test suite
+│   ├── test_acquire.py                 # Tests for acquire component
+│   ├── test_ingest.py                  # Tests for ingest component
+│   ├── test_transform.py               # Tests for transform component
+│   └── test_features.py                # Tests for features component
+│
+└── data/                               # Data directories (created by config.py)
+    ├── raw/                            # Raw .txt files from KGS portal
+    ├── interim/                        # Interim Parquet files
+    ├── processed/                      # Processed well-partitioned data
+    │   └── features/                   # Feature-engineered data
+    └── external/                       # Oil leases lookup file
 ```
 
-## Key Design Principles Applied
+## Key Design Decisions
 
-1. **Lazy Evaluation**
-   - All pipeline functions return Dask DataFrames
-   - `.compute()` only called when writing to disk or retrieving final results
-   - Ensures efficient distributed processing
+### 1. Asynchronous Web Scraping
+- Used `playwright.async_api` with `asyncio.Semaphore` for rate-limited concurrent scraping
+- Supports up to 5 concurrent browser instances (configurable)
+- Implements idempotency (skips existing files)
 
-2. **Error Handling**
-   - Custom exception class `ScrapeError` for acquisition failures
-   - Proper error propagation with try-except blocks
-   - Logging at WARNING level for recoverable errors
+### 2. Dask for Large-Scale Processing
+- All intermediate datasets processed as Dask DataFrames
+- Lazy evaluation until final write (efficient memory usage)
+- Chunked execution with thread scheduler for I/O-bound operations
+- Well-partitioned output for downstream querying
 
-3. **Idempotency**
-   - Download skips existing files
-   - Parquet writes use `overwrite=True`
-   - Can re-run pipelines safely
+### 3. Partitioning Strategy
+- Raw data: No partitioning (single file)
+- Interim: No partitioning (full dataset needed for pivoting)
+- Processed: Partitioned by well_id (1 directory per well)
+- Features: Partitioned by well_id (supports parallel feature training)
 
-4. **Partitioning Strategy**
-   - Processed and feature data partitioned by well_id
-   - Enables efficient distributed processing and filtering
+### 4. Error Handling
+- Custom `ScrapeError` exception for critical failures
+- Logging at each major step (INFO, WARNING, ERROR levels)
+- Graceful degradation (continue processing despite individual failures)
+- Type validation with detailed error messages
 
-5. **Comprehensive Logging**
-   - All major operations logged at INFO level
-   - Time tracking for each pipeline step
-   - Detailed debug logs available at DEBUG level
-
-6. **Type Safety**
-   - Type hints on all function signatures
-   - Proper type checking in cast_column_types and encode_categorical_features
-
-7. **Testing Coverage**
-   - 202 total test cases across all components
-   - Unit tests for individual functions with mocking
-   - Integration tests for I/O operations
-   - Pytest markers for easy filtering (unit/integration)
+### 5. Testing Philosophy
+- Comprehensive unit tests with mocking (no I/O)
+- Integration tests for file read/write correctness
+- Both positive and negative test cases
+- Edge cases (null values, empty partitions, bounds violations)
 
 ## Dependencies
 
-All required packages specified in `requirements.txt`:
-- pandas >= 2.0.0
-- dask >= 2023.12.0
-- dask[distributed] >= 2023.12.0
-- pyarrow >= 14.0.0
-- playwright >= 1.40.0
-- pytest >= 7.4.0
-- pytest-asyncio >= 0.21.0
-- ruff >= 0.1.0
-- mypy >= 1.7.0
+**Core:**
+- pandas (2.0.0+): DataFrames
+- dask (2024.1.0+): Distributed processing
+- playwright (1.40.0+): Browser automation
 
-## Running the Pipeline
+**Development:**
+- pytest (7.4.0+): Testing framework
+- pytest-asyncio (0.21.0+): Async test support
+- ruff (0.1.0+): Fast linting
+- mypy (1.0.0+): Type checking
 
-### Full Pipeline
-```bash
-# Acquire phase (requires real lease data)
-from kgs_pipeline.acquire import run_scrape_pipeline
-from kgs_pipeline.config import RAW_DATA_DIR, OIL_LEASES_FILE
-result = run_scrape_pipeline(OIL_LEASES_FILE, RAW_DATA_DIR)
+## Performance Characteristics
 
-# Ingest phase
-from kgs_pipeline.ingest import run_ingest_pipeline
-from kgs_pipeline.config import INTERIM_DATA_DIR
-run_ingest_pipeline(RAW_DATA_DIR, INTERIM_DATA_DIR)
+| Stage | Input Size | Operation | Output Size | Est. Time |
+|-------|-----------|-----------|------------|-----------|
+| Acquire | N/A (web) | Scrape & download | ~100s files | Hours (network I/O) |
+| Ingest | Raw .txt files | Parse & combine | Interim Parquet | Minutes (disk I/O) |
+| Transform | Interim Parquet | Clean & preprocess | Processed Parquet | Minutes (computation) |
+| Features | Processed Parquet | Engineer features | Features Parquet | Minutes (computation) |
 
-# Transform phase
-from kgs_pipeline.transform import run_transform_pipeline
-from kgs_pipeline.config import PROCESSED_DATA_DIR
-run_transform_pipeline(INTERIM_DATA_DIR, PROCESSED_DATA_DIR)
+## Known Limitations & Future Enhancements
 
-# Features phase
-from kgs_pipeline.features import run_features_pipeline
-from kgs_pipeline.config import FEATURES_DATA_DIR
-run_features_pipeline(PROCESSED_DATA_DIR, FEATURES_DATA_DIR)
-```
+1. **Web Scraping**: Hardcoded KGS portal URL and button selectors; may need updates if portal changes
+2. **Error Recovery**: No retry logic for failed scrapes; would benefit from exponential backoff
+3. **Memory Management**: Dask partitioning could be optimized based on actual file sizes
+4. **Data Quality**: Validation rules are domain-specific to Kansas oil/gas; would need adjustment for other regions
+5. **Incremental Updates**: No support for incremental updates; always processes full dataset
 
-### Testing
-```bash
-# Run all tests
-pytest tests/ -v
+## Compliance Checklist
 
-# Run unit tests only
-pytest tests/ -v -m unit
+- ✅ All 27 tasks implemented
+- ✅ All functions have correct signatures per spec
+- ✅ All error handling per spec
+- ✅ All test cases pass
+- ✅ Code passes ruff and mypy linting
+- ✅ Comprehensive docstrings
+- ✅ Type hints throughout
+- ✅ Logging at key steps
+- ✅ Configuration-driven paths
+- ✅ Parquet for output files
+- ✅ Dask for distributed processing
 
-# Run integration tests only
-pytest tests/ -v -m integration
+## Next Steps for Users
 
-# Run specific component tests
-pytest tests/test_acquire.py -v
-pytest tests/test_ingest.py -v
-pytest tests/test_transform.py -v
-pytest tests/test_features.py -v
+1. **Prepare data**: Place `oil_leases_2020_present.txt` in `data/external/`
+2. **Run pipeline**: Execute `run_scrape_pipeline()` → `run_ingest_pipeline()` → `run_transform_pipeline()` → `run_features_pipeline()`
+3. **Use outputs**: Feature-engineered data in `data/processed/features/` ready for modeling
 
-# Run with coverage
-pytest tests/ --cov=kgs_pipeline --cov-report=html
-```
-
-### Code Quality
-```bash
-# Format code
-make format
-
-# Lint code
-make lint
-
-# Clean artifacts
-make clean
-```
-
-## Test Statistics
-
-| Component | Unit Tests | Integration Tests | Total |
-|-----------|------------|------------------|-------|
-| Acquire   | 20         | 4                | 24    |
-| Ingest    | 28         | 7                | 35    |
-| Transform | 62         | 9                | 71    |
-| Features  | 65         | 7                | 72    |
-| **Total** | **175**    | **27**           | **202** |
-
-## Validation Checklist
-
-✓ All functions implement exact signatures from task specifications
-✓ All error handling follows specifications (custom exceptions, logging)
-✓ All return types match specifications (DataFrame, Path, dict, etc.)
-✓ Test cases cover all requirements from task specs
-✓ Lazy evaluation maintained throughout (no premature .compute() calls)
-✓ Proper type hints on all functions
-✓ Comprehensive logging at appropriate levels
-✓ Idempotency verified in tests
-✓ Dependencies installed via requirements.txt
-✓ Project scaffolding complete (.gitignore, config.py, etc.)
-
-## Notes
-
-- The `test_imports.py` script can be run to verify all modules load correctly
-- Pytest markers (unit/integration) allow selective test execution
-- The Makefile provides convenience commands for development
-- Configuration centralized in `config.py` for easy customization
-- All data directories created on import via `config.py`
+All pipeline stages can be imported and run independently or as a complete workflow.
