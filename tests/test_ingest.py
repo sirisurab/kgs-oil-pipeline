@@ -144,6 +144,9 @@ def test_filter_monthly_records_success(temp_raw_files):
     if "MONTH-YEAR" in result_df.columns:
         months = result_df["MONTH-YEAR"].str.split("-").str[0]
         assert not months.isin(["0", "-1"]).any()
+    elif "MONTH_YEAR" in result_df.columns:
+        months = result_df["MONTH_YEAR"].str.split("-").str[0]
+        assert not months.isin(["0", "-1"]).any()
 
 
 def test_filter_monthly_records_missing_column():

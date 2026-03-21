@@ -92,15 +92,10 @@ def test_rolling_averages_success(sample_processed_data):
     """Given aggregated data, compute rolling average."""
     # First aggregate
     agg_data = aggregate_by_well_month(sample_processed_data)
+    agg_df = agg_data.compute()
 
-    # Add required columns for rolling_averages
-    def prep_data(df):
-        df["production_sum_month"] = (
-            df.get("production_sum_month", 0) or df.get("production", 0)
-        )
-        return df
-
-    agg_data = agg_data.map_partitions(prep_data)
+    # Ensure production_sum_month exists
+    assert "production_sum_month" in agg_df.columns
 
     result = rolling_averages(agg_data, window=12)
     result_df = result.compute()
@@ -121,15 +116,10 @@ def test_cumulative_production_success(sample_processed_data):
     """Given aggregated data, compute cumulative production."""
     # First aggregate
     agg_data = aggregate_by_well_month(sample_processed_data)
+    agg_df = agg_data.compute()
 
-    # Add required columns
-    def prep_data(df):
-        df["production_sum_month"] = (
-            df.get("production_sum_month", 0) or df.get("production", 0)
-        )
-        return df
-
-    agg_data = agg_data.map_partitions(prep_data)
+    # Ensure production_sum_month exists
+    assert "production_sum_month" in agg_df.columns
 
     result = cumulative_production(agg_data)
     result_df = result.compute()
@@ -150,32 +140,14 @@ def test_production_trend_success(sample_processed_data):
     """Given aggregated data with rolling avg, compute trend."""
     # First aggregate
     agg_data = aggregate_by_well_month(sample_processed_data)
+    
+    # Compute rolling first
+    rolling_data = rolling_averages(agg_data, window=12)
+    rolling_df = rolling_data.compute()
 
-    # Prep and compute rolling
-    def prep_data(df):
-        df["production_sum_month"] = (
-            df.get("production_sum_month", 0) or df.get("production", 0)
-        )
-        df["year_month"] = df.get("year_month", pd.Period("2020-01", freq="M"))
-        df = df.sort_values(by=["well_id", "year_month", "product"])
+    assert "rolling_avg_12mo" in rolling_df.columns
 
-        def rolling_within_group(group):
-            group["rolling_avg_12mo"] = (
-                group["production_sum_month"]
-                .rolling(window=12, min_periods=1)
-                .mean()
-            )
-            return group
-
-        return (
-            df.groupby(["well_id", "product"], group_keys=False)
-            .apply(rolling_within_group)
-            .reset_index(drop=True)
-        )
-
-    agg_data = agg_data.map_partitions(prep_data)
-
-    result = production_trend(agg_data)
+    result = production_trend(rolling_data)
     result_df = result.compute()
 
     assert "production_trend" in result_df.columns
@@ -197,14 +169,6 @@ def test_compute_well_lifetime_success(sample_processed_data):
     """Given aggregated data, compute well lifetime in months."""
     # First aggregate
     agg_data = aggregate_by_well_month(sample_processed_data)
-
-    # Add year_month column if missing
-    def prep_data(df):
-        if "year_month" not in df.columns:
-            df["year_month"] = pd.Period("2020-01", freq="M")
-        return df
-
-    agg_data = agg_data.map_partitions(prep_data)
 
     result = compute_well_lifetime(agg_data)
     result_df = result.compute()
