@@ -1,236 +1,219 @@
-import pytest
-from pathlib import Path
+"""Test cases for transform component."""
+
 import tempfile
-import pandas as pd  # type: ignore
-import dask.dataframe as dd  # type: ignore
-from unittest.mock import patch, MagicMock
+from pathlib import Path
+
+import dask.dataframe as dd
+import pandas as pd
+import pytest
 
 from kgs_pipeline.transform import (
-    read_interim_parquet,
-    cast_column_types,
-    deduplicate,
+    add_unit_column,
+    cast_and_rename_columns,
+    deduplicate_records,
+    explode_api_numbers,
+    parse_dates,
     validate_physical_bounds,
-    pivot_product_columns,
-    fill_date_gaps,
-    compute_cumulative_production,
-    write_processed_parquet,
-    run_transform_pipeline,
 )
 
 
-class TestReadInterimParquet:
-    """Test cases for Task 11: read_interim_parquet()."""
-
-    @pytest.mark.unit
-    def test_read_interim_parquet_not_found(self) -> None:
-        """Test that FileNotFoundError is raised when Parquet doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            with pytest.raises(FileNotFoundError):
-                read_interim_parquet(tmppath)
-
-
-class TestCastColumnTypes:
-    """Test cases for Task 12: cast_column_types()."""
-
-    @pytest.mark.unit
-    def test_cast_column_types_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "latitude": ["39.99"],
-            "well_id": ["001"],
-            "production_date": pd.to_datetime(["2020-01-01"]),
+@pytest.fixture
+def sample_interim_data():
+    """Create sample interim-like DataFrame."""
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["L001", "L001", "L002"],
+            "LEASE": ["Lease A", "Lease A", "Lease B"],
+            "API_NUMBER": ["12345, 67890", "12345", "11111"],
+            "MONTH_YEAR": ["1-2020", "2-2020", "3-2020"],
+            "PRODUCT": ["O", "G", "O"],
+            "PRODUCTION": [100.0, 50.0, 150.0],
+            "LATITUDE": [38.5, 38.6, 39.0],
+            "LONGITUDE": [-98.5, -98.4, -97.5],
         }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        result = cast_column_types(ddf)
-
-        assert isinstance(result, dd.DataFrame)
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    return ddf
 
 
-class TestDeduplicate:
-    """Test cases for Task 13: deduplicate()."""
+def test_parse_dates_success(sample_interim_data):
+    """Given DataFrame with MONTH_YEAR, add production_date column."""
+    result = parse_dates(sample_interim_data)
+    result_df = result.compute()
 
-    @pytest.mark.unit
-    def test_deduplicate_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "product": ["O"],
-            "production": [100.0],
+    assert "production_date" in result_df.columns
+    assert "MONTH_YEAR" not in result_df.columns
+    assert result_df["production_date"].dtype == "datetime64[ns]"
+    assert result_df["production_date"].iloc[0].year == 2020
+    assert result_df["production_date"].iloc[0].month == 1
+
+
+def test_parse_dates_missing_column():
+    """Given DataFrame without MONTH_YEAR/MONTH-YEAR, raise KeyError."""
+    df = pd.DataFrame({"other_col": [1, 2]})
+    ddf = dd.from_pandas(df, npartitions=1)
+
+    with pytest.raises(KeyError):
+        parse_dates(ddf)
+
+
+def test_cast_and_rename_columns_success(sample_interim_data):
+    """Given DataFrame, rename to snake_case and cast types."""
+    result = cast_and_rename_columns(sample_interim_data)
+    result_df = result.compute()
+
+    assert "lease_kid" in result_df.columns
+    assert "well_id" not in result_df.columns  # API_NUMBER renamed, not yet exploded
+    assert result_df["product"].iloc[0] == "O"  # Uppercase
+    assert isinstance(result_df["latitude"].iloc[0], float)
+
+
+def test_cast_and_rename_columns_missing_mandatory():
+    """Given DataFrame missing mandatory columns, raise KeyError."""
+    df = pd.DataFrame({"LEASE_KID": ["L001"]})  # Missing other required cols
+    ddf = dd.from_pandas(df, npartitions=1)
+
+    with pytest.raises(KeyError, match="Mandatory"):
+        cast_and_rename_columns(ddf)
+
+
+def test_explode_api_numbers_success(sample_interim_data):
+    """Given DataFrame with comma-separated API numbers, explode to individual wells."""
+    # First rename API_NUMBER to api_number to match function expectations
+    renamed = sample_interim_data.rename(columns={"API_NUMBER": "api_number"})
+    sample_interim_data_with_api = renamed
+
+    # Re-add LEASE_KID and PRODUCT columns for later use
+    sample_interim_data_with_api = sample_interim_data_with_api.assign(
+        LEASE_KID=sample_interim_data["LEASE_KID"]
+    )
+
+    # Rename to match function input expectations
+    sample_interim_data_with_api = sample_interim_data_with_api.rename(
+        columns={"LEASE_KID": "lease_kid", "api_number": "api_number"}
+    )
+
+    # Actually, let's create a properly formatted input
+    df = pd.DataFrame(
+        {
+            "lease_kid": ["L001", "L001"],
+            "api_number": ["12345, 67890", "11111"],
         }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
 
-        result = deduplicate(ddf)
+    result = explode_api_numbers(ddf)
+    result_df = result.compute()
 
-        assert isinstance(result, dd.DataFrame)
-
-    @pytest.mark.unit
-    def test_deduplicate_missing_column(self) -> None:
-        """Test that KeyError is raised if product column is missing."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "production": [100.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        with pytest.raises(KeyError):
-            deduplicate(ddf)
+    # Should have 3 rows: L001 has 2 APIs, L001 has 1 API (wait, re-reading)
+    # First row has 2 APIs, second row has 1 API = 3 total
+    assert len(result_df) == 3
+    assert "well_id" in result_df.columns
+    assert "api_number" not in result_df.columns
 
 
-class TestValidatePhysicalBounds:
-    """Test cases for Task 14: validate_physical_bounds()."""
+def test_explode_api_numbers_missing_column():
+    """Given DataFrame without api_number, raise KeyError."""
+    df = pd.DataFrame({"other_col": [1, 2]})
+    ddf = dd.from_pandas(df, npartitions=1)
 
-    @pytest.mark.unit
-    def test_validate_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "production": [100.0],
-            "product": ["O"],
-            "latitude": [39.0],
-            "longitude": [-98.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        result = validate_physical_bounds(ddf)
-
-        assert isinstance(result, dd.DataFrame)
-
-    @pytest.mark.unit
-    def test_validate_missing_column(self) -> None:
-        """Test that KeyError is raised if production column is missing."""
-        data = {
-            "product": ["O"],
-            "latitude": [39.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        with pytest.raises(KeyError):
-            validate_physical_bounds(ddf)
+    with pytest.raises(KeyError):
+        explode_api_numbers(ddf)
 
 
-class TestPivotProductColumns:
-    """Test cases for Task 15: pivot_product_columns()."""
+def test_validate_physical_bounds_success(sample_interim_data):
+    """Given DataFrame with out-of-range values, flag outliers and clean bounds."""
+    # Add some outliers
+    df = sample_interim_data.compute()
+    df.loc[0, "production"] = -10.0  # Negative
+    df.loc[1, "production"] = 100000.0  # Outlier for oil
+    df.loc[1, "product"] = "O"
+    df.loc[2, "latitude"] = 41.0  # Out of Kansas bounds
 
-    @pytest.mark.unit
-    def test_pivot_product_column_names(self) -> None:
-        """Test that pivot adds oil_bbl and gas_mcf columns."""
-        # Just test the structure without calling the full function
-        # that requires proper Dask meta
-        assert True  # Placeholder for structural test
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = validate_physical_bounds(ddf)
+    result_df = result.compute()
 
+    # Negative should become NaN
+    assert pd.isna(result_df.loc[0, "production"])
 
-class TestFillDateGaps:
-    """Test cases for Task 16: fill_date_gaps()."""
+    # Outlier should be flagged
+    assert result_df.loc[1, "outlier_flag"] == True
 
-    @pytest.mark.unit
-    def test_fill_date_gaps_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "oil_bbl": [100.0],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
+    # Out-of-bounds latitude should be NaN
+    assert pd.isna(result_df.loc[2, "latitude"])
 
-        result = fill_date_gaps(ddf)
-
-        assert isinstance(result, dd.DataFrame)
+    # Only valid products should remain
+    assert result_df["product"].isin(["O", "G"]).all()
 
 
-class TestComputeCumulativeProduction:
-    """Test cases for Task 17: compute_cumulative_production()."""
+def test_validate_physical_bounds_missing_production():
+    """Given DataFrame without production column, raise KeyError."""
+    df = pd.DataFrame({"product": ["O"]})
+    ddf = dd.from_pandas(df, npartitions=1)
 
-    @pytest.mark.unit
-    def test_compute_cumulative_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "oil_bbl": [100.0],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        result = compute_cumulative_production(ddf)
-
-        assert isinstance(result, dd.DataFrame)
+    with pytest.raises(KeyError):
+        validate_physical_bounds(ddf)
 
 
-class TestWriteProcessedParquet:
-    """Test cases for Task 18: write_processed_parquet()."""
+def test_deduplicate_records_success(sample_interim_data):
+    """Given DataFrame with duplicates, remove by well-date-product."""
+    df = sample_interim_data.compute()
+    # Add duplicate row
+    df = pd.concat(
+        [
+            df,
+            pd.DataFrame(
+                {
+                    "LEASE_KID": ["L001"],
+                    "LEASE": ["Lease A"],
+                    "API_NUMBER": ["12345"],
+                    "MONTH_YEAR": ["1-2020"],
+                    "PRODUCT": ["O"],
+                    "PRODUCTION": [100.0],
+                    "LATITUDE": [38.5],
+                    "LONGITUDE": [-98.5],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
 
-    @pytest.mark.integration
-    def test_write_processed_parquet_basic(self) -> None:
-        """Test writing processed Parquet to disk."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
+    # Prepare for deduplication (need production_date and well_id)
+    df["production_date"] = pd.to_datetime("2020-01-01")
+    df["well_id"] = df["API_NUMBER"]
 
-            data = {
-                "well_id": ["001", "002"],
-                "production_date": [
-                    pd.Timestamp("2020-01-01"),
-                    pd.Timestamp("2020-02-01"),
-                ],
-                "oil_bbl": [100.0, 200.0],
-                "gas_mcf": [50.0, 75.0],
-            }
-            df = pd.DataFrame(data)
-            ddf = dd.from_pandas(df, npartitions=1)
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = deduplicate_records(ddf)
+    result_df = result.compute()
 
-            result = write_processed_parquet(ddf, tmppath)
-
-            assert result.name == "wells"
-            assert result.exists()
+    # Should remove the duplicate
+    assert len(result_df) < len(df)
 
 
-class TestRunTransformPipeline:
-    """Test cases for Task 19: run_transform_pipeline()."""
+def test_deduplicate_records_missing_column():
+    """Given DataFrame without well_id, raise KeyError."""
+    df = pd.DataFrame({"production_date": ["2020-01-01"]})
+    ddf = dd.from_pandas(df, npartitions=1)
 
-    @pytest.mark.unit
-    def test_run_transform_pipeline_call_order(self) -> None:
-        """Test that pipeline steps are called in correct order."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            interim_dir = Path(tmpdir) / "interim"
-            output_dir = Path(tmpdir) / "output"
-            interim_dir.mkdir()
+    with pytest.raises(KeyError):
+        deduplicate_records(ddf)
 
-            with patch("kgs_pipeline.transform.read_interim_parquet") as mock_read:
-                with patch("kgs_pipeline.transform.cast_column_types") as mock_cast:
-                    with patch("kgs_pipeline.transform.deduplicate") as mock_dedup:
-                        with patch("kgs_pipeline.transform.validate_physical_bounds") as mock_validate:
-                            with patch("kgs_pipeline.transform.pivot_product_columns") as mock_pivot:
-                                with patch("kgs_pipeline.transform.fill_date_gaps") as mock_fill:
-                                    with patch("kgs_pipeline.transform.compute_cumulative_production") as mock_cumsum:
-                                        with patch("kgs_pipeline.transform.write_processed_parquet") as mock_write:
-                                            mock_ddf = MagicMock(spec=dd.DataFrame)
-                                            mock_read.return_value = mock_ddf
-                                            mock_cast.return_value = mock_ddf
-                                            mock_dedup.return_value = mock_ddf
-                                            mock_validate.return_value = mock_ddf
-                                            mock_pivot.return_value = mock_ddf
-                                            mock_fill.return_value = mock_ddf
-                                            mock_cumsum.return_value = mock_ddf
-                                            mock_write.return_value = Path("output/wells")
 
-                                            result = run_transform_pipeline(interim_dir, output_dir)
+def test_add_unit_column_success(sample_interim_data):
+    """Given DataFrame with product, add unit column."""
+    result = add_unit_column(sample_interim_data)
+    result_df = result.compute()
 
-                                            assert mock_read.called
-                                            assert mock_cast.called
-                                            assert mock_dedup.called
-                                            assert mock_validate.called
-                                            assert mock_pivot.called
-                                            assert mock_fill.called
-                                            assert mock_cumsum.called
-                                            assert mock_write.called
+    assert "unit" in result_df.columns
+    assert result_df.loc[result_df["PRODUCT"] == "O", "unit"].iloc[0] == "BBL"
+    assert result_df.loc[result_df["PRODUCT"] == "G", "unit"].iloc[0] == "MCF"
+
+
+def test_add_unit_column_missing_product():
+    """Given DataFrame without product, raise KeyError."""
+    df = pd.DataFrame({"other_col": [1, 2]})
+    ddf = dd.from_pandas(df, npartitions=1)
+
+    with pytest.raises(KeyError):
+        add_unit_column(ddf)

@@ -1,27 +1,57 @@
+# Environment variables
 .env
 *.env
 
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 
+# Data directories
 data/raw/
 data/interim/
 data/processed/
 data/external/
 
-*credentials*
-*api_key*
-*secret*
+# Secrets and credentials
+*.key
+*.secret
+secrets.yaml
+secrets.json
 
+# Playwright browser cache
 .playwright/
-playwright-browsers/
+playwright/.local-browsers/
 
+# Dask worker scratch
 dask-worker-space/
 
+# Testing
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
 .mypy_cache/
+
+# Code formatting
 .ruff_cache/
 
-*.parquet
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environment
+venv/
+env/

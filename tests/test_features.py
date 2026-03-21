@@ -1,313 +1,222 @@
-import pytest
-from pathlib import Path
+"""Test cases for features component."""
+
 import tempfile
-import json
-import pandas as pd  # type: ignore
-import dask.dataframe as dd  # type: ignore
-from unittest.mock import patch, MagicMock
+from pathlib import Path
+
+import dask.dataframe as dd
+import pandas as pd
+import pytest
 
 from kgs_pipeline.features import (
-    read_processed_parquet,
-    compute_time_features,
-    compute_rolling_features,
-    compute_decline_and_gor,
-    encode_categorical_features,
-    save_encoding_map,
-    load_encoding_map,
-    write_feature_parquet,
-    run_features_pipeline,
+    aggregate_by_well_month,
+    compute_well_lifetime,
+    cumulative_production,
+    filter_2020_2025,
+    production_trend,
+    rolling_averages,
 )
 
 
-class TestReadProcessedParquet:
-    """Test cases for Task 20: read_processed_parquet()."""
-
-    @pytest.mark.unit
-    def test_read_processed_parquet_not_found(self) -> None:
-        """Test that FileNotFoundError is raised when wells directory doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            with pytest.raises(FileNotFoundError):
-                read_processed_parquet(tmppath)
-
-    @pytest.mark.unit
-    def test_read_processed_parquet_empty_directory(self) -> None:
-        """Test that ValueError is raised when no Parquet files are found."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            wells_dir = tmppath / "wells"
-            wells_dir.mkdir()
-
-            with pytest.raises(ValueError, match="No Parquet files found"):
-                read_processed_parquet(tmppath)
-
-
-class TestComputeTimeFeatures:
-    """Test cases for Task 21: compute_time_features()."""
-
-    @pytest.mark.unit
-    def test_compute_time_features_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "oil_bbl": [100.0],
-            "gas_mcf": [50.0],
+@pytest.fixture
+def sample_processed_data():
+    """Create sample processed-like DataFrame."""
+    df = pd.DataFrame(
+        {
+            "well_id": ["W001", "W001", "W001", "W002", "W002"],
+            "production_date": pd.to_datetime(
+                [
+                    "2020-01-15",
+                    "2020-02-15",
+                    "2025-12-15",
+                    "2019-12-15",
+                    "2020-01-15",
+                ]
+            ),
+            "product": ["O", "O", "O", "G", "G"],
+            "production": [100.0, 110.0, 120.0, 50.0, 55.0],
+            "operator": ["Op1", "Op1", "Op1", "Op2", "Op2"],
+            "field_name": ["Field A", "Field A", "Field A", "Field B", "Field B"],
+            "latitude": [38.5, 38.5, 38.5, 39.0, 39.0],
+            "longitude": [-98.5, -98.5, -98.5, -97.5, -97.5],
+            "lease_name": ["Lease1", "Lease1", "Lease1", "Lease2", "Lease2"],
         }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        result = compute_time_features(ddf)
-
-        assert isinstance(result, dd.DataFrame)
-
-    @pytest.mark.unit
-    def test_compute_time_features_missing_column(self) -> None:
-        """Test that KeyError is raised if production_date column is missing."""
-        data = {
-            "well_id": ["001"],
-            "oil_bbl": [100.0],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        with pytest.raises(KeyError):
-            compute_time_features(ddf)
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    return ddf
 
 
-class TestComputeRollingFeatures:
-    """Test cases for Task 22: compute_rolling_features()."""
+def test_filter_2020_2025_success(sample_processed_data):
+    """Given DataFrame with dates, filter to 2020-2025."""
+    result = filter_2020_2025(sample_processed_data)
+    result_df = result.compute()
 
-    @pytest.mark.unit
-    def test_all_rolling_columns_present(self) -> None:
-        """Test that all 6 rolling columns are present."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "oil_bbl": [100.0],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        result = compute_rolling_features(ddf)
-
-        required_cols = [
-            "oil_bbl_roll3", "oil_bbl_roll6", "oil_bbl_roll12",
-            "gas_mcf_roll3", "gas_mcf_roll6", "gas_mcf_roll12"
-        ]
-        for col in required_cols:
-            assert col in result.columns
-
-    @pytest.mark.unit
-    def test_compute_rolling_features_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "oil_bbl": [100.0],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        result = compute_rolling_features(ddf)
-
-        assert isinstance(result, dd.DataFrame)
-
-    @pytest.mark.unit
-    def test_compute_rolling_features_missing_column(self) -> None:
-        """Test that KeyError is raised if oil_bbl column is missing."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        with pytest.raises(KeyError):
-            compute_rolling_features(ddf)
+    # Should exclude 2019-12-15 record (W002)
+    assert result_df["production_date"].min().year >= 2020
+    assert result_df["production_date"].max().year <= 2025
+    assert len(result_df) == 4  # Exclude 1 out-of-range record
 
 
-class TestComputeDeclineAndGor:
-    """Test cases for Task 23: compute_decline_and_gor()."""
+def test_filter_2020_2025_missing_column():
+    """Given DataFrame without production_date, raise KeyError."""
+    df = pd.DataFrame({"other_col": [1, 2]})
+    ddf = dd.from_pandas(df, npartitions=1)
 
-    @pytest.mark.unit
-    def test_compute_decline_and_gor_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "oil_bbl": [100.0],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        result = compute_decline_and_gor(ddf)
-
-        assert isinstance(result, dd.DataFrame)
-
-    @pytest.mark.unit
-    def test_compute_decline_and_gor_missing_column(self) -> None:
-        """Test that KeyError is raised if oil_bbl column is missing."""
-        data = {
-            "well_id": ["001"],
-            "production_date": [pd.Timestamp("2020-01-01")],
-            "gas_mcf": [50.0],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        with pytest.raises(KeyError):
-            compute_decline_and_gor(ddf)
+    with pytest.raises(KeyError):
+        filter_2020_2025(ddf)
 
 
-class TestEncodeCategoricalFeatures:
-    """Test cases for Task 24: encode_categorical_features()."""
+def test_aggregate_by_well_month_success(sample_processed_data):
+    """Given production records, aggregate by well-month."""
+    result = aggregate_by_well_month(sample_processed_data)
+    result_df = result.compute()
 
-    @pytest.mark.unit
-    def test_encode_categorical_returns_dask(self) -> None:
-        """Test that function returns Dask DataFrame."""
-        data = {
-            "well_id": ["001"],
-            "county": ["Allen"],
-            "field": ["F1"],
-            "producing_zone": ["Z1"],
-            "operator": ["OP1"],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
+    assert "year_month" in result_df.columns
+    assert "production_sum_month" in result_df.columns
+    assert "production_mean_month" in result_df.columns
+    assert "production_count_month" in result_df.columns
 
-        result_ddf, _ = encode_categorical_features(ddf)
-
-        assert isinstance(result_ddf, dd.DataFrame)
-
-    @pytest.mark.unit
-    def test_encode_categorical_missing_column(self) -> None:
-        """Test that KeyError is raised if a categorical column is missing."""
-        data = {
-            "well_id": ["001"],
-            "county": ["Allen"],
-            "field": ["F1"],
-            "producing_zone": ["Z1"],
-        }
-        df = pd.DataFrame(data)
-        ddf = dd.from_pandas(df, npartitions=1)
-
-        with pytest.raises(KeyError):
-            encode_categorical_features(ddf)
+    # Should have fewer rows than input (aggregated)
+    assert len(result_df) <= len(sample_processed_data)
 
 
-class TestSaveAndLoadEncodingMap:
-    """Test cases for Tasks 25: save_encoding_map() and load_encoding_map()."""
+def test_aggregate_by_well_month_missing_column():
+    """Given DataFrame missing required columns, raise KeyError."""
+    df = pd.DataFrame({"well_id": ["W001"]})
+    ddf = dd.from_pandas(df, npartitions=1)
 
-    @pytest.mark.unit
-    def test_save_encoding_map_basic(self) -> None:
-        """Test saving encoding map to JSON file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            encoding_map = {
-                "county": {"Allen": 0, "Barton": 1},
-                "field": {"F1": 0, "F2": 1},
-            }
-
-            result_path = save_encoding_map(encoding_map, tmppath)
-
-            assert result_path.name == "encoding_map.json"
-            assert result_path.exists()
-
-    @pytest.mark.unit
-    def test_save_and_load_roundtrip(self) -> None:
-        """Test that save and load are consistent."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            original_map = {
-                "county": {"Allen": 0, "Barton": 1},
-                "field": {"F1": 0, "F2": 1},
-                "producing_zone": {"Z1": 0},
-                "operator": {"OP1": 0, "OP2": 1},
-            }
-
-            save_encoding_map(original_map, tmppath)
-            loaded_map = load_encoding_map(tmppath)
-
-            assert loaded_map == original_map
-
-    @pytest.mark.unit
-    def test_load_encoding_map_not_found(self) -> None:
-        """Test that FileNotFoundError is raised when file doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            with pytest.raises(FileNotFoundError):
-                load_encoding_map(tmppath)
+    with pytest.raises(KeyError):
+        aggregate_by_well_month(ddf)
 
 
-class TestWriteFeatureParquet:
-    """Test cases for Task 26: write_feature_parquet()."""
+def test_rolling_averages_success(sample_processed_data):
+    """Given aggregated data, compute rolling average."""
+    # First aggregate
+    agg_data = aggregate_by_well_month(sample_processed_data)
 
-    @pytest.mark.integration
-    def test_write_feature_parquet_basic(self) -> None:
-        """Test writing feature Parquet to disk."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
+    # Add required columns for rolling_averages
+    def prep_data(df):
+        df["production_sum_month"] = (
+            df.get("production_sum_month", 0) or df.get("production", 0)
+        )
+        return df
 
-            data = {
-                "well_id": ["001", "002"],
-                "production_date": [
-                    pd.Timestamp("2020-01-01"),
-                    pd.Timestamp("2020-02-01"),
-                ],
-                "oil_bbl": [100.0, 200.0],
-                "gas_mcf": [50.0, 75.0],
-            }
-            df = pd.DataFrame(data)
-            ddf = dd.from_pandas(df, npartitions=1)
+    agg_data = agg_data.map_partitions(prep_data)
 
-            result = write_feature_parquet(ddf, tmppath)
+    result = rolling_averages(agg_data, window=12)
+    result_df = result.compute()
 
-            assert isinstance(result, Path)
-            assert result.exists()
+    assert "rolling_avg_12mo" in result_df.columns
 
 
-class TestRunFeaturesPipeline:
-    """Test cases for Task 27: run_features_pipeline()."""
+def test_rolling_averages_missing_column():
+    """Given DataFrame without production_sum_month, raise KeyError."""
+    df = pd.DataFrame({"well_id": ["W001"]})
+    ddf = dd.from_pandas(df, npartitions=1)
 
-    @pytest.mark.unit
-    def test_run_features_pipeline_call_order(self) -> None:
-        """Test that pipeline steps are called in correct order."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            processed_dir = Path(tmpdir) / "processed"
-            output_dir = Path(tmpdir) / "output"
-            processed_dir.mkdir()
+    with pytest.raises(KeyError):
+        rolling_averages(ddf)
 
-            with patch("kgs_pipeline.features.read_processed_parquet") as mock_read:
-                with patch("kgs_pipeline.features.compute_time_features") as mock_time:
-                    with patch("kgs_pipeline.features.compute_rolling_features") as mock_rolling:
-                        with patch("kgs_pipeline.features.compute_decline_and_gor") as mock_decline:
-                            with patch("kgs_pipeline.features.encode_categorical_features") as mock_encode:
-                                with patch("kgs_pipeline.features.save_encoding_map") as mock_save_map:
-                                    with patch("kgs_pipeline.features.write_feature_parquet") as mock_write:
-                                        mock_ddf = MagicMock(spec=dd.DataFrame)
-                                        mock_read.return_value = mock_ddf
-                                        mock_time.return_value = mock_ddf
-                                        mock_rolling.return_value = mock_ddf
-                                        mock_decline.return_value = mock_ddf
-                                        mock_encode.return_value = (mock_ddf, {})
-                                        mock_write.return_value = output_dir
 
-                                        result = run_features_pipeline(processed_dir, output_dir)
+def test_cumulative_production_success(sample_processed_data):
+    """Given aggregated data, compute cumulative production."""
+    # First aggregate
+    agg_data = aggregate_by_well_month(sample_processed_data)
 
-                                        assert mock_read.called
-                                        assert mock_time.called
-                                        assert mock_rolling.called
-                                        assert mock_decline.called
-                                        assert mock_encode.called
-                                        assert mock_save_map.called
-                                        assert mock_write.called
+    # Add required columns
+    def prep_data(df):
+        df["production_sum_month"] = (
+            df.get("production_sum_month", 0) or df.get("production", 0)
+        )
+        return df
+
+    agg_data = agg_data.map_partitions(prep_data)
+
+    result = cumulative_production(agg_data)
+    result_df = result.compute()
+
+    assert "cumulative_production" in result_df.columns
+
+
+def test_cumulative_production_missing_column():
+    """Given DataFrame without production_sum_month, raise KeyError."""
+    df = pd.DataFrame({"well_id": ["W001"]})
+    ddf = dd.from_pandas(df, npartitions=1)
+
+    with pytest.raises(KeyError):
+        cumulative_production(ddf)
+
+
+def test_production_trend_success(sample_processed_data):
+    """Given aggregated data with rolling avg, compute trend."""
+    # First aggregate
+    agg_data = aggregate_by_well_month(sample_processed_data)
+
+    # Prep and compute rolling
+    def prep_data(df):
+        df["production_sum_month"] = (
+            df.get("production_sum_month", 0) or df.get("production", 0)
+        )
+        df["year_month"] = df.get("year_month", pd.Period("2020-01", freq="M"))
+        df = df.sort_values(by=["well_id", "year_month", "product"])
+
+        def rolling_within_group(group):
+            group["rolling_avg_12mo"] = (
+                group["production_sum_month"]
+                .rolling(window=12, min_periods=1)
+                .mean()
+            )
+            return group
+
+        return (
+            df.groupby(["well_id", "product"], group_keys=False)
+            .apply(rolling_within_group)
+            .reset_index(drop=True)
+        )
+
+    agg_data = agg_data.map_partitions(prep_data)
+
+    result = production_trend(agg_data)
+    result_df = result.compute()
+
+    assert "production_trend" in result_df.columns
+    assert result_df["production_trend"].isin(
+        ["increasing", "decreasing", "stable", "insufficient_data"]
+    ).all()
+
+
+def test_production_trend_missing_rolling_avg():
+    """Given DataFrame without rolling_avg_12mo, raise KeyError."""
+    df = pd.DataFrame({"well_id": ["W001"]})
+    ddf = dd.from_pandas(df, npartitions=1)
+
+    with pytest.raises(KeyError):
+        production_trend(ddf)
+
+
+def test_compute_well_lifetime_success(sample_processed_data):
+    """Given aggregated data, compute well lifetime in months."""
+    # First aggregate
+    agg_data = aggregate_by_well_month(sample_processed_data)
+
+    # Add year_month column if missing
+    def prep_data(df):
+        if "year_month" not in df.columns:
+            df["year_month"] = pd.Period("2020-01", freq="M")
+        return df
+
+    agg_data = agg_data.map_partitions(prep_data)
+
+    result = compute_well_lifetime(agg_data)
+    result_df = result.compute()
+
+    assert "well_lifetime_months" in result_df.columns
+    assert (result_df["well_lifetime_months"] > 0).any()
+
+
+def test_compute_well_lifetime_missing_column():
+    """Given DataFrame without year_month, raise KeyError."""
+    df = pd.DataFrame({"well_id": ["W001"]})
+    ddf = dd.from_pandas(df, npartitions=1)
+
+    with pytest.raises(KeyError):
+        compute_well_lifetime(ddf)

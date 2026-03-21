@@ -1,9 +1,21 @@
+# Core dependencies
 pandas>=2.0.0
 dask[dataframe]>=2024.1.0
+pyarrow>=14.0.0
+numpy>=1.24.0
+
+# Web scraping and browser automation
 playwright>=1.40.0
+
+# Testing
 pytest>=7.4.0
-pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.23.0
+
+# Code quality
 ruff>=0.1.0
-mypy>=1.0.0
-pandas-stubs>=2.0.0
-types-aiofiles>=23.0.0
+mypy>=1.7.0
+types-requests>=2.31.0
+
+# Utilities
+python-dotenv>=1.0.0
