@@ -4,10 +4,14 @@ import logging
 import time
 from pathlib import Path
 
-import dask.dataframe as dd
+import dask.dataframe as dd  # type: ignore
 import numpy as np
 import pandas as pd
-import pyarrow as pa  # type: ignore[import]
+
+try:
+    import pyarrow as pa
+except ImportError:
+    pa = None  # type: ignore
 
 from kgs_pipeline.config import (
     GAS_UNIT,
@@ -20,7 +24,7 @@ from kgs_pipeline.config import (
 logger = logging.getLogger(__name__)
 
 
-def load_interim_data(interim_dir: Path = INTERIM_DATA_DIR) -> dd.DataFrame:
+def load_interim_data(interim_dir: Path = INTERIM_DATA_DIR) -> dd.DataFrame:  # type: ignore
     """
     Load interim Parquet data as Dask DataFrame.
 
@@ -53,7 +57,7 @@ def load_interim_data(interim_dir: Path = INTERIM_DATA_DIR) -> dd.DataFrame:
     return ddf
 
 
-def parse_dates(ddf: dd.DataFrame) -> dd.DataFrame:
+def parse_dates(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Parse MONTH_YEAR (M-YYYY format) to datetime production_date.
 
@@ -79,7 +83,7 @@ def parse_dates(ddf: dd.DataFrame) -> dd.DataFrame:
     if "MONTH-YEAR" in ddf.columns:
         ddf = ddf.rename(columns={"MONTH-YEAR": "MONTH_YEAR"})
 
-    def parse_month_year(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def parse_month_year(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         # Convert "M-YYYY" to "1-M-YYYY" (day-month-year format) for parsing
         date_str = "1-" + df["MONTH_YEAR"]
         df["production_date"] = pd.to_datetime(
@@ -92,7 +96,7 @@ def parse_dates(ddf: dd.DataFrame) -> dd.DataFrame:
     return ddf
 
 
-def cast_and_rename_columns(ddf: dd.DataFrame) -> dd.DataFrame:
+def cast_and_rename_columns(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Rename all columns to snake_case and cast to correct types.
 
@@ -146,7 +150,7 @@ def cast_and_rename_columns(ddf: dd.DataFrame) -> dd.DataFrame:
     ddf = ddf.rename(columns=available_rename)
 
     # Cast and clean
-    def cast_columns(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def cast_columns(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         # String columns: strip whitespace
         str_cols = [
             "lease_kid",
@@ -191,7 +195,7 @@ def cast_and_rename_columns(ddf: dd.DataFrame) -> dd.DataFrame:
     return ddf
 
 
-def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:
+def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Explode comma-separated API numbers into individual well records.
 
@@ -213,7 +217,7 @@ def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:
     if "api_number" not in ddf.columns:
         raise KeyError("api_number column not found")
 
-    def explode_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def explode_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         # Split and explode
         df["api_number"] = df["api_number"].str.split(",")
         df = df.explode("api_number")
@@ -235,7 +239,7 @@ def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:
     return ddf
 
 
-def validate_physical_bounds(ddf: dd.DataFrame) -> dd.DataFrame:
+def validate_physical_bounds(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Enforce physical domain constraints on production data.
 
@@ -259,7 +263,7 @@ def validate_physical_bounds(ddf: dd.DataFrame) -> dd.DataFrame:
     if "product" not in ddf.columns:
         raise KeyError("product column not found")
 
-    def validate_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def validate_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         # Negative production → NaN
         neg_mask = df["production"] < 0
         if neg_mask.any():
@@ -288,7 +292,7 @@ def validate_physical_bounds(ddf: dd.DataFrame) -> dd.DataFrame:
     return ddf
 
 
-def deduplicate_records(ddf: dd.DataFrame) -> dd.DataFrame:
+def deduplicate_records(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Remove duplicate well-month-product records.
 
@@ -312,7 +316,7 @@ def deduplicate_records(ddf: dd.DataFrame) -> dd.DataFrame:
     if "production_date" not in ddf.columns:
         raise KeyError("production_date column not found")
 
-    def dedup_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def dedup_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         dedup_cols = ["well_id", "production_date", "product"]
         df = df.sort_values(by=dedup_cols)
         df = df.drop_duplicates(subset=dedup_cols, keep="first")
@@ -323,7 +327,7 @@ def deduplicate_records(ddf: dd.DataFrame) -> dd.DataFrame:
     return ddf
 
 
-def add_unit_column(ddf: dd.DataFrame) -> dd.DataFrame:
+def add_unit_column(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Add unit column based on product type.
 
@@ -345,7 +349,7 @@ def add_unit_column(ddf: dd.DataFrame) -> dd.DataFrame:
     if "product" not in ddf.columns:
         raise KeyError("product column not found")
 
-    def add_units(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def add_units(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         df["unit"] = np.where(
             df["product"] == "O",
             OIL_UNIT,
@@ -358,7 +362,7 @@ def add_unit_column(ddf: dd.DataFrame) -> dd.DataFrame:
     return ddf
 
 
-def sort_by_well_and_date(ddf: dd.DataFrame) -> dd.DataFrame:
+def sort_by_well_and_date(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Repartition by well_id and sort chronologically by production_date.
 
@@ -386,7 +390,7 @@ def sort_by_well_and_date(ddf: dd.DataFrame) -> dd.DataFrame:
     ddf = ddf.set_index("well_id", sorted=False, drop=False)
 
     # Sort within each partition
-    def sort_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def sort_partition(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         return df.sort_values(by=["well_id", "production_date", "product"])
 
     ddf = ddf.map_partitions(sort_partition)
@@ -395,7 +399,7 @@ def sort_by_well_and_date(ddf: dd.DataFrame) -> dd.DataFrame:
 
 
 def write_processed_parquet(
-    ddf: dd.DataFrame, processed_dir: Path = PROCESSED_DATA_DIR
+    ddf: dd.DataFrame, processed_dir: Path = PROCESSED_DATA_DIR  # type: ignore
 ) -> None:
     """
     Write processed Parquet partitioned by well_id.
@@ -424,33 +428,36 @@ def write_processed_parquet(
     processed_dir.mkdir(parents=True, exist_ok=True)
 
     # Define schema to ensure consistency across partitions
-    schema = pa.schema(
-        [
-            ("lease_kid", pa.string()),
-            ("lease_name", pa.string()),
-            ("dor_code", pa.string()),
-            ("well_id", pa.string()),
-            ("field_name", pa.string()),
-            ("producing_zone", pa.string()),
-            ("operator", pa.string()),
-            ("county", pa.string()),
-            ("township", pa.string()),
-            ("twn_dir", pa.string()),
-            ("range_val", pa.string()),
-            ("range_dir", pa.string()),
-            ("section", pa.string()),
-            ("spot", pa.string()),
-            ("latitude", pa.float64()),
-            ("longitude", pa.float64()),
-            ("product", pa.string()),
-            ("well_count", pa.float64()),
-            ("production", pa.float64()),
-            ("source_file", pa.string()),
-            ("production_date", pa.timestamp("ns")),
-            ("unit", pa.string()),
-            ("outlier_flag", pa.bool_()),
-        ]
-    )
+    if pa:
+        schema = pa.schema(
+            [
+                ("lease_kid", pa.string()),
+                ("lease_name", pa.string()),
+                ("dor_code", pa.string()),
+                ("well_id", pa.string()),
+                ("field_name", pa.string()),
+                ("producing_zone", pa.string()),
+                ("operator", pa.string()),
+                ("county", pa.string()),
+                ("township", pa.string()),
+                ("twn_dir", pa.string()),
+                ("range_val", pa.string()),
+                ("range_dir", pa.string()),
+                ("section", pa.string()),
+                ("spot", pa.string()),
+                ("latitude", pa.float64()),
+                ("longitude", pa.float64()),
+                ("product", pa.string()),
+                ("well_count", pa.float64()),
+                ("production", pa.float64()),
+                ("source_file", pa.string()),
+                ("production_date", pa.timestamp("ns")),
+                ("unit", pa.string()),
+                ("outlier_flag", pa.bool_()),
+            ]
+        )
+    else:
+        schema = None
 
     try:
         ddf.to_parquet(

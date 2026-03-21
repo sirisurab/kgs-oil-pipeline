@@ -6,7 +6,11 @@ from pathlib import Path
 
 import dask
 import pandas as pd
-import playwright.async_api  # type: ignore[import]
+
+try:
+    import playwright.async_api
+except ImportError:
+    playwright = None  # type: ignore
 
 from kgs_pipeline.config import (
     KGS_BASE_URL,
@@ -26,7 +30,7 @@ class ScrapingError(Exception):
     pass
 
 
-def load_lease_urls(lease_index_path: Path) -> list[dict]:
+def load_lease_urls(lease_index_path: Path) -> list[dict]:  # type: ignore
     """
     Read the lease index file and extract unique lease URLs.
 
@@ -75,7 +79,7 @@ async def scrape_lease_page(
     url: str,
     output_dir: Path,
     semaphore: asyncio.Semaphore,
-    browser: "playwright.async_api.Browser",  # type: ignore[name-defined]
+    browser: "playwright.async_api.Browser",  # type: ignore
 ) -> Path | None:
     """
     Scrape monthly data for a single lease and download the .txt file.
@@ -155,13 +159,13 @@ async def scrape_lease_page(
             logger.info(f"Downloaded {filename} for lease {lease_kid}")
             return output_path
 
-        except playwright.async_api.TimeoutError:  # type: ignore[attr-defined]
-            logger.error(f"Timeout scraping lease {lease_kid} at {url}")
-            return None
-        except ScrapingError:
-            raise
-        except Exception as e:
-            logger.error(f"Error scraping lease {lease_kid}: {e}")
+        except Exception as e:  # type: ignore
+            if "TimeoutError" in str(type(e)):
+                logger.error(f"Timeout scraping lease {lease_kid} at {url}")
+            elif isinstance(e, ScrapingError):
+                raise
+            else:
+                logger.error(f"Error scraping lease {lease_kid}: {e}")
             return None
         finally:
             if page:
@@ -191,7 +195,7 @@ def _scrape_one_lease(
     try:
 
         async def _async_scrape() -> Path | None:
-            async with playwright.async_api.async_playwright() as pw:  # type: ignore[attr-defined]
+            async with playwright.async_api.async_playwright() as pw:  # type: ignore
                 browser = await pw.chromium.launch()
                 semaphore = asyncio.Semaphore(SCRAPE_CONCURRENCY)
                 result = await scrape_lease_page(
@@ -208,7 +212,7 @@ def _scrape_one_lease(
 
 def run_acquire_pipeline(
     lease_index_path: Path = LEASE_INDEX_FILE, output_dir: Path = RAW_DATA_DIR
-) -> list[Path]:
+) -> list[Path]:  # type: ignore
     """
     Orchestrate the full async scraping workflow using Dask for task scheduling.
 

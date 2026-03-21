@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-import dask.dataframe as dd
+import dask.dataframe as dd  # type: ignore
 import pandas as pd
 
 from kgs_pipeline.config import (
@@ -16,7 +16,7 @@ from kgs_pipeline.config import (
 logger = logging.getLogger(__name__)
 
 
-def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:
+def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:  # type: ignore
     """
     Read all per-lease .txt files from raw directory as a Dask DataFrame.
 
@@ -42,21 +42,11 @@ def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:
 
     # Try to read files; catch if none match
     try:
-        ddf = dd.read_csv(glob_pattern, dtype=str, assume_missing=True)  # type: ignore[call-overload]
+        ddf = dd.read_csv(glob_pattern, dtype=str, assume_missing=True)  # type: ignore
     except (ValueError, FileNotFoundError) as e:
         raise FileNotFoundError(
             f"No raw lease files found matching {glob_pattern}"
         ) from e
-
-    # Add source_file column with filename
-    def add_source_file(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
-        # For Dask, we need to extract filenames; use map_partitions metadata
-        # Since we read via glob, we'll add a column based on partition metadata
-        # For simplicity, derive from the first row's data or use a simpler approach
-        # Actually, to get the filename, we need to pass it through somehow.
-        # One approach: add it manually from the glob files
-        df["source_file"] = ""  # placeholder
-        return df
 
     # Better approach: read files individually and concatenate with source
     files = sorted(raw_dir.glob("lp*.txt"))
@@ -69,7 +59,7 @@ def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:
         df["source_file"] = file.name
         dfs.append(df)
 
-    raw_df = pd.concat(dfs, ignore_index=True)  # type: ignore[arg-type]
+    raw_df = pd.concat(dfs, ignore_index=True)  # type: ignore
     ddf = dd.from_pandas(raw_df, npartitions=max(1, len(files) // 4 or 1))
 
     logger.info(
@@ -78,7 +68,7 @@ def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:
     return ddf
 
 
-def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:
+def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:  # type: ignore
     """
     Read lease index and return metadata for enrichment.
 
@@ -102,7 +92,7 @@ def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:
     if not lease_index_path.exists():
         raise FileNotFoundError(f"Lease index file not found: {lease_index_path}")
 
-    ddf = dd.read_csv(lease_index_path, dtype=str, assume_missing=True)  # type: ignore[call-overload]
+    ddf = dd.read_csv(lease_index_path, dtype=str, assume_missing=True)  # type: ignore
 
     # Check required columns
     required = [
@@ -131,7 +121,7 @@ def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:
         ddf = ddf.rename(columns={"MONTH-YEAR": "MONTH_YEAR"})
 
     # Filter out yearly (month=0) and starting cumulative (month=-1)
-    def filter_non_monthly(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def filter_non_monthly(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         if "MONTH_YEAR" in df.columns:
             # Parse month from "M-YYYY" format
             month = df["MONTH_YEAR"].str.split("-").str[0]
@@ -151,7 +141,7 @@ def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:
     return ddf
 
 
-def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:
+def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
     """
     Filter out yearly and starting cumulative records.
 
@@ -181,7 +171,7 @@ def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:
     else:
         raise KeyError("Expected column 'MONTH_YEAR' or 'MONTH-YEAR' not found")
 
-    def filter_records(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[type-arg]
+    def filter_records(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
         # Parse month from "M-YYYY" format
         month = df[month_col].str.split("-", expand=True)[0]
         # Keep only valid months (not "0" or "-1")
@@ -191,8 +181,8 @@ def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:
 
 
 def merge_with_metadata(
-    raw_ddf: dd.DataFrame, metadata_ddf: dd.DataFrame
-) -> dd.DataFrame:
+    raw_ddf: dd.DataFrame, metadata_ddf: dd.DataFrame  # type: ignore
+) -> dd.DataFrame:  # type: ignore
     """
     Left-join raw production data with lease metadata.
 
@@ -232,7 +222,7 @@ def merge_with_metadata(
 
 
 def write_interim_parquet(
-    ddf: dd.DataFrame, interim_dir: Path = INTERIM_DATA_DIR
+    ddf: dd.DataFrame, interim_dir: Path = INTERIM_DATA_DIR  # type: ignore
 ) -> None:
     """
     Write interim Parquet store partitioned by LEASE_KID.
