@@ -1,180 +1,185 @@
 # Acquire Component — Task Specifications
-**Module:** `kgs_pipeline/acquire.py`  
-**Test file:** `tests/test_acquire.py`  
-**Output directory:** `kgs/data/raw/`
+
+## Overview
+The acquire component is responsible for:
+1. Reading the lease index file (`kgs/data/external/oil_leases_2020_present.txt`) to extract all unique lease URLs.
+2. Using Playwright (async API) with a rate-limiting `asyncio.Semaphore(5)` to scrape each lease's monthly data `.txt` file from the KGS web portal.
+3. Saving each downloaded file to `kgs/data/raw/`.
+4. Providing a synchronous orchestrator entry-point that drives the async scraping workflow via Dask for parallel task scheduling.
+
+**Source module:** `kgs_pipeline/acquire.py`  
+**Test file:** `tests/test_acquire.py`
 
 ---
 
 ## Design Decisions & Constraints
-
-- All web scraping uses **Playwright's async API** (`playwright.async_api`).
-- Concurrency is capped at **5 simultaneous lease requests** via `asyncio.Semaphore(5)`.
-- Dask is used to fan out and orchestrate scrape tasks across the full URL list; the actual HTTP work is async/playwright inside each Dask task.
-- Raw downloaded `.txt` files are written to `kgs/data/raw/` with the filename derived from the download link label on the KGS MonthSave page (e.g. `lp564.txt`). If a filename cannot be determined, fall back to `lease_{lease_id}.txt`.
-- A lease that has already been downloaded (file exists in `kgs/data/raw/`) is skipped — **idempotent download**.
-- All errors during scraping are caught, logged with the lease URL, and do not abort the full run. Failed leases are collected and returned as a summary list.
-- No credentials or API keys are needed; all URLs are public.
-- A `ScrapeError` custom exception class is defined in this module and raised for unrecoverable per-lease failures.
-- The archives file path and raw output directory are read from `kgs_pipeline/config.py`.
+- Python 3.11+, Playwright async API (`playwright.async_api`), `asyncio.Semaphore(5)` for concurrency control.
+- Maximum 5 concurrent browser page contexts at any time to avoid overloading the KGS server.
+- All downloaded raw files land in `kgs/data/raw/` — the directory must be created if it does not exist.
+- A lease URL follows the pattern `https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=<LEASE_KID>`.
+- The "Save Monthly Data to File" button leads to `https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=<LEASE_KID>`.
+- On the MonthSave page a link labelled like `lp<N>.txt` is the download target; clicking it triggers a file download.
+- If a lease page has no "Save Monthly Data to File" button, raise a custom `ScrapingError`.
+- If the MonthSave page has no download link, log a warning and return `None` for that lease (do not crash the run).
+- Files are named exactly as the server provides them (e.g. `lp564.txt`). If a file with that name already exists in `kgs/data/raw/`, skip re-downloading it (idempotent re-runs).
+- Use a custom `ScrapingError(Exception)` class defined in `acquire.py`.
+- All configuration values (raw data directory, concurrency limit, base URL) must be read from `kgs_pipeline/config.py` — **never hardcoded** in `acquire.py`.
+- Dask is used to build a delayed task graph over lease chunks, with `.compute()` called exactly **once** in the orchestrator.
 
 ---
 
 ## Task 01: Create project scaffolding and `.gitignore`
 
-**Module:** `kgs/.gitignore`, `kgs_pipeline/__init__.py`, `kgs_pipeline/config.py`  
-**Function:** N/A (configuration and project setup)
+**Module:** `kgs/.gitignore`  
+**Function:** N/A — file creation task
 
 **Description:**  
-Create the foundational project files required before any pipeline code can run.
+Create a `.gitignore` file at the project root (`kgs/`) to prevent sensitive, generated or large data files from being committed to version control.
 
-1. Create `kgs/.gitignore` with the following exclusions:
-   - `.env` and any `*.env` files
-   - `__pycache__/` and `*.pyc`
-   - `data/raw/`
-   - `data/interim/`
-   - `data/processed/`
-   - `data/external/`
-   - Any files matching `*credentials*`, `*api_key*`, `*secret*`
-   - Playwright browser cache: `.playwright/` and `playwright-browsers/`
-   - Dask worker scratch space: `dask-worker-space/`
-   - pytest cache: `.pytest_cache/`
-   - `.mypy_cache/`
-   - `.ruff_cache/`
-   - `*.parquet` at the root level (not under data/)
+The `.gitignore` must exclude:
+- `.env` and all `*.env` files
+- `__pycache__/` directories and `*.pyc` files
+- `data/raw/` — raw downloaded data files
+- `data/interim/` — intermediate transformed data
+- `data/processed/` — final processed Parquet files
+- `data/external/` — third-party source files
+- Any files that could contain API keys or credentials (`*.key`, `*.secret`, `secrets.yaml`, `secrets.json`)
+- Playwright browser binaries cache: `.playwright/` and `playwright/.local-browsers/`
+- Dask worker scratch directories: `dask-worker-space/`
+- Pytest cache: `.pytest_cache/`
+- MyPy cache: `.mypy_cache/`
+- Ruff cache: `.ruff_cache/`
+- IDE folders: `.vscode/`, `.idea/`
+- OS artefacts: `.DS_Store`, `Thumbs.db`
+- Jupyter checkpoint folders: `.ipynb_checkpoints/`
 
-2. Create `kgs_pipeline/__init__.py` as an empty file (makes the directory a Python package).
-
-3. Create `kgs_pipeline/config.py` with the following module-level constants:
-   - `PROJECT_ROOT: Path` — resolved absolute path to the `kgs/` directory, derived from this file's location using `pathlib`.
-   - `RAW_DATA_DIR: Path = PROJECT_ROOT / "data" / "raw"` — directory for downloaded raw lease files.
-   - `INTERIM_DATA_DIR: Path = PROJECT_ROOT / "data" / "interim"` — directory for intermediate Parquet data.
-   - `PROCESSED_DATA_DIR: Path = PROJECT_ROOT / "data" / "processed"` — directory for final processed Parquet data.
-   - `FEATURES_DATA_DIR: Path = PROJECT_ROOT / "data" / "processed" / "features"` — directory for feature Parquet data.
-   - `EXTERNAL_DATA_DIR: Path = PROJECT_ROOT / "data" / "external"` — directory for source data.
-   - `REFERENCES_DIR: Path = PROJECT_ROOT / "references"` — directory for data dictionaries.
-   - `OIL_LEASES_FILE: Path = EXTERNAL_DATA_DIR / "oil_leases_2020_present.txt"` — path to the archives file.
-   - `MAX_CONCURRENT_SCRAPES: int = 5` — semaphore limit for async playwright.
-   - `RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)` — ensure output directories exist on import (also call `.mkdir` for INTERIM, PROCESSED, FEATURES directories).
-
-**Error handling:** `config.py` must not raise errors on import. All `mkdir` calls use `exist_ok=True`.
-
-**Dependencies:** `pathlib` (stdlib)
-
-**Test cases:**
-- `@pytest.mark.unit` — Assert that `PROJECT_ROOT` resolves to an existing directory on the filesystem.
-- `@pytest.mark.unit` — Assert that all `Path` constants defined in `config.py` are instances of `pathlib.Path`.
-- `@pytest.mark.unit` — Assert that importing `config` twice does not raise any exception (idempotent import).
-
-**Definition of done:** Files are created, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** `.gitignore` file exists at `kgs/.gitignore` with all entries listed above. `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 02: Implement lease URL extractor
+## Task 02: Implement `config.py` — central configuration
 
-**Module:** `kgs_pipeline/acquire.py`  
-**Function:** `extract_lease_urls(leases_file: Path) -> pd.DataFrame`
+**Module:** `kgs_pipeline/config.py`  
+**Function:** Module-level constants (no callable functions required)
 
 **Description:**  
-Read the archives file (`oil_leases_2020_present.txt`) and return a deduplicated DataFrame of unique lease identifiers and their URLs.
+Create `kgs_pipeline/config.py` as the single source of truth for all path and runtime configuration used across the pipeline. Define the following constants:
 
-- Read the file using `pandas.read_csv` with `dtype=str` to prevent any numeric coercion of lease IDs.
-- The file is comma-separated with quoted fields; use appropriate `quotechar` and `sep` parameters.
-- Select only the columns `LEASE_KID` and `URL`.
-- Drop rows where `URL` is null or empty.
-- Deduplicate on `LEASE_KID` (keep first occurrence).
-- Return a `pd.DataFrame` with columns `["lease_kid", "url"]` (lowercased column names).
-- Log the total number of unique leases found.
+- `PROJECT_ROOT: Path` — absolute path to the `kgs/` project root, resolved relative to this file's location.
+- `RAW_DATA_DIR: Path` — `PROJECT_ROOT / "data" / "raw"`
+- `INTERIM_DATA_DIR: Path` — `PROJECT_ROOT / "data" / "interim"`
+- `PROCESSED_DATA_DIR: Path` — `PROJECT_ROOT / "data" / "processed"`
+- `EXTERNAL_DATA_DIR: Path` — `PROJECT_ROOT / "data" / "external"`
+- `LEASE_INDEX_FILE: Path` — `EXTERNAL_DATA_DIR / "oil_leases_2020_present.txt"`
+- `KGS_BASE_URL: str` — `"https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc="`
+- `KGS_MONTH_SAVE_URL: str` — `"https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc="`
+- `SCRAPE_CONCURRENCY: int` — `5`
+- `SCRAPE_TIMEOUT_MS: int` — `30000` (30 seconds, used as Playwright navigation timeout)
+- `OIL_UNIT: str` — `"BBL"`
+- `GAS_UNIT: str` — `"MCF"`
+- `WATER_UNIT: str` — `"BBL"`
+- `MAX_REALISTIC_OIL_BBL_PER_MONTH: float` — `50000.0`
+
+All `Path` constants must call `.resolve()` to produce absolute paths. No secrets or credentials may appear in this file.
+
+**Definition of done:** `config.py` exists, all constants are defined with correct types, all downstream modules import from `config.py` rather than hardcoding paths, `requirements.txt` updated with all third-party packages imported in this task.
+
+---
+
+## Task 03: Implement `load_lease_urls()`
+
+**Module:** `kgs_pipeline/acquire.py`  
+**Function:** `load_lease_urls(lease_index_path: Path) -> list[dict]`
+
+**Description:**  
+Read the lease index file (`oil_leases_2020_present.txt`) and return a deduplicated list of dicts, one per unique lease, each containing:
+- `lease_kid: str` — the unique lease identifier (from column `LEASE_KID`)
+- `url: str` — the lease main page URL (from column `URL`)
+
+Steps:
+1. Read the file using `pandas.read_csv()` (the file is comma-separated with quoted fields).
+2. Select and deduplicate on `LEASE_KID` — only the first occurrence per `LEASE_KID` is needed since the URL is the same for all rows of the same lease.
+3. Drop rows where `URL` is null or empty.
+4. Return the resulting list of dicts with keys `lease_kid` and `url`.
 
 **Error handling:**
-- If the leases file does not exist, raise `FileNotFoundError` with a descriptive message including the file path.
-- If the `URL` column is missing from the file, raise `KeyError` with a descriptive message.
-
-**Dependencies:** `pandas`, `pathlib`, `logging`
+- If `lease_index_path` does not exist, raise `FileNotFoundError` with a descriptive message.
+- If the file is missing the `LEASE_KID` or `URL` columns, raise `KeyError` with a descriptive message.
 
 **Test cases:**
-- `@pytest.mark.unit` — Given a small in-memory CSV string (3 rows, 2 unique lease IDs, 1 with a null URL), assert the returned DataFrame has exactly 2 rows and columns `["lease_kid", "url"]`.
-- `@pytest.mark.unit` — Given a CSV with duplicate `LEASE_KID` values, assert deduplication produces one row per unique lease.
-- `@pytest.mark.unit` — Given a file path that does not exist, assert `FileNotFoundError` is raised.
+- `@pytest.mark.unit` — Given a small in-memory CSV string with 3 rows for 2 unique `LEASE_KID` values, assert the returned list has length 2 (deduplication works).
+- `@pytest.mark.unit` — Given a CSV where one row has a null `URL`, assert that row is excluded from the result.
+- `@pytest.mark.unit` — Given a path to a non-existent file, assert `FileNotFoundError` is raised.
 - `@pytest.mark.unit` — Given a CSV missing the `URL` column, assert `KeyError` is raised.
-- `@pytest.mark.integration` — Given the real `OIL_LEASES_FILE`, assert the returned DataFrame has more than 0 rows and that all values in the `url` column start with `"https://"`.
+- `@pytest.mark.integration` — Given the real `kgs/data/external/oil_leases_2020_present.txt`, assert the result is a non-empty list and every dict has non-null `lease_kid` and `url` keys.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
-
----
-
-## Task 03: Implement single-lease async page scraper
-
-**Module:** `kgs_pipeline/acquire.py`  
-**Function:** `scrape_lease_page(lease_url: str, output_dir: Path, semaphore: asyncio.Semaphore, playwright_instance) -> Path | None`
-
-**Description:**  
-Asynchronously scrape one KGS lease page and download the monthly data file for that lease. This function is the core unit of async work; it must be called from an async context.
-
-Step-by-step behaviour:
-1. Acquire the `semaphore` before opening a browser page (enforces max 5 concurrent requests).
-2. Using the provided `playwright_instance`, open a new browser page and navigate to `lease_url` (e.g. `https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839`).
-3. On the lease page, find and click the button or link whose visible text contains `"Save Monthly Data to File"`. Wait for navigation to complete after the click.
-4. On the resulting MonthSave page (e.g. `https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=1001135839`), find the download link for the data file. The link text will resemble `"lp564.txt"` — a short alphanumeric filename ending in `.txt`. Extract the `href` attribute of this link.
-5. Construct the full download URL if the `href` is relative (prepend the KGS base URL `https://chasm.kgs.ku.edu`).
-6. Download the file content using an HTTP GET request (using `playwright`'s `page.goto` or `APIRequestContext`) and write the raw bytes to `output_dir / filename`.
-7. Return the `Path` to the written file.
-8. Release the semaphore on exit (use `async with semaphore`).
-
-- Extract the `lease_kid` from the URL query parameter `f_lc` for use in fallback filenames and logging.
-- If the output file already exists in `output_dir`, skip downloading and return the existing `Path` immediately (idempotency).
-- Log each step (navigating, clicking, downloading) at DEBUG level; log success at INFO level with lease ID and filename.
-
-**Error handling:**
-- If the `"Save Monthly Data to File"` button/link is not found on the page, raise `ScrapeError` with the lease URL.
-- If the download link (`.txt` file link) is not found on the MonthSave page, log a WARNING and return `None` (do not raise — some leases may have no downloadable data file).
-- If a network or playwright error occurs, catch it, log it as ERROR with the lease URL, and return `None`.
-
-**Custom exception:**  
-Define `class ScrapeError(Exception): pass` at module level in `acquire.py`.
-
-**Dependencies:** `playwright.async_api`, `asyncio`, `pathlib`, `logging`
-
-**Test cases:**
-- `@pytest.mark.unit` — Using `unittest.mock` / `AsyncMock`, mock a playwright page that successfully navigates, finds the button, and returns a download link. Assert the function returns a `Path` ending in `.txt`.
-- `@pytest.mark.unit` — Mock a playwright page where the `"Save Monthly Data to File"` button is absent. Assert `ScrapeError` is raised.
-- `@pytest.mark.unit` — Mock a playwright page where the MonthSave page has no `.txt` download link. Assert the function returns `None` and logs a warning.
-- `@pytest.mark.unit` — Mock a playwright page where the output file already exists in `output_dir`. Assert the function returns the existing `Path` without calling `page.goto` a second time (download is skipped).
-- `@pytest.mark.integration` — Given the real URL for lease `1001135839`, assert the function downloads a `.txt` file to a temporary directory and returns a valid `Path`.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 04: Implement parallel scrape orchestrator
+## Task 04: Implement `scrape_lease_page()`
 
 **Module:** `kgs_pipeline/acquire.py`  
-**Function:** `run_scrape_pipeline(leases_file: Path, output_dir: Path) -> dict`
+**Function:** `async def scrape_lease_page(lease_kid: str, url: str, output_dir: Path, semaphore: asyncio.Semaphore, browser: playwright.async_api.Browser) -> Path | None`
 
 **Description:**  
-Orchestrate the full parallel scraping run for all leases in the archives file. This is the top-level entry point for the acquire component.
+Async function that, for one lease, navigates to its KGS main lease page, clicks "Save Monthly Data to File", lands on the MonthSave page, finds the `.txt` download link, downloads the file, and saves it to `output_dir`.
 
-- Call `extract_lease_urls(leases_file)` to get the full list of `(lease_kid, url)` pairs.
-- Use **Dask** to partition the URL list into chunks. Submit each chunk as a Dask delayed task that internally runs an `asyncio` event loop (`asyncio.run(...)`) for the async playwright scraping of all URLs in that chunk.
-- Within each Dask task (chunk), use `asyncio.gather` to run `scrape_lease_page` for all URLs in the chunk concurrently, sharing a single `asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)` and a single `async_playwright` browser instance across the chunk.
-- Use `dask.compute` to execute all chunk tasks in parallel (use the `threads` or `processes` scheduler as appropriate — **threads** is preferred since the work is I/O-bound playwright async).
-- Collect results: a list of successfully downloaded file `Path` objects and a list of failed lease URLs (those that returned `None` or raised).
-- Return a summary `dict` with keys:
-  - `"downloaded"`: `list[Path]` — paths of successfully downloaded files.
-  - `"failed"`: `list[str]` — lease URLs that failed.
-  - `"skipped"`: `list[Path]` — files that already existed and were skipped.
-  - `"total_leases"`: `int` — total leases attempted.
-- Log a final summary at INFO level.
+Detailed steps:
+1. Acquire `semaphore` before opening a new browser page (`async with semaphore`).
+2. Open a new browser page (`browser.new_page()`).
+3. Navigate to `url` using `page.goto(url, timeout=SCRAPE_TIMEOUT_MS)`.
+4. Locate the "Save Monthly Data to File" button/link on the page. If not found, raise `ScrapingError(f"No 'Save Monthly Data to File' button found for lease {lease_kid}")`.
+5. Click the element; this navigates to the MonthSave page.
+6. On the MonthSave page, locate an anchor (`<a>`) element whose `href` ends with `.txt`. If not found, log a `WARNING` via the standard `logging` module and return `None`.
+7. Use Playwright's `page.expect_download()` context manager to trigger the file download by clicking the link.
+8. Save the downloaded file to `output_dir / <filename>` using `download.save_as(...)`.
+9. Close the page (`page.close()`) in a `finally` block to ensure cleanup even on errors.
+10. If a file with the resolved output path already exists on disk, skip all navigation steps and return the existing path immediately (idempotent re-run support).
+11. Return the `Path` to the saved file on success, or `None` if the download link was missing.
 
 **Error handling:**
-- Any unhandled exception from a Dask chunk task is caught, logged, and does not abort the remaining chunks.
-- If `leases_file` does not exist, propagate `FileNotFoundError` immediately (do not start scraping).
-
-**Dependencies:** `dask`, `dask.delayed`, `asyncio`, `playwright.async_api`, `logging`, `pathlib`
+- Wrap `page.goto()` in a try/except for `playwright.async_api.TimeoutError`; on timeout log an error and return `None`.
+- Wrap the entire function body (outside of the semaphore acquire) in a broad `except Exception` that logs the exception and returns `None`, so one failed lease never crashes the batch run.
 
 **Test cases:**
-- `@pytest.mark.unit` — Mock `extract_lease_urls` to return a 4-row DataFrame and mock `scrape_lease_page` to always return a `Path`. Assert `run_scrape_pipeline` returns a dict with `"downloaded"` having 4 items and `"failed"` being empty.
-- `@pytest.mark.unit` — Mock `scrape_lease_page` to return `None` for 2 of 4 leases. Assert the returned dict has `"failed"` with 2 items.
-- `@pytest.mark.unit` — Assert that the return type of each Dask delayed task (before `.compute()`) is a `dask.delayed.Delayed` object, confirming lazy evaluation.
-- `@pytest.mark.integration` — Given a small real subset of 3 lease URLs (hardcoded), assert the function downloads `.txt` files to a temp directory and the returned `"downloaded"` list has length 3.
+- `@pytest.mark.unit` — Mock a Playwright `Browser` and `Page`; given a page where "Save Monthly Data to File" is present and the `.txt` link exists, assert the function returns a `Path` ending in `.txt`.
+- `@pytest.mark.unit` — Mock a page with no "Save Monthly Data to File" element; assert `ScrapingError` is raised (before the broad except, so it propagates within the unit mock scope — test that the error is raised by the inner logic before the outer handler catches it, i.e. mock the outer except away for this test).
+- `@pytest.mark.unit` — Mock a page where the MonthSave page has no `.txt` link; assert the function returns `None` and a WARNING is logged.
+- `@pytest.mark.unit` — Given an `output_dir` that already contains a file with the expected name, assert the function returns the existing path without calling `page.goto()`.
+- `@pytest.mark.integration` — Given the real lease URL for lease `1001135839`, assert the function downloads a file to a temporary directory and returns a valid `Path` to a `.txt` file.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
+
+---
+
+## Task 05: Implement `run_acquire_pipeline()`
+
+**Module:** `kgs_pipeline/acquire.py`  
+**Function:** `def run_acquire_pipeline(lease_index_path: Path = LEASE_INDEX_FILE, output_dir: Path = RAW_DATA_DIR) -> list[Path]`
+
+**Description:**  
+Synchronous orchestrator that drives the full async scraping workflow using Dask for distributed task scheduling.
+
+Steps:
+1. Call `load_lease_urls(lease_index_path)` to get the list of lease dicts.
+2. Create `output_dir` if it does not exist (`output_dir.mkdir(parents=True, exist_ok=True)`).
+3. Use `dask.delayed` to wrap each individual lease's scraping work. For each `lease_dict` in the list, create a `dask.delayed` call to a thin wrapper function `_scrape_one_lease(lease_kid, url, output_dir)` that internally runs the async `scrape_lease_page()` via `asyncio.run()` with its own `async with async_playwright()` browser context and a shared `asyncio.Semaphore(SCRAPE_CONCURRENCY)`.
+4. Collect all delayed objects into a list and call `.compute()` exactly once using `dask.compute(*delayed_tasks)`.
+5. Filter out `None` results from the computed list.
+6. Log a summary: total leases attempted, successful downloads, skipped (already existed), failed (None).
+7. Return the list of successfully downloaded `Path` objects.
+
+**Note on Semaphore and Playwright scope:** Because `dask.delayed` workers may run in separate threads or processes, each `_scrape_one_lease` call must own its own `async with async_playwright() as pw` context and browser instance. The `asyncio.Semaphore` is therefore per-worker, not shared globally across workers. The concurrency limit of 5 is enforced within a single async batch; for Dask thread-based scheduling, set `scheduler="synchronous"` or `scheduler="threads"` with `num_workers=SCRAPE_CONCURRENCY` to limit total concurrent workers.
+
+**Error handling:**
+- If `load_lease_urls` raises, let the exception propagate (do not swallow it at orchestrator level).
+- Each individual `_scrape_one_lease` must never raise — all exceptions are caught and logged internally, returning `None`.
+
+**Test cases:**
+- `@pytest.mark.unit` — Mock `load_lease_urls` to return 3 lease dicts and mock `_scrape_one_lease` to return a dummy `Path`; assert `run_acquire_pipeline()` returns a list of 3 `Path` objects and `.compute()` is called exactly once.
+- `@pytest.mark.unit` — Mock `_scrape_one_lease` to return `None` for all leases; assert the returned list is empty (all `None` filtered).
+- `@pytest.mark.unit` — Assert that the return type is `list` and each element is an instance of `Path`.
+- `@pytest.mark.integration` — Given the real lease index and a temporary output directory, run the pipeline for a subset of 2 leases (mock the rest) and assert `.txt` files are written to the output directory.
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
