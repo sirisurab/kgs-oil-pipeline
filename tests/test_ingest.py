@@ -1,182 +1,379 @@
-"""Test cases for ingest component."""
+"""Tests for kgs_pipeline/ingest.py — Tasks 06–11."""
 
-import tempfile
+from __future__ import annotations
+
 from pathlib import Path
+from unittest.mock import patch
 
 import dask.dataframe as dd
 import pandas as pd
 import pytest
 
+import kgs_pipeline.config as config
 from kgs_pipeline.ingest import (
+    concatenate_raw_files,
+    discover_raw_files,
+    enrich_with_lease_metadata,
     filter_monthly_records,
-    merge_with_metadata,
-    read_lease_index,
-    read_raw_lease_files,
+    read_raw_file,
+    run_ingest_pipeline,
+    write_interim_parquet,
 )
 
 
-@pytest.fixture
-def temp_raw_files():
-    """Create temporary raw .txt lease files."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-
-        # Create two lp*.txt files
-        df1 = pd.DataFrame(
-            {
-                "LEASE_KID": ["L001", "L001", "L001"],
-                "API_NUMBER": ["12345", "12345", "12345"],
-                "MONTH-YEAR": ["1-2020", "2-2020", "0-2020"],  # Last is yearly
-                "PRODUCT": ["O", "G", "O"],
-                "PRODUCTION": [100, 50, 200],
-            }
-        )
-        df1.to_csv(tmpdir / "lp_001.txt", index=False)
-
-        df2 = pd.DataFrame(
-            {
-                "LEASE_KID": ["L002"],
-                "API_NUMBER": ["54321"],
-                "MONTH-YEAR": ["3-2020"],
-                "PRODUCT": ["O"],
-                "PRODUCTION": [150],
-            }
-        )
-        df2.to_csv(tmpdir / "lp_002.txt", index=False)
-
-        yield tmpdir
+# ---------------------------------------------------------------------------
+# Task 06: discover_raw_files
+# ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def temp_lease_index():
-    """Create temporary lease index file."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        df = pd.DataFrame(
-            {
-                "LEASE_KID": ["L001", "L002"],
-                "LEASE": ["Lease 1", "Lease 2"],
-                "DOR_CODE": ["D001", "D002"],
-                "FIELD": ["Field A", "Field B"],
-                "PRODUCING_ZONE": ["Zone A", "Zone B"],
-                "OPERATOR": ["Operator 1", "Operator 2"],
-                "COUNTY": ["County A", "County B"],
-                "TOWNSHIP": ["T01", "T02"],
-                "TWN_DIR": ["N", "N"],
-                "RANGE": ["R01", "R02"],
-                "RANGE_DIR": ["W", "W"],
-                "SECTION": ["01", "02"],
-                "SPOT": ["A", "B"],
-                "LATITUDE": [38.5, 38.6],
-                "LONGITUDE": [-98.5, -98.6],
-            }
-        )
-        df.to_csv(tmpdir / "leases.csv", index=False)
-        yield tmpdir / "leases.csv"
+@pytest.mark.unit
+def test_discover_raw_files_returns_txt_only(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("data")
+    (tmp_path / "b.txt").write_text("data")
+    (tmp_path / "c.txt").write_text("data")
+    (tmp_path / "d.csv").write_text("data")
+
+    result = discover_raw_files(tmp_path)
+    assert len(result) == 3
+    assert all(p.suffix == ".txt" for p in result)
+    assert result == sorted(result)
 
 
-def test_read_raw_lease_files_success(temp_raw_files):
-    """Given directory with lp*.txt files, return Dask DataFrame."""
-    ddf = read_raw_lease_files(temp_raw_files)
-
-    assert isinstance(ddf, dd.DataFrame)
-    assert "source_file" in ddf.columns
-    assert len(ddf) >= 3  # At least 3 rows from df1
-
-
-def test_read_raw_lease_files_not_found():
-    """Given nonexistent directory, raise FileNotFoundError."""
+@pytest.mark.unit
+def test_discover_raw_files_nonexistent_dir():
     with pytest.raises(FileNotFoundError):
-        read_raw_lease_files(Path("/nonexistent/dir"))
+        discover_raw_files(Path("/nonexistent/dir"))
 
 
-def test_read_raw_lease_files_no_matches():
-    """Given directory with no lp*.txt files, raise FileNotFoundError."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        # Create a .txt file that doesn't match lp*.txt
-        (tmpdir / "other.txt").touch()
-
-        with pytest.raises(FileNotFoundError):
-            read_raw_lease_files(tmpdir)
+@pytest.mark.unit
+def test_discover_raw_files_empty_dir(tmp_path: Path):
+    result = discover_raw_files(tmp_path)
+    assert result == []
 
 
-def test_read_lease_index_success(temp_lease_index):
-    """Given valid lease index, return Dask DataFrame with metadata."""
-    ddf = read_lease_index(temp_lease_index)
+@pytest.mark.integration
+def test_discover_raw_files_real_dir():
+    if not config.RAW_DATA_DIR.exists() or not list(config.RAW_DATA_DIR.glob("*.txt")):
+        pytest.skip("No raw files available")
+    result = discover_raw_files(config.RAW_DATA_DIR)
+    assert isinstance(result, list)
+    assert len(result) > 0
+    assert all(isinstance(p, Path) for p in result)
 
-    assert isinstance(ddf, dd.DataFrame)
-    assert "LEASE_KID" in ddf.columns
-    assert "OPERATOR" in ddf.columns
+
+# ---------------------------------------------------------------------------
+# Task 07: read_raw_file
+# ---------------------------------------------------------------------------
+
+SAMPLE_CSV = """\
+LEASE KID,LEASE,DOR_CODE,API_NUMBER,FIELD,PRODUCING_ZONE,OPERATOR,COUNTY,TOWNSHIP,TWN_DIR,RANGE,RANGE_DIR,SECTION,SPOT,LATITUDE,LONGITUDE,MONTH-YEAR,PRODUCT,WELLS,PRODUCTION
+1001,Test Lease,ABC123,15-001-12345,Test Field,Test Zone,ACME Oil,Allen,10,S,5,W,12,NE,38.5,-95.5,3-2021,O,1,500.0
+1001,Test Lease,ABC123,15-001-12345,Test Field,Test Zone,ACME Oil,Allen,10,S,5,W,12,NE,38.5,-95.5,4-2021,O,1,450.0
+1001,Test Lease,ABC123,15-001-12345,Test Field,Test Zone,ACME Oil,Allen,10,S,5,W,12,NE,38.5,-95.5,5-2021,G,1,2000.0
+1001,Test Lease,ABC123,15-001-12345,Test Field,Test Zone,ACME Oil,Allen,10,S,5,W,12,NE,38.5,-95.5,6-2021,O,1,400.0
+1001,Test Lease,ABC123,15-001-12345,Test Field,Test Zone,ACME Oil,Allen,10,S,5,W,12,NE,38.5,-95.5,7-2021,O,1,380.0
+"""
 
 
-def test_read_lease_index_not_found():
-    """Given nonexistent file, raise FileNotFoundError."""
+@pytest.mark.unit
+def test_read_raw_file_returns_dask_df(tmp_path: Path):
+    fp = tmp_path / "lp564.txt"
+    fp.write_text(SAMPLE_CSV)
+
+    result = read_raw_file(fp)
+    assert isinstance(result, dd.DataFrame)
+    assert "LEASE_KID" in result.columns
+    assert "source_file" in result.columns
+
+
+@pytest.mark.unit
+def test_read_raw_file_is_lazy(tmp_path: Path):
+    fp = tmp_path / "lp100.txt"
+    fp.write_text(SAMPLE_CSV)
+
+    result = read_raw_file(fp)
+    assert isinstance(result, dd.DataFrame)
+
+
+@pytest.mark.unit
+def test_read_raw_file_latin1_fallback(tmp_path: Path):
+    fp = tmp_path / "latin1.txt"
+    # Write latin-1 encoded content with a non-UTF-8 byte
+    content = "LEASE KID,LEASE,MONTH-YEAR,PRODUCT,PRODUCTION\n1001,Caf\xe9,3-2021,O,100.0\n"
+    fp.write_bytes(content.encode("latin-1"))
+
+    result = read_raw_file(fp)
+    assert isinstance(result, dd.DataFrame)
+
+
+@pytest.mark.unit
+def test_read_raw_file_not_found():
     with pytest.raises(FileNotFoundError):
-        read_lease_index(Path("/nonexistent/leases.csv"))
+        read_raw_file(Path("/nonexistent/file.txt"))
 
 
-def test_read_lease_index_missing_columns():
-    """Given index with missing required columns, raise KeyError."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        # Create index with missing FIELD column
-        df = pd.DataFrame(
-            {
-                "LEASE_KID": ["L001"],
-                "LEASE": ["Lease 1"],
-                # Missing many required columns
-            }
-        )
-        df.to_csv(tmpdir / "bad_index.csv", index=False)
-
-        with pytest.raises(KeyError):
-            read_lease_index(tmpdir / "bad_index.csv")
+@pytest.mark.integration
+def test_read_raw_file_real():
+    raw_files = list(config.RAW_DATA_DIR.glob("*.txt"))
+    if not raw_files:
+        pytest.skip("No raw files available")
+    result = read_raw_file(raw_files[0])
+    assert "LEASE_KID" in result.columns
+    assert "source_file" in result.columns
+    computed = result.compute()
+    assert computed.iloc[0]["source_file"] == raw_files[0].name
 
 
-def test_filter_monthly_records_success(temp_raw_files):
-    """Given DataFrame with mixed monthly/yearly records, filter to monthly only."""
-    ddf = read_raw_lease_files(temp_raw_files)
-    filtered = filter_monthly_records(ddf)
-
-    # Should remove records with month "0" (yearly)
-    result_df = filtered.compute()
-    if "MONTH-YEAR" in result_df.columns:
-        months = result_df["MONTH-YEAR"].str.split("-").str[0]
-        assert not months.isin(["0", "-1"]).any()
-    elif "MONTH_YEAR" in result_df.columns:
-        months = result_df["MONTH_YEAR"].str.split("-").str[0]
-        assert not months.isin(["0", "-1"]).any()
+# ---------------------------------------------------------------------------
+# Task 08: concatenate_raw_files
+# ---------------------------------------------------------------------------
 
 
-def test_filter_monthly_records_missing_column():
-    """Given DataFrame without MONTH_YEAR/MONTH-YEAR, raise KeyError."""
-    df = pd.DataFrame({"other_col": [1, 2, 3]})
+@pytest.mark.unit
+def test_concatenate_raw_files_rows(tmp_path: Path):
+    for i in range(3):
+        fp = tmp_path / f"lp{i}.txt"
+        fp.write_text(SAMPLE_CSV)
+
+    files = sorted(tmp_path.glob("*.txt"))
+    result = concatenate_raw_files(files)
+    assert isinstance(result, dd.DataFrame)
+    computed = result.compute()
+    # 5 rows per file × 3 files = 15
+    assert len(computed) == 15
+
+
+@pytest.mark.unit
+def test_concatenate_raw_files_empty_list():
+    with pytest.raises(ValueError, match="empty"):
+        concatenate_raw_files([])
+
+
+@pytest.mark.unit
+def test_concatenate_raw_files_skips_malformed(tmp_path: Path):
+    good1 = tmp_path / "good1.txt"
+    good1.write_text(SAMPLE_CSV)
+    good2 = tmp_path / "good2.txt"
+    good2.write_text(SAMPLE_CSV)
+    bad = tmp_path / "bad.txt"
+    # Write a binary file that cannot be parsed as CSV at all
+    bad.write_bytes(b"\x00\x01\x02\x03")
+
+    with patch("kgs_pipeline.ingest.read_raw_file") as mock_read:
+        def side_effect(fp: Path):
+            if "bad" in fp.name:
+                raise ValueError("malformed")
+            return dd.from_pandas(pd.read_csv(fp, dtype=str), npartitions=1)
+
+        mock_read.side_effect = side_effect
+        result = concatenate_raw_files([good1, good2, bad])
+
+    assert isinstance(result, dd.DataFrame)
+
+
+@pytest.mark.unit
+def test_concatenate_raw_files_is_lazy(tmp_path: Path):
+    fp = tmp_path / "lp1.txt"
+    fp.write_text(SAMPLE_CSV)
+    result = concatenate_raw_files([fp])
+    assert isinstance(result, dd.DataFrame)
+
+
+# ---------------------------------------------------------------------------
+# Task 09: filter_monthly_records
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_filter_monthly_records_keeps_valid(tmp_path: Path):
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1", "2", "3", "4", "5"],
+            "MONTH-YEAR": ["1-2021", "6-2021", "12-2021", "0-2021", "-1-2021"],
+            "PRODUCTION": [100.0, 200.0, 300.0, 400.0, 500.0],
+        }
+    )
     ddf = dd.from_pandas(df, npartitions=1)
+    result = filter_monthly_records(ddf)
+    computed = result.compute()
+    assert len(computed) == 3
 
+
+@pytest.mark.unit
+def test_filter_monthly_records_drops_null_month_year():
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1", "2"],
+            "MONTH-YEAR": ["3-2021", None],
+            "PRODUCTION": [100.0, 200.0],
+        }
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = filter_monthly_records(ddf).compute()
+    assert len(result) == 1
+
+
+@pytest.mark.unit
+def test_filter_monthly_records_all_non_monthly():
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1", "2"],
+            "MONTH-YEAR": ["0-2021", "-1-2021"],
+            "PRODUCTION": [100.0, 200.0],
+        }
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = filter_monthly_records(ddf).compute()
+    assert len(result) == 0
+
+
+@pytest.mark.unit
+def test_filter_monthly_records_return_type():
+    df = pd.DataFrame({"LEASE_KID": ["1"], "MONTH-YEAR": ["1-2021"], "PRODUCTION": [100.0]})
+    ddf = dd.from_pandas(df, npartitions=1)
+    assert isinstance(filter_monthly_records(ddf), dd.DataFrame)
+
+
+@pytest.mark.unit
+def test_filter_monthly_records_missing_column():
+    df = pd.DataFrame({"LEASE_KID": ["1"], "PRODUCTION": [100.0]})
+    ddf = dd.from_pandas(df, npartitions=1)
     with pytest.raises(KeyError):
         filter_monthly_records(ddf)
 
 
-def test_merge_with_metadata_success(temp_raw_files, temp_lease_index):
-    """Given raw data and metadata, return merged Dask DataFrame."""
-    raw_ddf = read_raw_lease_files(temp_raw_files)
-    meta_ddf = read_lease_index(temp_lease_index)
-
-    merged = merge_with_metadata(raw_ddf, meta_ddf)
-
-    assert isinstance(merged, dd.DataFrame)
-    assert "LEASE_KID" in merged.columns
-    # Merged should have more columns than raw
-    assert len(merged.columns) > len(raw_ddf.columns)
+# ---------------------------------------------------------------------------
+# Task 10: enrich_with_lease_metadata
+# ---------------------------------------------------------------------------
 
 
-def test_merge_with_metadata_missing_key():
-    """Given DataFrames without LEASE_KID, raise KeyError."""
-    df_raw = pd.DataFrame({"other_col": [1, 2]})
-    df_meta = pd.DataFrame({"other_col": [3, 4]})
-    ddf_raw = dd.from_pandas(df_raw, npartitions=1)
-    ddf_meta = dd.from_pandas(df_meta, npartitions=1)
+@pytest.mark.unit
+def test_enrich_with_lease_metadata_joins_correctly(tmp_path: Path):
+    prod_df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1001", "1002", "1003"],
+            "MONTH-YEAR": ["3-2021", "4-2021", "5-2021"],
+            "PRODUCTION": [100.0, 200.0, 300.0],
+        }
+    )
+    meta_file = tmp_path / "meta.txt"
+    meta_file.write_text(
+        "LEASE KID,OPERATOR,COUNTY,URL\n"
+        "1001,Acme Oil,Allen,https://kgs.ku.edu/1001\n"
+        "1002,Beta Corp,Butler,https://kgs.ku.edu/1002\n"
+        "9999,Other,Chase,https://kgs.ku.edu/9999\n"
+    )
 
+    ddf = dd.from_pandas(prod_df, npartitions=1)
+    result = enrich_with_lease_metadata(ddf, meta_file).compute()
+
+    assert len(result) == 3
+    assert "OPERATOR" in result.columns
+    # Unmatched lease 1003 should have NaN operator
+    row_1003 = result[result["LEASE_KID"] == "1003"]
+    assert row_1003["OPERATOR"].isna().all()
+
+
+@pytest.mark.unit
+def test_enrich_returns_dask_df(tmp_path: Path):
+    df = pd.DataFrame({"LEASE_KID": ["1"], "PRODUCTION": [100.0]})
+    meta_file = tmp_path / "meta.txt"
+    meta_file.write_text("LEASE KID,OPERATOR\n1,Acme\n")
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = enrich_with_lease_metadata(ddf, meta_file)
+    assert isinstance(result, dd.DataFrame)
+
+
+@pytest.mark.unit
+def test_enrich_file_not_found(tmp_path: Path):
+    df = pd.DataFrame({"LEASE_KID": ["1"], "PRODUCTION": [100.0]})
+    ddf = dd.from_pandas(df, npartitions=1)
+    with pytest.raises(FileNotFoundError):
+        enrich_with_lease_metadata(ddf, tmp_path / "nonexistent.txt")
+
+
+@pytest.mark.unit
+def test_enrich_missing_lease_kid_column(tmp_path: Path):
+    df = pd.DataFrame({"PRODUCTION": [100.0]})
+    meta_file = tmp_path / "meta.txt"
+    meta_file.write_text("LEASE KID,OPERATOR\n1,Acme\n")
+    ddf = dd.from_pandas(df, npartitions=1)
     with pytest.raises(KeyError):
-        merge_with_metadata(ddf_raw, ddf_meta)
+        enrich_with_lease_metadata(ddf, meta_file)
+
+
+# ---------------------------------------------------------------------------
+# Task 11: write_interim_parquet and run_ingest_pipeline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_write_interim_parquet_creates_files(tmp_path: Path):
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1001", "1001", "1002", "1002", "1002"],
+            "MONTH-YEAR": ["1-2021", "2-2021", "1-2021", "2-2021", "3-2021"],
+            "PRODUCTION": [100.0, 110.0, 200.0, 210.0, 220.0],
+        }
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    output = write_interim_parquet(ddf, tmp_path / "interim")
+    parquet_files = list((tmp_path / "interim").glob("*.parquet"))
+    assert len(parquet_files) > 0
+    loaded = pd.read_parquet(parquet_files[0])
+    assert loaded is not None
+
+
+@pytest.mark.unit
+def test_run_ingest_pipeline_raises_if_no_files():
+    with patch("kgs_pipeline.ingest.discover_raw_files", return_value=[]):
+        with pytest.raises(RuntimeError, match="No raw files"):
+            run_ingest_pipeline()
+
+
+@pytest.mark.unit
+def test_write_interim_parquet_creates_dir(tmp_path: Path):
+    new_dir = tmp_path / "new_interim_dir"
+    assert not new_dir.exists()
+    df = pd.DataFrame({"LEASE_KID": ["A"], "PRODUCTION": [1.0]})
+    ddf = dd.from_pandas(df, npartitions=1)
+    write_interim_parquet(ddf, new_dir)
+    assert new_dir.exists()
+
+
+@pytest.mark.unit
+def test_run_ingest_pipeline_calls_steps_in_order(tmp_path: Path):
+    """Assert run_ingest_pipeline calls each step exactly once in correct order."""
+    call_order: list[str] = []
+
+    sample_df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1001"],
+            "MONTH-YEAR": ["3-2021"],
+            "PRODUCTION": [100.0],
+        }
+    )
+    sample_ddf = dd.from_pandas(sample_df, npartitions=1)
+
+    with (
+        patch("kgs_pipeline.ingest.discover_raw_files", return_value=[tmp_path / "x.txt"]) as mock_disc,
+        patch("kgs_pipeline.ingest.concatenate_raw_files", return_value=sample_ddf) as mock_concat,
+        patch("kgs_pipeline.ingest.filter_monthly_records", return_value=sample_ddf) as mock_filter,
+        patch("kgs_pipeline.ingest.enrich_with_lease_metadata", return_value=sample_ddf) as mock_enrich,
+        patch("kgs_pipeline.ingest.write_interim_parquet", return_value=config.INTERIM_DATA_DIR) as mock_write,
+    ):
+        def track(name: str, fn):
+            def wrapper(*args, **kwargs):
+                call_order.append(name)
+                return fn(*args, **kwargs)
+            return wrapper
+
+        mock_disc.side_effect = track("discover", lambda *a, **k: [tmp_path / "x.txt"])
+        mock_concat.side_effect = track("concat", lambda *a, **k: sample_ddf)
+        mock_filter.side_effect = track("filter", lambda *a, **k: sample_ddf)
+        mock_enrich.side_effect = track("enrich", lambda *a, **k: sample_ddf)
+        mock_write.side_effect = track("write", lambda *a, **k: config.INTERIM_DATA_DIR)
+
+        run_ingest_pipeline()
+
+    assert call_order == ["discover", "concat", "filter", "enrich", "write"]

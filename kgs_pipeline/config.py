@@ -1,34 +1,82 @@
-"""Central configuration for the KGS oil & gas pipeline."""
+"""Pipeline configuration constants — single source of truth for all components."""
 
 from pathlib import Path
 
-# Project root: parent of kgs_pipeline directory
-PROJECT_ROOT = (Path(__file__).parent.parent).resolve()
+# ---------------------------------------------------------------------------
+# Root and data directories
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT = Path(__file__).parent.parent
 
-# Data directories
-RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
-INTERIM_DATA_DIR = PROJECT_ROOT / "data" / "interim"
-PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
-EXTERNAL_DATA_DIR = PROJECT_ROOT / "data" / "external"
+RAW_DATA_DIR = _PROJECT_ROOT / "data" / "raw"
+INTERIM_DATA_DIR = _PROJECT_ROOT / "data" / "interim"
+PROCESSED_DATA_DIR = _PROJECT_ROOT / "data" / "processed"
+FEATURES_DATA_DIR = _PROJECT_ROOT / "data" / "processed" / "features"
+EXTERNAL_DATA_DIR = _PROJECT_ROOT / "data" / "external"
 
-# Input files
-LEASE_INDEX_FILE = EXTERNAL_DATA_DIR / "oil_leases_2020_present.txt"
+# Auto-create all data directories on import
+for _dir in (RAW_DATA_DIR, INTERIM_DATA_DIR, PROCESSED_DATA_DIR, FEATURES_DATA_DIR, EXTERNAL_DATA_DIR):
+    _dir.mkdir(parents=True, exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Reference files
+# ---------------------------------------------------------------------------
+LEASE_INDEX_FILE = _PROJECT_ROOT / "references" / "oil_leases_2020_present.txt"
+
+# ---------------------------------------------------------------------------
 # KGS URLs
-KGS_BASE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc="
-KGS_MONTH_SAVE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc="
+# ---------------------------------------------------------------------------
+KGS_BASE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease"
+KGS_MONTH_SAVE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave"
 
-# Scraping config
-SCRAPE_CONCURRENCY = 5
-SCRAPE_TIMEOUT_MS = 30000
+# ---------------------------------------------------------------------------
+# Concurrency and Dask settings
+# ---------------------------------------------------------------------------
+MAX_CONCURRENT_REQUESTS: int = 5
+DASK_N_WORKERS: int = 4
 
-# Production units
-OIL_UNIT = "BBL"
-GAS_UNIT = "MCF"
-WATER_UNIT = "BBL"
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+LOG_LEVEL: str = "INFO"
 
-# Domain constraints
-MAX_REALISTIC_OIL_BBL_PER_MONTH = 50000.0
+# ---------------------------------------------------------------------------
+# Transform-stage constants (Task 12)
+# ---------------------------------------------------------------------------
+OIL_OUTLIER_THRESHOLD_BBL: int = 50000
+PARTITION_COLUMN_PROCESSED: str = "well_id"
+INTERIM_PARTITION_COLUMN: str = "LEASE_KID"
 
-# Features output directory
-FEATURES_DIR = PROCESSED_DATA_DIR / "features"
+COLUMN_RENAME_MAP: dict[str, str] = {
+    "LEASE KID": "lease_kid",
+    "LEASE_KID": "lease_kid",
+    "LEASE": "lease_name",
+    "DOR_CODE": "dor_code",
+    "API_NUMBER": "api_number",
+    "FIELD": "field_name",
+    "PRODUCING_ZONE": "producing_zone",
+    "OPERATOR": "operator",
+    "COUNTY": "county",
+    "TOWNSHIP": "township",
+    "TWN_DIR": "twn_dir",
+    "RANGE": "range_num",
+    "RANGE_DIR": "range_dir",
+    "SECTION": "section",
+    "SPOT": "spot",
+    "LATITUDE": "latitude",
+    "LONGITUDE": "longitude",
+    "MONTH-YEAR": "month_year",
+    "PRODUCT": "product",
+    "WELLS": "well_count",
+    "PRODUCTION": "production",
+    "source_file": "source_file",
+    "URL": "url",
+}
+
+# ---------------------------------------------------------------------------
+# Features-stage constants (Task 22)
+# ---------------------------------------------------------------------------
+DECLINE_RATE_CLIP_MIN: float = -1.0
+DECLINE_RATE_CLIP_MAX: float = 10.0
+ROLLING_WINDOW_SHORT: int = 3
+ROLLING_WINDOW_LONG: int = 6
+CATEGORICAL_COLUMNS: list[str] = ["county", "operator", "producing_zone", "field_name", "product"]

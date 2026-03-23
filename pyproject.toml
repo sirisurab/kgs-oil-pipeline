@@ -1,21 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "kgs-pipeline"
+version = "0.1.0"
+description = "KGS oil and gas production data pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "dask[dataframe]>=2023.1.0",
+    "pyarrow>=12.0.0",
+    "playwright>=1.40.0",
+    "distributed>=2023.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = [
-    "E",    # pycodestyle errors
-    "W",    # pycodestyle warnings
-    "F",    # pyflakes
-    "I",    # isort
-    "C",    # flake8-comprehensions
-    "B",    # flake8-bugbear
-]
-ignore = [
-    "E501",  # line too long
-    "E731",  # do not assign a lambda expression
-    "W391",  # blank line at end of file
-]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
 
-[tool.ruff.lint.isort]
-known-first-party = ["kgs_pipeline"]
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = false

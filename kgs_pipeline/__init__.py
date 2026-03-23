@@ -1,3 +1,5 @@
-"""KGS oil & gas pipeline package."""
+"""KGS Oil and Gas Pipeline package."""
 
-__version__ = "0.1.0"
+from kgs_pipeline.acquire import ScrapingError
+
+__all__ = ["ScrapingError"]

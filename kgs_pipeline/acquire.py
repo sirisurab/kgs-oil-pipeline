@@ -1,258 +1,250 @@
-"""Acquire component: download raw KGS oil production data via web scraping."""
+"""Acquire component — scrapes KGS lease pages and downloads monthly production files."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import dask
 import pandas as pd
 
-try:
-    import playwright.async_api
-except ImportError:
-    playwright = None  # type: ignore
+import kgs_pipeline.config as config
 
-from kgs_pipeline.config import (
-    KGS_BASE_URL,
-    KGS_MONTH_SAVE_URL,
-    LEASE_INDEX_FILE,
-    RAW_DATA_DIR,
-    SCRAPE_CONCURRENCY,
-    SCRAPE_TIMEOUT_MS,
-)
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Task 02: Custom exception
+# ---------------------------------------------------------------------------
+
+
 class ScrapingError(Exception):
-    """Raised when a critical scraping operation fails."""
+    """Raised when the Playwright scraper encounters a fatal per-lease error."""
 
-    pass
+    def __init__(self, message: str, lease_id: str = "") -> None:
+        self.lease_id = lease_id
+        full_message = f"{message} (lease_id={lease_id})" if lease_id else message
+        super().__init__(full_message)
 
 
-def load_lease_urls(lease_index_path: Path) -> list[dict]:  # type: ignore
+# ---------------------------------------------------------------------------
+# Task 03: Lease index reader
+# ---------------------------------------------------------------------------
+
+
+def load_lease_urls(index_file: Path) -> list[str]:
+    """Read deduplicated lease URLs from the KGS archive index file.
+
+    Args:
+        index_file: Path to the tab- or comma-delimited lease index file.
+
+    Returns:
+        Deduplicated list of URL strings.
+
+    Raises:
+        FileNotFoundError: If the index file does not exist.
+        KeyError: If the URL column is absent.
     """
-    Read the lease index file and extract unique lease URLs.
+    if not index_file.exists():
+        raise FileNotFoundError(f"Lease index file not found: {index_file}")
 
-    Parameters
-    ----------
-    lease_index_path : Path
-        Path to the lease index CSV file (e.g., oil_leases_2020_present.txt).
+    df = pd.read_csv(index_file, sep=",", dtype=str, low_memory=False)
+    if df.shape[1] == 1:
+        df = pd.read_csv(index_file, sep="\t", dtype=str, low_memory=False)
 
-    Returns
-    -------
-    list[dict]
-        List of dicts with keys 'lease_kid' and 'url', one per unique lease.
+    df.columns = [c.strip() for c in df.columns]
 
-    Raises
-    ------
-    FileNotFoundError
-        If lease_index_path does not exist.
-    KeyError
-        If required columns 'LEASE_KID' or 'URL' are missing.
-    """
-    if not lease_index_path.exists():
-        raise FileNotFoundError(f"Lease index file not found: {lease_index_path}")
-
-    df = pd.read_csv(lease_index_path)
-
-    # Check for required columns
-    if "LEASE_KID" not in df.columns:
-        raise KeyError("Column 'LEASE_KID' not found in lease index file")
     if "URL" not in df.columns:
-        raise KeyError("Column 'URL' not found in lease index file")
+        raise KeyError(
+            f"'URL' column not found in {index_file}. Available columns: {list(df.columns)}"
+        )
 
-    # Deduplicate on LEASE_KID and drop null URLs
-    df = df.dropna(subset=["URL"])
-    df = df.drop_duplicates(subset=["LEASE_KID"], keep="first")
+    urls: list[str] = (
+        df["URL"]
+        .dropna()
+        .loc[lambda s: s.str.strip() != ""]
+        .drop_duplicates()
+        .tolist()
+    )
 
-    # Return as list of dicts
-    result = [
-        {"lease_kid": row["LEASE_KID"], "url": row["URL"]}
-        for _, row in df.iterrows()
-    ]
-    return result
+    logger.info("Loaded %d unique lease URLs from %s", len(urls), index_file)
+    return urls
+
+
+# ---------------------------------------------------------------------------
+# Task 04: Per-lease Playwright scraper
+# ---------------------------------------------------------------------------
 
 
 async def scrape_lease_page(
-    lease_kid: str,
-    url: str,
+    lease_url: str,
     output_dir: Path,
     semaphore: asyncio.Semaphore,
-    browser: "playwright.async_api.Browser",  # type: ignore
+    browser: "playwright.async_api.Browser",  # type: ignore[name-defined]  # noqa: F821
 ) -> Path | None:
+    """Scrape a single KGS lease page and download the monthly production .txt file.
+
+    Args:
+        lease_url: Full URL to the lease page.
+        output_dir: Directory where the downloaded file is saved.
+        semaphore: Asyncio semaphore limiting concurrent page contexts.
+        browser: Playwright Browser instance.
+
+    Returns:
+        Path to the downloaded file, or None if no .txt link was found.
+
+    Raises:
+        ScrapingError: If the "Save Monthly Data to File" button is absent,
+                       or on any Playwright navigation error.
     """
-    Scrape monthly data for a single lease and download the .txt file.
+    from playwright.async_api import Error as PlaywrightError  # noqa: PLC0415
 
-    Parameters
-    ----------
-    lease_kid : str
-        Unique lease identifier.
-    url : str
-        Main lease page URL.
-    output_dir : Path
-        Directory to save downloaded files.
-    semaphore : asyncio.Semaphore
-        Rate-limiting semaphore (max 5 concurrent).
-    browser : playwright.async_api.Browser
-        Playwright browser instance.
+    parsed = urllib.parse.urlparse(lease_url)
+    params = urllib.parse.parse_qs(parsed.query)
+    lease_id = params.get("f_lc", [""])[0]
 
-    Returns
-    -------
-    Path | None
-        Path to downloaded file on success, None if download link missing or error.
-
-    Raises
-    ------
-    ScrapingError
-        If the "Save Monthly Data to File" button is not found.
-    """
     async with semaphore:
-        page = None
+        page = await browser.new_page()
         try:
-            # Check if file already exists (idempotent)
-            # We'll check after finding the filename, so proceed with scraping
-            page = await browser.new_page()
-            await page.goto(url, timeout=SCRAPE_TIMEOUT_MS)
+            await page.goto(lease_url, timeout=30_000)
 
-            # Locate "Save Monthly Data to File" button/link
-            save_button = await page.query_selector(
-                'a:has-text("Save Monthly Data to File"), button:has-text("Save Monthly Data to File")'
-            )
-            if not save_button:
+            save_btn = page.locator("text=Save Monthly Data to File")
+            count = await save_btn.count()
+            if count == 0:
                 raise ScrapingError(
-                    f"No 'Save Monthly Data to File' button found for lease {lease_kid}"
+                    "No 'Save Monthly Data to File' button found", lease_id=lease_id
                 )
 
-            # Click to navigate to MonthSave page
-            await save_button.click()
-
-            # Wait for navigation and locate .txt download link
-            await page.wait_for_load_state("networkidle", timeout=SCRAPE_TIMEOUT_MS)
-
-            # Look for an anchor with href ending in .txt
-            download_link = await page.query_selector('a[href$=".txt"]')
-            if not download_link:
-                logger.warning(f"No .txt download link found for lease {lease_kid}")
-                return None
-
-            # Get href and extract filename
-            href = await download_link.get_attribute("href")
-            if not href:
-                logger.warning(f"Could not get href for lease {lease_kid}")
-                return None
-
-            filename = href.split("/")[-1]
-            output_path = output_dir / filename
-
-            # Check if already exists (idempotent)
-            if output_path.exists():
-                logger.info(f"File already exists for lease {lease_kid}: {output_path}")
-                return output_path
-
-            # Download file
             async with page.expect_download() as download_info:
-                await download_link.click()
+                await save_btn.first.click()
+
             download = await download_info.value
-            await download.save_as(output_path)
 
-            logger.info(f"Downloaded {filename} for lease {lease_kid}")
-            return output_path
+            # Locate .txt link on MonthSave page
+            txt_link = page.locator("a[href$='.txt']")
+            txt_count = await txt_link.count()
+            if txt_count == 0:
+                logger.warning("No .txt download link found for lease URL: %s", lease_url)
+                return None
 
-        except Exception as e:  # type: ignore
-            if "TimeoutError" in str(type(e)):
-                logger.error(f"Timeout scraping lease {lease_kid} at {url}")
-            elif isinstance(e, ScrapingError):
-                raise
-            else:
-                logger.error(f"Error scraping lease {lease_kid}: {e}")
-            return None
+            href = await txt_link.first.get_attribute("href")
+            if not href:
+                logger.warning("Empty href on .txt link for lease URL: %s", lease_url)
+                return None
+
+            filename = Path(href).name
+            dest = output_dir / filename
+
+            if dest.exists():
+                logger.debug("Skipping — already downloaded: %s", dest)
+                return dest
+
+            await download.save_as(str(dest))
+            logger.info("Downloaded: %s", dest)
+            return dest
+
+        except PlaywrightError as exc:
+            logger.error("Playwright error for %s: %s", lease_url, exc)
+            raise ScrapingError(str(exc), lease_id=lease_id) from exc
         finally:
-            if page:
-                await page.close()
+            await page.close()
 
 
-def _scrape_one_lease(
-    lease_kid: str, url: str, output_dir: Path
-) -> Path | None:
+# ---------------------------------------------------------------------------
+# Task 05: Acquire pipeline orchestrator
+# ---------------------------------------------------------------------------
+
+
+async def _scrape_chunk(
+    chunk: list[str],
+    output_dir: Path,
+    max_concurrent: int,
+) -> list[Path | None]:
+    """Run Playwright scraping for a chunk of lease URLs.
+
+    Launches one browser per chunk and uses a shared semaphore for concurrency.
     """
-    Wrapper to run async scraping in a sync context (for Dask delayed).
+    from playwright.async_api import async_playwright  # noqa: PLC0415
 
-    Parameters
-    ----------
-    lease_kid : str
-        Unique lease identifier.
-    url : str
-        Main lease page URL.
-    output_dir : Path
-        Directory to save downloaded files.
+    semaphore = asyncio.Semaphore(max_concurrent)
+    results: list[Path | None] = []
 
-    Returns
-    -------
-    Path | None
-        Path to downloaded file, or None on error.
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        try:
+            tasks = [
+                scrape_lease_page(url, output_dir, semaphore, browser)
+                for url in chunk
+            ]
+            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for url, result in zip(chunk, raw_results):
+                if isinstance(result, ScrapingError):
+                    logger.error("ScrapingError for %s: %s", url, result)
+                elif isinstance(result, Exception):
+                    logger.error("Unexpected error for %s: %s", url, result)
+                else:
+                    results.append(result)  # type: ignore[arg-type]
+        finally:
+            await browser.close()
+
+    return results
+
+
+def _run_chunk_sync(args: tuple[list[str], Path, int]) -> list[Path | None]:
+    """Synchronous wrapper for _scrape_chunk — used as a Dask delayed target."""
+    chunk, output_dir, max_concurrent = args
+    return asyncio.run(_scrape_chunk(chunk, output_dir, max_concurrent))
+
+
+def run_acquire_pipeline() -> list[Path]:
+    """Orchestrate the full acquisition workflow end-to-end.
+
+    Reads the lease index, partitions URLs into chunks, and processes each chunk
+    via Dask delayed tasks backed by Playwright async scraping.
+
+    Returns:
+        Flat list of successfully downloaded file Paths.
     """
-    try:
+    import dask  # noqa: PLC0415
 
-        async def _async_scrape() -> Path | None:
-            async with playwright.async_api.async_playwright() as pw:  # type: ignore
-                browser = await pw.chromium.launch()
-                semaphore = asyncio.Semaphore(SCRAPE_CONCURRENCY)
-                result = await scrape_lease_page(
-                    lease_kid, url, output_dir, semaphore, browser
-                )
-                await browser.close()
-                return result
+    lease_index = config.LEASE_INDEX_FILE
+    output_dir = config.RAW_DATA_DIR
+    max_concurrent = config.MAX_CONCURRENT_REQUESTS
+    n_workers = config.DASK_N_WORKERS
 
-        return asyncio.run(_async_scrape())
-    except Exception as e:
-        logger.error(f"Error in _scrape_one_lease for lease {lease_kid}: {e}")
-        return None
-
-
-def run_acquire_pipeline(
-    lease_index_path: Path = LEASE_INDEX_FILE, output_dir: Path = RAW_DATA_DIR
-) -> list[Path]:  # type: ignore
-    """
-    Orchestrate the full async scraping workflow using Dask for task scheduling.
-
-    Parameters
-    ----------
-    lease_index_path : Path
-        Path to lease index file.
-    output_dir : Path
-        Directory to save raw .txt files.
-
-    Returns
-    -------
-    list[Path]
-        List of successfully downloaded file paths.
-    """
-    logger.info("Starting acquire pipeline")
-
-    # Load lease URLs
-    leases = load_lease_urls(lease_index_path)
-    logger.info(f"Loaded {len(leases)} unique leases")
-
-    # Create output directory
+    urls = load_lease_urls(lease_index)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build Dask delayed tasks
+    chunk_size = max_concurrent * 4
+    chunks = [urls[i : i + chunk_size] for i in range(0, len(urls), chunk_size)]
+
     delayed_tasks = [
-        dask.delayed(_scrape_one_lease)(lease["lease_kid"], lease["url"], output_dir)
-        for lease in leases
+        dask.delayed(_run_chunk_sync)((chunk, output_dir, max_concurrent))
+        for chunk in chunks
     ]
 
-    # Compute all tasks
-    logger.info(f"Starting scraping of {len(delayed_tasks)} leases")
-    results = dask.compute(*delayed_tasks)
+    try:
+        from dask.distributed import LocalCluster, Client  # noqa: PLC0415
 
-    # Filter out None results and count stats
-    successful = [p for p in results if p is not None]
-    failed = len(results) - len(successful)
+        with LocalCluster(n_workers=n_workers, threads_per_worker=1) as cluster:
+            with Client(cluster):
+                nested = dask.compute(*delayed_tasks)
+    except Exception:
+        nested = dask.compute(*delayed_tasks, scheduler="synchronous")
+
+    flat: list[Path | None] = [item for sublist in nested for item in sublist]
+    downloaded = [p for p in flat if p is not None]
+    skipped = len(flat) - len(downloaded)
 
     logger.info(
-        f"Acquire complete: {len(successful)} successful, {failed} failed/skipped"
+        "Acquire complete — attempted: %d, downloaded: %d, skipped/failed: %d",
+        len(urls),
+        len(downloaded),
+        skipped,
     )
-
-    return successful
+    return downloaded

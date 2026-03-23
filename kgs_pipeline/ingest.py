@@ -1,301 +1,312 @@
-"""Ingest component: read and combine raw KGS data into unified interim format."""
+"""Ingest component — reads raw KGS lease files into a unified Dask DataFrame."""
+
+from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
-import dask.dataframe as dd  # type: ignore
+import dask.dataframe as dd
 import pandas as pd
 
-from kgs_pipeline.config import (
-    EXTERNAL_DATA_DIR,
-    INTERIM_DATA_DIR,
-    LEASE_INDEX_FILE,
-    RAW_DATA_DIR,
-)
+import kgs_pipeline.config as config
 
 logger = logging.getLogger(__name__)
 
 
-def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dd.DataFrame:  # type: ignore
-    """
-    Read all per-lease .txt files from raw directory as a Dask DataFrame.
+# ---------------------------------------------------------------------------
+# Task 06: Raw file discovery
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    raw_dir : Path
-        Directory containing lp*.txt files.
 
-    Returns
-    -------
-    dask.dataframe.DataFrame
-        Lazy Dask DataFrame with all raw lease data.
+def discover_raw_files(raw_dir: Path) -> list[Path]:
+    """Return a sorted list of all .txt files in raw_dir.
 
-    Raises
-    ------
-    FileNotFoundError
-        If raw_dir does not exist or contains no lp*.txt files.
+    Args:
+        raw_dir: Directory to scan.
+
+    Returns:
+        Sorted list of .txt Path objects.
+
+    Raises:
+        FileNotFoundError: If raw_dir does not exist.
     """
     if not raw_dir.exists():
         raise FileNotFoundError(f"Raw data directory not found: {raw_dir}")
 
-    glob_pattern = str(raw_dir / "lp*.txt")
+    files = sorted(raw_dir.glob("*.txt"))
 
-    # Try to read files; catch if none match
-    try:
-        ddf = dd.read_csv(glob_pattern, dtype=str, assume_missing=True)  # type: ignore
-    except (ValueError, FileNotFoundError) as e:
-        raise FileNotFoundError(
-            f"No raw lease files found matching {glob_pattern}"
-        ) from e
-
-    # Better approach: read files individually and concatenate with source
-    files = sorted(raw_dir.glob("lp*.txt"))
     if not files:
-        raise FileNotFoundError(f"No raw lease files found in {raw_dir}")
+        logger.warning("No .txt files found in %s", raw_dir)
+        return []
 
-    dfs = []
-    for file in files:
-        df = pd.read_csv(file, dtype=str)
-        df["source_file"] = file.name
-        dfs.append(df)
+    logger.info("Discovered %d raw .txt files in %s", len(files), raw_dir)
+    return files
 
-    raw_df = pd.concat(dfs, ignore_index=True)  # type: ignore
-    ddf = dd.from_pandas(raw_df, npartitions=max(1, len(files) // 4 or 1))
+
+# ---------------------------------------------------------------------------
+# Task 07: Single raw file reader
+# ---------------------------------------------------------------------------
+
+
+def _add_source_file_col(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+    """Partition-level helper: adds the source_file column."""
+    df = df.copy()
+    df["source_file"] = source_name
+    return df
+
+
+def read_raw_file(file_path: Path) -> dd.DataFrame:
+    """Read a single KGS monthly production .txt file into a lazy Dask DataFrame.
+
+    Args:
+        file_path: Path to the .txt file.
+
+    Returns:
+        Lazy Dask DataFrame with LEASE_KID and source_file columns.
+
+    Raises:
+        FileNotFoundError: If file_path does not exist.
+        ValueError: If the file cannot be parsed after both encoding attempts.
+    """
+    if not file_path.exists():
+        raise FileNotFoundError(f"Raw file not found: {file_path}")
+
+    source_name = file_path.name
+
+    # Attempt UTF-8 first, fall back to latin-1
+    ddf: dd.DataFrame | None = None
+    for encoding in ("utf-8", "latin-1"):
+        try:
+            candidate = dd.read_csv(
+                str(file_path),
+                encoding=encoding,
+                blocksize=None,
+                dtype=str,
+                on_bad_lines="warn",
+            )
+            # Trigger schema inference to catch encoding issues early
+            _ = candidate.dtypes
+            ddf = candidate
+            break
+        except (UnicodeDecodeError, Exception) as exc:
+            if encoding == "utf-8":
+                logger.debug("UTF-8 read failed for %s, retrying with latin-1: %s", file_path, exc)
+            else:
+                logger.error("Failed to parse %s with latin-1: %s", file_path, exc)
+                raise ValueError(f"Cannot parse file: {file_path}") from exc
+
+    if ddf is None:
+        raise ValueError(f"Cannot parse file: {file_path}")
+
+    # Rename "LEASE KID" -> "LEASE_KID" if present
+    cols = list(ddf.columns)
+    if "LEASE KID" in cols:
+        ddf = ddf.rename(columns={"LEASE KID": "LEASE_KID"})
+    elif "LEASE_KID" not in ddf.columns:
+        logger.warning("Neither 'LEASE KID' nor 'LEASE_KID' column found in %s", file_path)
+
+    # Add source_file column via map_partitions
+    meta = ddf._meta.copy()
+    meta["source_file"] = pd.Series(dtype="object")
+
+    ddf = ddf.map_partitions(_add_source_file_col, source_name, meta=meta)
+    return ddf
+
+
+# ---------------------------------------------------------------------------
+# Task 08: Multi-file concatenation
+# ---------------------------------------------------------------------------
+
+
+def concatenate_raw_files(file_paths: list[Path]) -> dd.DataFrame:
+    """Concatenate multiple KGS raw files into a single lazy Dask DataFrame.
+
+    Args:
+        file_paths: List of .txt file Paths returned by discover_raw_files().
+
+    Returns:
+        Concatenated lazy Dask DataFrame.
+
+    Raises:
+        ValueError: If file_paths is empty or all files fail to parse.
+    """
+    if not file_paths:
+        raise ValueError("file_paths must not be empty")
+
+    valid_ddfs: list[dd.DataFrame] = []
+    skipped = 0
+
+    for fp in file_paths:
+        try:
+            ddf = read_raw_file(fp)
+            valid_ddfs.append(ddf)
+        except ValueError as exc:
+            logger.error("Skipping malformed file %s: %s", fp, exc)
+            skipped += 1
 
     logger.info(
-        f"Read {len(files)} raw lease files from {raw_dir} with {len(ddf)} rows"
+        "Read %d files successfully, skipped %d malformed files",
+        len(valid_ddfs),
+        skipped,
     )
-    return ddf
+
+    if not valid_ddfs:
+        raise ValueError("No valid raw files could be read")
+
+    return dd.concat(valid_ddfs)
 
 
-def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dd.DataFrame:  # type: ignore
+# ---------------------------------------------------------------------------
+# Task 09: Monthly record filter
+# ---------------------------------------------------------------------------
+
+
+def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:
+    """Filter out yearly (Month=0) and starting-cumulative (Month=-1) records.
+
+    Args:
+        ddf: Lazy Dask DataFrame with a MONTH-YEAR column.
+
+    Returns:
+        Filtered lazy Dask DataFrame retaining only Month 1–12 records.
+
+    Raises:
+        KeyError: If the MONTH-YEAR column is absent.
     """
-    Read lease index and return metadata for enrichment.
+    if "MONTH-YEAR" not in ddf.columns:
+        raise KeyError("Required column 'MONTH-YEAR' is absent from the DataFrame")
 
-    Parameters
-    ----------
-    lease_index_path : Path
-        Path to lease index file.
+    logger.info("Filtering non-monthly records (Month=0 and Month=-1)")
 
-    Returns
-    -------
-    dask.dataframe.DataFrame
-        Lazy Dask DataFrame with lease metadata (deduplicated by LEASE_KID).
+    def _filter_partition(df: pd.DataFrame) -> pd.DataFrame:
+        month_str = df["MONTH-YEAR"].astype(str).str.split("-", n=1).str[0]
+        try:
+            month_int = pd.to_numeric(month_str, errors="coerce")
+        except Exception:
+            month_int = pd.Series([float("nan")] * len(df), index=df.index)
+        mask = month_int.between(1, 12, inclusive="both")
+        return df[mask]
 
-    Raises
-    ------
-    FileNotFoundError
-        If lease_index_path does not exist.
-    KeyError
-        If required columns are missing.
+    meta = ddf._meta
+    return ddf.map_partitions(_filter_partition, meta=meta)
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Lease metadata enrichment
+# ---------------------------------------------------------------------------
+
+
+def enrich_with_lease_metadata(
+    ddf: dd.DataFrame, lease_index_file: Path
+) -> dd.DataFrame:
+    """Left-join monthly production data with lease-level metadata.
+
+    Args:
+        ddf: Lazy Dask DataFrame with LEASE_KID column.
+        lease_index_file: Path to the KGS lease archive index file.
+
+    Returns:
+        Enriched lazy Dask DataFrame.
+
+    Raises:
+        FileNotFoundError: If lease_index_file does not exist.
+        KeyError: If LEASE_KID is absent from either DataFrame.
     """
-    if not lease_index_path.exists():
-        raise FileNotFoundError(f"Lease index file not found: {lease_index_path}")
+    if not lease_index_file.exists():
+        raise FileNotFoundError(f"Lease index file not found: {lease_index_file}")
 
-    ddf = dd.read_csv(lease_index_path, dtype=str, assume_missing=True)  # type: ignore
+    if "LEASE_KID" not in ddf.columns:
+        raise KeyError("LEASE_KID column absent from production DataFrame")
 
-    # Check required columns
-    required = [
-        "LEASE_KID",
-        "LEASE",
-        "DOR_CODE",
-        "FIELD",
-        "PRODUCING_ZONE",
-        "OPERATOR",
-        "COUNTY",
-        "TOWNSHIP",
-        "TWN_DIR",
-        "RANGE",
-        "RANGE_DIR",
-        "SECTION",
-        "SPOT",
-        "LATITUDE",
-        "LONGITUDE",
+    # Read metadata into pandas
+    meta_df = pd.read_csv(lease_index_file, sep=",", dtype=str, low_memory=False)
+    if meta_df.shape[1] == 1:
+        meta_df = pd.read_csv(lease_index_file, sep="\t", dtype=str, low_memory=False)
+    meta_df.columns = [c.strip() for c in meta_df.columns]
+
+    if "LEASE KID" in meta_df.columns:
+        meta_df = meta_df.rename(columns={"LEASE KID": "LEASE_KID"})
+
+    if "LEASE_KID" not in meta_df.columns:
+        raise KeyError("LEASE_KID column absent from lease metadata DataFrame")
+
+    # Determine columns to add (exclude columns already in ddf)
+    existing_cols = set(ddf.columns)
+    meta_cols = ["LEASE_KID"] + [
+        c for c in meta_df.columns if c not in existing_cols and c != "LEASE_KID"
     ]
-    missing = [col for col in required if col not in ddf.columns]
-    if missing:
-        raise KeyError(f"Missing columns in lease index: {missing}")
+    meta_df = meta_df[meta_cols].drop_duplicates(subset=["LEASE_KID"])
 
-    # Rename MONTH-YEAR to MONTH_YEAR
-    if "MONTH-YEAR" in ddf.columns:
-        ddf = ddf.rename(columns={"MONTH-YEAR": "MONTH_YEAR"})
+    meta_ddf = dd.from_pandas(meta_df, npartitions=1)
 
-    # Filter out yearly (month=0) and starting cumulative (month=-1)
-    def filter_non_monthly(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
-        if "MONTH_YEAR" in df.columns:
-            # Parse month from "M-YYYY" format
-            month = df["MONTH_YEAR"].str.split("-").str[0]
-            df = df[~month.isin(["0", "-1"])]
-        return df
+    enriched = ddf.merge(meta_ddf, on="LEASE_KID", how="left", suffixes=("", "_meta"))
 
-    ddf = ddf.map_partitions(filter_non_monthly)
+    # Drop any _meta suffixed duplicate columns
+    drop_cols = [c for c in enriched.columns if c.endswith("_meta")]
+    if drop_cols:
+        enriched = enriched.drop(columns=drop_cols)
 
-    # Select metadata columns only
-    metadata_cols = required
-    ddf = ddf[metadata_cols]
-
-    # Deduplicate on LEASE_KID (keep first)
-    ddf = ddf.drop_duplicates(subset=["LEASE_KID"], keep="first")
-
-    logger.info(f"Read lease index from {lease_index_path}")
-    return ddf
+    logger.info("Enriched production data with metadata from %s", lease_index_file)
+    return enriched
 
 
-def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:  # type: ignore
+# ---------------------------------------------------------------------------
+# Task 11: Interim Parquet writer and pipeline orchestrator
+# ---------------------------------------------------------------------------
+
+
+def write_interim_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
+    """Write enriched Dask DataFrame to Parquet, partitioned by LEASE_KID.
+
+    Args:
+        ddf: Lazy Dask DataFrame with LEASE_KID column.
+        output_dir: Directory where Parquet files are written.
+
+    Returns:
+        output_dir as a Path.
     """
-    Filter out yearly and starting cumulative records.
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    Parameters
-    ----------
-    ddf : dask.dataframe.DataFrame
-        Input Dask DataFrame.
+    ddf = ddf.set_index("LEASE_KID", drop=False, sorted=False)
 
-    Returns
-    -------
-    dask.dataframe.DataFrame
-        Filtered lazy Dask DataFrame with only monthly records.
-
-    Raises
-    ------
-    KeyError
-        If MONTH_YEAR or MONTH-YEAR column not found.
-    """
-    # Handle both column name variants
-    month_col = None
-    if "MONTH_YEAR" in ddf.columns:
-        month_col = "MONTH_YEAR"
-    elif "MONTH-YEAR" in ddf.columns:
-        month_col = "MONTH-YEAR"
-        ddf = ddf.rename(columns={"MONTH-YEAR": "MONTH_YEAR"})
-        month_col = "MONTH_YEAR"
-    else:
-        raise KeyError("Expected column 'MONTH_YEAR' or 'MONTH-YEAR' not found")
-
-    def filter_records(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore
-        # Parse month from "M-YYYY" format
-        month = df[month_col].str.split("-", expand=True)[0]
-        # Keep only valid months (not "0" or "-1")
-        return df[~month.isin(["0", "-1"]) & df[month_col].notna()]
-
-    return ddf.map_partitions(filter_records)
-
-
-def merge_with_metadata(
-    raw_ddf: dd.DataFrame, metadata_ddf: dd.DataFrame  # type: ignore
-) -> dd.DataFrame:  # type: ignore
-    """
-    Left-join raw production data with lease metadata.
-
-    Parameters
-    ----------
-    raw_ddf : dask.dataframe.DataFrame
-        Raw per-lease production data.
-    metadata_ddf : dask.dataframe.DataFrame
-        Lease metadata (deduplicated by LEASE_KID).
-
-    Returns
-    -------
-    dask.dataframe.DataFrame
-        Merged lazy Dask DataFrame.
-
-    Raises
-    ------
-    KeyError
-        If LEASE_KID is missing from either DataFrame.
-    """
-    if "LEASE_KID" not in raw_ddf.columns:
-        raise KeyError("LEASE_KID column missing from raw DataFrame")
-    if "LEASE_KID" not in metadata_ddf.columns:
-        raise KeyError("LEASE_KID column missing from metadata DataFrame")
-
-    # Merge on LEASE_KID (left join)
-    merged = raw_ddf.merge(
-        metadata_ddf, on="LEASE_KID", how="left", suffixes=("", "_meta")
+    ddf.to_parquet(
+        str(output_dir),
+        engine="pyarrow",
+        write_index=True,
+        overwrite=True,
     )
 
-    # Drop _meta-suffixed columns (duplicates)
-    meta_cols = [col for col in merged.columns if col.endswith("_meta")]
-    merged = merged.drop(columns=meta_cols)
+    parquet_files = list(output_dir.glob("*.parquet"))
+    logger.info(
+        "Wrote interim Parquet to %s (%d files)", output_dir, len(parquet_files)
+    )
+    return output_dir
 
-    logger.info("Merged raw data with metadata")
-    return merged
 
+def run_ingest_pipeline() -> Path:
+    """Orchestrate the full ingest workflow end-to-end.
 
-def write_interim_parquet(
-    ddf: dd.DataFrame, interim_dir: Path = INTERIM_DATA_DIR  # type: ignore
-) -> None:
+    Returns:
+        Path to the interim Parquet directory.
+
+    Raises:
+        RuntimeError: If no raw files are found to ingest.
     """
-    Write interim Parquet store partitioned by LEASE_KID.
+    start = time.time()
+    logger.info("Ingest pipeline starting")
 
-    Parameters
-    ----------
-    ddf : dask.dataframe.DataFrame
-        Data to persist.
-    interim_dir : Path
-        Output directory.
+    file_paths = discover_raw_files(config.RAW_DATA_DIR)
 
-    Raises
-    ------
-    TypeError
-        If ddf is not a Dask DataFrame.
-    OSError
-        If write fails.
-    """
-    if not isinstance(ddf, dd.DataFrame):
-        raise TypeError("Expected a dask DataFrame")
+    if not file_paths:
+        logger.error("No raw files found in %s", config.RAW_DATA_DIR)
+        raise RuntimeError("No raw files to ingest")
 
-    interim_dir.mkdir(parents=True, exist_ok=True)
+    ddf = concatenate_raw_files(file_paths)
+    ddf = filter_monthly_records(ddf)
+    ddf = enrich_with_lease_metadata(ddf, config.LEASE_INDEX_FILE)
+    output = write_interim_parquet(ddf, config.INTERIM_DATA_DIR)
 
-    try:
-        ddf.to_parquet(
-            str(interim_dir),
-            partition_on=["LEASE_KID"],
-            write_index=False,
-            overwrite=True,
-            engine="pyarrow",
-        )
-        logger.info(f"Wrote interim Parquet to {interim_dir}")
-    except OSError as e:
-        raise OSError(f"Failed to write interim Parquet to {interim_dir}: {e}") from e
-
-
-def run_ingest_pipeline(
-    raw_dir: Path = RAW_DATA_DIR,
-    lease_index_path: Path = LEASE_INDEX_FILE,
-    interim_dir: Path = INTERIM_DATA_DIR,
-) -> None:
-    """
-    Orchestrate full ingest pipeline.
-
-    Parameters
-    ----------
-    raw_dir : Path
-        Directory with raw .txt files.
-    lease_index_path : Path
-        Path to lease index file.
-    interim_dir : Path
-        Output directory for interim Parquet.
-    """
-    logger.info("Starting ingest pipeline")
-
-    # Read raw files
-    logger.info(f"Reading raw lease files from {raw_dir}")
-    raw_ddf = read_raw_lease_files(raw_dir)
-
-    # Filter monthly records
-    logger.info("Filtering monthly records")
-    filtered_ddf = filter_monthly_records(raw_ddf)
-
-    # Read metadata
-    logger.info(f"Reading lease metadata from {lease_index_path}")
-    metadata_ddf = read_lease_index(lease_index_path)
-
-    # Merge
-    logger.info("Merging with metadata")
-    merged_ddf = merge_with_metadata(filtered_ddf, metadata_ddf)
-
-    # Write
-    logger.info(f"Writing interim Parquet to {interim_dir}")
-    write_interim_parquet(merged_ddf, interim_dir)
-
-    logger.info("Ingest pipeline complete")
+    elapsed = time.time() - start
+    logger.info("Ingest pipeline complete in %.1fs — output: %s", elapsed, output)
+    return output

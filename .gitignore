@@ -1,57 +1,46 @@
-# Environment variables
-.env
-*.env
-
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
 *.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Data directories
-data/raw/
-data/interim/
-data/processed/
-data/external/
-
-# Secrets and credentials
-*.key
-*.secret
-secrets.yaml
-secrets.json
-
-# Playwright browser cache
-.playwright/
-playwright/.local-browsers/
-
-# Dask worker scratch
-dask-worker-space/
+# Virtual environments
+.venv/
+venv/
+env/
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
+*.xml
 
-# Type checking
+# Mypy / type checking
 .mypy_cache/
 
-# Code formatting
+# Ruff
 .ruff_cache/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Data directories (large files not tracked)
+data/raw/
+data/interim/
+data/processed/
+data/external/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Jupyter
-.ipynb_checkpoints/
+# IDE
+.vscode/
+.idea/
 
-# Virtual environment
-venv/
-env/
+# Playwright
+playwright-report/
+test-results/

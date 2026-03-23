@@ -1,238 +1,79 @@
-# KGS Oil & Gas Production Data Pipeline
+# KGS Oil and Gas Production Pipeline
 
-A high-performance data pipeline for acquiring, ingesting, transforming, and engineering features from Kansas Geological Survey (KGS) oil production data (2020-2025).
+A Python pipeline for downloading, ingesting, cleaning, and feature-engineering
+Kansas Geological Survey (KGS) per-lease monthly oil and gas production data.
 
-## Features
-
-- **Acquire Component**: Web scrapes KGS lease pages and downloads monthly production data using Playwright
-- **Ingest Component**: Reads raw .txt files, merges with lease metadata, outputs interim Parquet
-- **Transform Component**: Cleans data, standardizes types, explodes wells, validates bounds, outputs processed Parquet partitioned by well_id
-- **Features Component**: Engineers time-series features (rolling averages, cumulative production, trends) ready for ML/analytics
-- **Parallel Processing**: Uses Dask DataFrames for distributed computation across all components
-- **Production-Ready**: Full error handling, logging, type hints, and pytest test coverage
-
-## Architecture
+## Pipeline Stages
 
 ```
-Raw KGS Data (web)
-    ↓
-[Acquire] → raw/*.txt
-    ↓
-[Ingest] → interim/parquet
-    ↓
-[Transform] → processed/parquet (partitioned by well_id)
-    ↓
-[Features] → features/parquet (ML-ready features)
+acquire.py → ingest.py → transform.py → features.py
+data/raw/   data/interim/  data/processed/  data/processed/features/
 ```
 
-## Installation
-
-```bash
-# Clone/download the project and enter the directory
-cd kgs
-
-# Install dependencies
-make install
-
-# Or manually:
-pip install -r requirements.txt
-```
+| Stage | Module | Description |
+|-------|--------|-------------|
+| Acquire | `kgs_pipeline/acquire.py` | Playwright async scraper with rate-limiting; downloads per-lease `.txt` files |
+| Ingest | `kgs_pipeline/ingest.py` | Dask-based ingestion, metadata enrichment, monthly-record filtering, Parquet write |
+| Transform | `kgs_pipeline/transform.py` | Column standardisation, date parsing, API explosion, bounds validation, deduplication |
+| Features | `kgs_pipeline/features.py` | Cumulative production, decline rate, rolling stats, GOR, label encoding |
 
 ## Quick Start
 
-### Run the full pipeline end-to-end:
 ```bash
-make run-all
+# Install dependencies
+pip install -e ".[dev]"
+playwright install chromium
+
+# Run unit tests only (no network or data required)
+make test-unit
+
+# Run full pipeline
+make pipeline
 ```
 
-### Run individual components:
-```bash
-make run-acquire      # Web scrape KGS data
-make run-ingest       # Read and merge raw data
-make run-transform    # Clean and standardize
-make run-features     # Engineer ML features
-```
-
-### Run tests:
-```bash
-make test             # Run all tests with coverage report
-```
-
-### Code quality:
-```bash
-make lint             # Auto-fix linting issues
-make type             # Type check with mypy
-```
-
-## Project Structure
+## Directory Structure
 
 ```
-kgs/
-├── data/
-│   ├── raw/           ← Downloaded .txt files from KGS (acquire output)
-│   ├── interim/       ← Parquet (ingest output)
-│   ├── processed/     ← Parquet partitioned by well_id (transform output)
-│   ├── external/      ← oil_leases_2020_present.txt, KGS data dictionaries
-│
-├── kgs_pipeline/
-│   ├── __init__.py
-│   ├── config.py      ← Centralized configuration
-│   ├── acquire.py     ← Web scraping + async concurrency
-│   ├── ingest.py      ← Read raw files + metadata merge
-│   ├── transform.py   ← Data cleaning + standardization
-│   ├── features.py    ← Feature engineering
-│
-├── tests/
-│   ├── test_acquire.py
-│   ├── test_ingest.py
-│   ├── test_transform.py
-│   ├── test_features.py
-│
-├── requirements.txt
-├── Makefile
-└── README.md
+kgs_pipeline/
+├── __init__.py
+├── config.py       # All configuration constants
+├── acquire.py      # Stage 1: Download raw .txt files from KGS
+├── ingest.py       # Stage 2: Ingest to interim Parquet
+├── transform.py    # Stage 3: Clean and restructure to well-level
+└── features.py     # Stage 4: ML-ready feature engineering
+
+data/
+├── raw/            # Downloaded raw per-lease .txt files
+├── interim/        # Parquet partitioned by LEASE_KID
+├── processed/      # Parquet partitioned by well_id
+└── processed/features/  # ML-ready feature Parquet
+
+references/
+├── oil_leases_2020_present.txt      # Lease index with URLs
+├── kgs_archives_data_dictionary.csv
+└── kgs_monthly_data_dictionary.csv
+
+tests/
+├── test_acquire.py
+├── test_ingest.py
+├── test_transform.py
+└── test_features.py
 ```
 
-## Component Details
+## Configuration
 
-### Acquire
+All configuration is centralised in `kgs_pipeline/config.py`:
 
-**Function**: `run_acquire_pipeline(lease_index_path, output_dir)`
+- `RAW_DATA_DIR`, `INTERIM_DATA_DIR`, `PROCESSED_DATA_DIR`, `FEATURES_DATA_DIR`
+- `LEASE_INDEX_FILE`: path to the KGS lease archive index
+- `KGS_BASE_URL`, `KGS_MONTH_SAVE_URL`: KGS portal URLs
+- `MAX_CONCURRENT_REQUESTS`: Playwright concurrency limit (default 5)
+- `OIL_OUTLIER_THRESHOLD_BBL`: Physical bounds threshold (50,000 BBL/month)
+- `DECLINE_RATE_CLIP_MIN` / `DECLINE_RATE_CLIP_MAX`: Decline rate bounds
 
-- Reads lease index file (`oil_leases_2020_present.txt`)
-- Launches Playwright browser to scrape each lease's KGS web page
-- Uses asyncio + semaphore for rate-limited concurrency (default: 5 concurrent)
-- Downloads monthly production data as .txt files
-- Saves to `data/raw/`
-- **Error handling**: Logs warnings for missing pages; returns None on failure
-- **Parallel**: Dask delayed tasks + asyncio semaphore
+## Test Markers
 
-### Ingest
+- `@pytest.mark.unit` — No network or data files required
+- `@pytest.mark.integration` — Requires real data in `data/raw/`, `data/interim/`, etc.
 
-**Function**: `run_ingest_pipeline(raw_dir, lease_index_path, interim_dir)`
-
-- Reads all `lp*.txt` files from raw directory
-- Filters to monthly records only (removes yearly and starting cumulative)
-- Reads lease index and deduplicates by LEASE_KID
-- Left-joins production data with metadata
-- Outputs Parquet partitioned by LEASE_KID to `data/interim/`
-- **Error handling**: Raises FileNotFoundError if required columns missing
-- **Parallel**: Dask lazy evaluation
-
-### Transform
-
-**Function**: `run_transform_pipeline(interim_dir, processed_dir)`
-
-1. **Parse dates**: Convert "M-YYYY" format to datetime
-2. **Rename/cast columns**: Snake_case, strip whitespace, type conversion
-3. **Explode API numbers**: One row per well (separate comma-separated API numbers)
-4. **Validate physical bounds**: 
-   - Negative production → NaN
-   - Oil outliers (>50k BBL/month) → flag
-   - Coordinates outside Kansas → NaN
-5. **Deduplicate**: Remove duplicate well-date-product records
-6. **Add units**: BBL for oil, MCF for gas
-7. **Sort by well and date**: Repartition by well_id, sort chronologically
-8. Outputs Parquet partitioned by well_id to `data/processed/`
-- **Error handling**: Raises KeyError for missing mandatory columns
-- **Parallel**: Dask map_partitions + set_index
-
-### Features
-
-**Function**: `run_features_pipeline(processed_dir, features_dir)`
-
-1. **Filter 2020-2025**: Temporal filter
-2. **Aggregate by well-month**: Sum, mean, std, count per well-month-product
-3. **Rolling averages**: 12-month rolling average production
-4. **Cumulative production**: Cumulative sum per well
-5. **Production trend**: Increasing/decreasing/stable indicator
-6. **Well lifetime**: Months of production per well
-7. **Standardize**: Z-score normalization of numeric features
-8. Outputs Parquet to `data/features/` (ready for ML)
-- **Error handling**: Raises KeyError for missing columns
-- **Parallel**: Dask groupby + map_partitions
-
-## Key Configuration
-
-See `kgs_pipeline/config.py`:
-
-- `KGS_BASE_URL`: Base lease page URL
-- `SCRAPE_CONCURRENCY`: Max concurrent Playwright sessions (default: 5)
-- `SCRAPE_TIMEOUT_MS`: Playwright timeout (default: 30,000 ms)
-- `MAX_REALISTIC_OIL_BBL_PER_MONTH`: Outlier threshold (default: 50,000 BBL)
-
-## Data Formats
-
-### Input
-- **oil_leases_2020_present.txt**: CSV with LEASE_KID, URL, and metadata columns
-- **KGS web pages**: HTML pages with monthly production data tables
-
-### Output Parquet Schema (Processed)
-
-| Column | Type | Notes |
-|--------|------|-------|
-| lease_kid | string | |
-| well_id | string | Exploded from API_NUMBER |
-| production_date | timestamp | |
-| product | string | "O" (oil) or "G" (gas) |
-| production | float64 | |
-| unit | string | "BBL" or "MCF" |
-| operator | string | |
-| field_name | string | |
-| county | string | |
-| latitude | float64 | |
-| longitude | float64 | |
-| outlier_flag | bool | True if production exceeds threshold |
-| source_file | string | Original raw .txt filename |
-
-## Testing
-
-All components include comprehensive pytest test cases covering:
-
-- **Happy path**: Function succeeds with valid input
-- **Error handling**: FileNotFoundError, KeyError, TypeError
-- **Data validation**: Correct aggregations, deduplication, filtering
-- **Edge cases**: Empty data, missing columns, null values
-
-Run tests:
-```bash
-pytest tests -v --cov=kgs_pipeline
-```
-
-## Performance Considerations
-
-- **Dask lazy evaluation**: All DataFrame operations are lazy until `.compute()` or `.to_parquet()`
-- **Partitioning**: Transform output partitioned by well_id for efficient downstream queries
-- **Async concurrency**: Playwright sessions pooled with asyncio semaphore (configurable)
-- **Parquet format**: Columnar storage for efficient analytics workloads
-
-## Dependencies
-
-- **pandas** (2.0+): Data manipulation
-- **dask** (2024.1+): Lazy distributed DataFrames
-- **pyarrow** (14.0+): Parquet serialization
-- **playwright** (1.40+): Browser automation for web scraping
-- **pytest** (7.4+): Testing framework
-- **ruff** (0.1+): Linting
-- **mypy** (1.7+): Type checking
-
-## License
-
-Open source (license file TBD)
-
-## Notes for ML/Analytics Consumers
-
-The processed features are ready for:
-
-- **Time-series forecasting** (production trends)
-- **Anomaly detection** (outlier flags, domain constraints)
-- **Clustering** (operator, field, county groupings)
-- **Regression/classification** (production prediction, decline curves)
-- **Geospatial analysis** (latitude/longitude coordinates)
-
-All features are:
-- ✅ Validated within physical domain constraints
-- ✅ Deduplicated and standardized
-- ✅ Partitioned for efficient querying
-- ✅ Z-score normalized where applicable
-- ✅ Timestamped and well-identified for reproducibility
+By default `pytest` runs only unit tests. Use `make test-integration` to run integration tests.
