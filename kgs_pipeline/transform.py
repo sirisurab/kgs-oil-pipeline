@@ -8,8 +8,8 @@ from pathlib import Path
 
 import dask.dataframe as dd
 import numpy as np
-import pandas as pd
-import pyarrow as pa
+import pandas as pd  # type: ignore[import-untyped]
+import pyarrow as pa  # type: ignore[import-untyped]
 
 import kgs_pipeline.config as config
 
@@ -41,9 +41,21 @@ def rename_and_cast_columns(ddf: dd.DataFrame) -> dd.DataFrame:
         df = df.copy()
 
         str_cols = [
-            "lease_kid", "lease_name", "dor_code", "api_number", "field_name",
-            "producing_zone", "operator", "county", "twn_dir", "range_dir",
-            "spot", "month_year", "product", "source_file", "url",
+            "lease_kid",
+            "lease_name",
+            "dor_code",
+            "api_number",
+            "field_name",
+            "producing_zone",
+            "operator",
+            "county",
+            "twn_dir",
+            "range_dir",
+            "spot",
+            "month_year",
+            "product",
+            "source_file",
+            "url",
         ]
         for col in str_cols:
             if col in df.columns:
@@ -100,7 +112,9 @@ def parse_production_date(ddf: dd.DataFrame) -> dd.DataFrame:
         month = parts[0].str.zfill(2)
         year = parts[1] if parts.shape[1] > 1 else pd.Series([""] * len(df), index=df.index)
         date_str = year + "-" + month + "-01"
-        df["production_date"] = pd.to_datetime(date_str, format="%Y-%m-%d", errors="coerce")
+        df["production_date"] = pd.to_datetime(date_str, format="%Y-%m-%d", errors="coerce").astype(
+            "datetime64[ns]"
+        )
         df = df.drop(columns=["month_year"])
         return df
 
@@ -144,7 +158,9 @@ def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:
         # Count rows with NaN lease_kid for logging
         nan_lease_count = df["lease_kid"].isna().sum()
         if nan_lease_count > 0:
-            logger.warning("%d rows have NaN lease_kid; assigning well_id='LEASE-UNKNOWN'", nan_lease_count)
+            logger.warning(
+                "%d rows have NaN lease_kid; assigning well_id='LEASE-UNKNOWN'", nan_lease_count
+            )
 
         # Synthetic ID for null api_number
         synthetic = "LEASE-" + df["lease_kid"].astype(str).where(
@@ -250,6 +266,7 @@ def assign_unit_labels(ddf: dd.DataFrame) -> dd.DataFrame:
             "BBL",
             np.where(df["product"] == "G", "MCF", "UNKNOWN"),
         )
+        df["unit"] = df["unit"].astype(object)
         return df
 
     meta = ddf._meta.copy()
@@ -279,9 +296,7 @@ def deduplicate_records(ddf: dd.DataFrame) -> dd.DataFrame:
     if missing:
         raise KeyError(f"Missing deduplication key columns: {missing}")
 
-    logger.debug(
-        "Deduplicating records (partition count before: %d)", ddf.npartitions
-    )
+    logger.debug("Deduplicating records (partition count before: %d)", ddf.npartitions)
 
     def _dedup_partition(df: pd.DataFrame) -> pd.DataFrame:
         return df.drop_duplicates(subset=key_cols, keep="last")
@@ -317,6 +332,7 @@ def sort_and_repartition(ddf: dd.DataFrame) -> dd.DataFrame:
     ddf = ddf.set_index("well_id", drop=False, sorted=False)
 
     def _sort_partition(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.reset_index(drop=True)
         return df.sort_values(["well_id", "production_date"], ascending=True)
 
     meta = ddf._meta
@@ -382,9 +398,7 @@ def write_processed_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
         raise
 
     parquet_files = list(output_dir.glob("*.parquet"))
-    logger.info(
-        "Wrote processed Parquet to %s (%d files)", output_dir, len(parquet_files)
-    )
+    logger.info("Wrote processed Parquet to %s (%d files)", output_dir, len(parquet_files))
     return output_dir
 
 
@@ -407,9 +421,7 @@ def run_transform_pipeline() -> Path:
 
     interim_files = list(config.INTERIM_DATA_DIR.glob("*.parquet"))
     if not interim_files:
-        raise RuntimeError(
-            f"No Parquet files found in INTERIM_DATA_DIR: {config.INTERIM_DATA_DIR}"
-        )
+        raise RuntimeError(f"No Parquet files found in INTERIM_DATA_DIR: {config.INTERIM_DATA_DIR}")
 
     ddf = dd.read_parquet(str(config.INTERIM_DATA_DIR), engine="pyarrow")
 

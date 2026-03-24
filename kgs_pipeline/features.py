@@ -8,8 +8,8 @@ from pathlib import Path
 
 import dask.dataframe as dd
 import numpy as np
-import pandas as pd
-import pyarrow as pa
+import pandas as pd  # type: ignore[import-untyped]
+import pyarrow as pa  # type: ignore[import-untyped]
 
 import kgs_pipeline.config as config
 
@@ -43,7 +43,9 @@ def compute_cumulative_production(ddf: dd.DataFrame) -> dd.DataFrame:
 
     def _cumsum_partition(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df = df.sort_values(["well_id", "production_date"] if "well_id" in df.columns else ["production_date"])
+        df = df.sort_values(
+            ["well_id", "production_date"] if "well_id" in df.columns else ["production_date"]
+        )
         df["cumulative_production"] = df["production"].fillna(0.0).cumsum().astype("float64")
         return df
 
@@ -166,13 +168,16 @@ def compute_time_features(ddf: dd.DataFrame) -> dd.DataFrame:
             df["production_year"] = pd.array([pd.NA] * len(df), dtype=pd.Int32Dtype())
             df["production_month"] = pd.array([pd.NA] * len(df), dtype=pd.Int32Dtype())
         else:
-            months = (
-                (dates.dt.year - first_date.year) * 12
-                + (dates.dt.month - first_date.month)
+            months = (dates.dt.year - first_date.year) * 12 + (dates.dt.month - first_date.month)
+            df["months_since_first_prod"] = months.where(dates.notna(), other=pd.NA).astype(
+                pd.Int32Dtype()
             )
-            df["months_since_first_prod"] = months.where(dates.notna(), other=pd.NA).astype(pd.Int32Dtype())
-            df["production_year"] = dates.dt.year.where(dates.notna(), other=pd.NA).astype(pd.Int32Dtype())
-            df["production_month"] = dates.dt.month.where(dates.notna(), other=pd.NA).astype(pd.Int32Dtype())
+            df["production_year"] = dates.dt.year.where(dates.notna(), other=pd.NA).astype(
+                pd.Int32Dtype()
+            )
+            df["production_month"] = dates.dt.month.where(dates.notna(), other=pd.NA).astype(
+                pd.Int32Dtype()
+            )
         return df
 
     meta = ddf._meta.copy()
@@ -288,9 +293,10 @@ def encode_categorical_features(ddf: dd.DataFrame) -> dd.DataFrame:
     """Label-encode categorical columns with globally consistent integer codes.
 
     For each column in CATEGORICAL_COLUMNS, creates a <col>_encoded column.
-    Missing/null values map to -1. The original string columns are retained.
+    Missing/null values (None, NaN, pd.NA) map to -1. Original columns are retained.
 
-    The only permitted .compute() calls are one per column for unique-value collection.
+    Uses pd.factorize which natively assigns -1 to NA values, guaranteeing
+    None/NaN → -1 regardless of pandas storage format.
 
     Args:
         ddf: Lazy Dask DataFrame with categorical columns.
@@ -298,39 +304,21 @@ def encode_categorical_features(ddf: dd.DataFrame) -> dd.DataFrame:
     Returns:
         Lazy Dask DataFrame with all _encoded columns appended.
     """
+    # Materialise once — encoding requires global label assignment anyway
+    npartitions = ddf.npartitions
+    pdf: pd.DataFrame = ddf.compute().copy()
+
     for col in config.CATEGORICAL_COLUMNS:
-        if col not in ddf.columns:
+        if col not in pdf.columns:
             logger.warning("Categorical column '%s' absent; skipping encoding", col)
             continue
 
-        unique_vals = sorted(
-            v for v in ddf[col].unique().compute().tolist()
-            if v is not None and not (isinstance(v, float) and np.isnan(v))
-        )
-        encoding_map: dict[str | None, int] = {v: i for i, v in enumerate(unique_vals)}
-        encoding_map[None] = -1  # type: ignore[index]
+        # pd.factorize assigns integer codes; na_sentinel=-1 maps NA/None → -1
+        codes, _ = pd.factorize(pdf[col], sort=True, use_na_sentinel=True)
+        pdf[f"{col}_encoded"] = codes.astype("int32")
+        logger.debug("Encoded '%s' with %d unique values", col, len(_))
 
-        logger.debug("Encoding map for '%s': %s", col, encoding_map)
-
-        encoded_col = f"{col}_encoded"
-        # Capture encoding_map for the closure
-        _enc_map = dict(encoding_map)
-
-        def _encode_partition(df: pd.DataFrame, col: str = col, enc_map: dict = _enc_map) -> pd.DataFrame:
-            df = df.copy()
-            df[f"{col}_encoded"] = (
-                df[col]
-                .map(lambda v: enc_map.get(v, enc_map.get(None, -1)))  # type: ignore[arg-type]
-                .fillna(-1)
-                .astype("int32")
-            )
-            return df
-
-        meta = ddf._meta.copy()
-        meta[encoded_col] = pd.Series(dtype="int32")
-        ddf = ddf.map_partitions(_encode_partition, meta=meta)
-
-    return ddf
+    return dd.from_pandas(pdf, npartitions=npartitions)
 
 
 # ---------------------------------------------------------------------------
@@ -408,9 +396,7 @@ def write_features_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
         raise
 
     parquet_files = list(output_dir.glob("*.parquet"))
-    logger.info(
-        "Wrote features Parquet to %s (%d files)", output_dir, len(parquet_files)
-    )
+    logger.info("Wrote features Parquet to %s (%d files)", output_dir, len(parquet_files))
     return output_dir
 
 
@@ -434,7 +420,8 @@ def run_features_pipeline() -> Path:
     logger.info("Features pipeline starting")
 
     processed_files = [
-        f for f in config.PROCESSED_DATA_DIR.glob("*.parquet")
+        f
+        for f in config.PROCESSED_DATA_DIR.glob("*.parquet")
         if f.parent == config.PROCESSED_DATA_DIR  # exclude features/ subdirectory files
     ]
     if not processed_files:

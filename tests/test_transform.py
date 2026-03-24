@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import dask.dataframe as dd
 import numpy as np
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
 import kgs_pipeline.config as config
@@ -146,7 +146,9 @@ def test_rename_preserves_extra_columns():
 
 @pytest.mark.unit
 def test_parse_production_date_values():
-    df = pd.DataFrame({"month_year": ["1-2021", "12-2023", "6-2022"], "production": [1.0, 2.0, 3.0]})
+    df = pd.DataFrame(
+        {"month_year": ["1-2021", "12-2023", "6-2022"], "production": [1.0, 2.0, 3.0]}
+    )
     ddf = dd.from_pandas(df, npartitions=1)
     result = parse_production_date(ddf).compute()
     assert result["production_date"].iloc[0] == pd.Timestamp("2021-01-01")
@@ -289,7 +291,7 @@ def test_validate_negative_production_becomes_nan():
     ddf = dd.from_pandas(df, npartitions=1)
     result = validate_physical_bounds(ddf).compute()
     assert pd.isna(result.iloc[0]["production"])
-    assert result.iloc[0]["outlier_flag"] is True or result.iloc[0]["outlier_flag"] == True
+    assert result.iloc[0]["outlier_flag"]
 
 
 @pytest.mark.unit
@@ -298,7 +300,7 @@ def test_validate_zero_production_preserved():
     ddf = dd.from_pandas(df, npartitions=1)
     result = validate_physical_bounds(ddf).compute()
     assert result.iloc[0]["production"] == 0.0
-    assert result.iloc[0]["outlier_flag"] == False
+    assert not result.iloc[0]["outlier_flag"]
 
 
 @pytest.mark.unit
@@ -307,7 +309,7 @@ def test_validate_nan_production_preserved():
     ddf = dd.from_pandas(df, npartitions=1)
     result = validate_physical_bounds(ddf).compute()
     assert pd.isna(result.iloc[0]["production"])
-    assert result.iloc[0]["outlier_flag"] == False
+    assert not result.iloc[0]["outlier_flag"]
 
 
 @pytest.mark.unit
@@ -316,7 +318,7 @@ def test_validate_oil_high_flags_but_preserves():
     ddf = dd.from_pandas(df, npartitions=1)
     result = validate_physical_bounds(ddf).compute()
     assert result.iloc[0]["production"] == 75000.0
-    assert result.iloc[0]["outlier_flag"] == True
+    assert result.iloc[0]["outlier_flag"]
 
 
 @pytest.mark.unit
@@ -324,7 +326,7 @@ def test_validate_gas_high_not_flagged():
     df = pd.DataFrame({"production": [75000.0], "product": ["G"]})
     ddf = dd.from_pandas(df, npartitions=1)
     result = validate_physical_bounds(ddf).compute()
-    assert result.iloc[0]["outlier_flag"] == False
+    assert not result.iloc[0]["outlier_flag"]
 
 
 @pytest.mark.unit
@@ -332,7 +334,7 @@ def test_validate_normal_oil_not_flagged():
     df = pd.DataFrame({"production": [500.0], "product": ["O"]})
     ddf = dd.from_pandas(df, npartitions=1)
     result = validate_physical_bounds(ddf).compute()
-    assert result.iloc[0]["outlier_flag"] == False
+    assert not result.iloc[0]["outlier_flag"]
     assert result.iloc[0]["production"] == 500.0
 
 
@@ -571,7 +573,7 @@ def _make_processed_df() -> pd.DataFrame:
 def test_write_processed_parquet_creates_files(tmp_path: Path):
     df = _make_processed_df()
     ddf = dd.from_pandas(df, npartitions=1)
-    result = write_processed_parquet(ddf, tmp_path / "processed")
+    write_processed_parquet(ddf, tmp_path / "processed")
     parquet_files = list((tmp_path / "processed").glob("*.parquet"))
     assert len(parquet_files) >= 1
 
@@ -611,18 +613,36 @@ def test_run_transform_pipeline_calls_steps(tmp_path: Path):
         def side_effect(*args, **kwargs):
             call_order.append(name)
             return return_val if return_val is not None else sample_ddf
+
         return side_effect
 
     with (
         patch("kgs_pipeline.transform.dd.read_parquet", return_value=sample_ddf),
-        patch("kgs_pipeline.transform.rename_and_cast_columns", side_effect=_track("rename", sample_ddf)),
-        patch("kgs_pipeline.transform.parse_production_date", side_effect=_track("parse", sample_ddf)),
-        patch("kgs_pipeline.transform.explode_api_numbers", side_effect=_track("explode", sample_ddf)),
-        patch("kgs_pipeline.transform.validate_physical_bounds", side_effect=_track("validate", sample_ddf)),
+        patch(
+            "kgs_pipeline.transform.rename_and_cast_columns",
+            side_effect=_track("rename", sample_ddf),
+        ),
+        patch(
+            "kgs_pipeline.transform.parse_production_date", side_effect=_track("parse", sample_ddf)
+        ),
+        patch(
+            "kgs_pipeline.transform.explode_api_numbers", side_effect=_track("explode", sample_ddf)
+        ),
+        patch(
+            "kgs_pipeline.transform.validate_physical_bounds",
+            side_effect=_track("validate", sample_ddf),
+        ),
         patch("kgs_pipeline.transform.assign_unit_labels", side_effect=_track("units", sample_ddf)),
-        patch("kgs_pipeline.transform.deduplicate_records", side_effect=_track("dedup", sample_ddf)),
-        patch("kgs_pipeline.transform.sort_and_repartition", side_effect=_track("sort", sample_ddf)),
-        patch("kgs_pipeline.transform.write_processed_parquet", side_effect=_track("write", config.PROCESSED_DATA_DIR)),
+        patch(
+            "kgs_pipeline.transform.deduplicate_records", side_effect=_track("dedup", sample_ddf)
+        ),
+        patch(
+            "kgs_pipeline.transform.sort_and_repartition", side_effect=_track("sort", sample_ddf)
+        ),
+        patch(
+            "kgs_pipeline.transform.write_processed_parquet",
+            side_effect=_track("write", config.PROCESSED_DATA_DIR),
+        ),
     ):
         # Make INTERIM_DATA_DIR appear to have files
         with patch("kgs_pipeline.config.INTERIM_DATA_DIR", tmp_path):
@@ -630,7 +650,16 @@ def test_run_transform_pipeline_calls_steps(tmp_path: Path):
             (tmp_path / "part.parquet").touch()
             run_transform_pipeline()
 
-    assert call_order == ["rename", "parse", "explode", "validate", "units", "dedup", "sort", "write"]
+    assert call_order == [
+        "rename",
+        "parse",
+        "explode",
+        "validate",
+        "units",
+        "dedup",
+        "sort",
+        "write",
+    ]
 
 
 @pytest.mark.unit

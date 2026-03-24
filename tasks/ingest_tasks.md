@@ -1,194 +1,254 @@
 # Ingest Component — Task Specifications
 
 ## Overview
-The ingest component is responsible for:
-1. Reading all raw per-lease `.txt` files from `kgs/data/raw/` (downloaded by the acquire component) using Dask.
-2. Reading and parsing the lease-level archive index file `kgs/data/external/oil_leases_2020_present.txt` to enrich raw per-lease files with lease metadata.
-3. Combining all per-lease data into a single unified Dask DataFrame.
-4. Writing the unified result to `kgs/data/interim/` as Parquet files partitioned by `LEASE_KID`.
-5. Keeping all operations lazy (no `.compute()` inside module functions) — Dask evaluation is triggered only by the orchestrator.
 
-**Source module:** `kgs_pipeline/ingest.py`  
+The ingest component is responsible for:
+1. Discovering all raw per-lease `.txt` files in `data/raw/` produced by the acquire component.
+2. Reading every raw file into a unified Dask DataFrame (lazy), applying the schema from `references/kgs_monthly_data_dictionary.csv`.
+3. Enriching each record with lease-level metadata from the archive index (`references/oil_leases_2020_present.txt`).
+4. Filtering out non-monthly records (yearly summaries where `MONTH-YEAR` encodes Month=0, and starting cumulative records where Month=-1).
+5. Adding a `source_file` traceability column to each row.
+6. Writing the unified, enriched, filtered dataset to `data/interim/` as Parquet files partitioned by `LEASE_KID`.
+
+**Source module:** `kgs_pipeline/ingest.py`
 **Test file:** `tests/test_ingest.py`
 
 ---
 
 ## Design Decisions & Constraints
-- Python 3.11+, Dask, Pandas, PyArrow (for Parquet).
-- All file reads from `kgs/data/raw/` use `dask.dataframe.read_csv()` with the glob pattern `kgs/data/raw/lp*.txt`.
-- The per-lease `.txt` files share the same schema as the lease archive file (same columns as `kgs_monthly_data_dictionary.csv`): `LEASE_KID`, `LEASE`, `DOR_CODE`, `API_NUMBER`, `FIELD`, `PRODUCING_ZONE`, `OPERATOR`, `COUNTY`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`, `LATITUDE`, `LONGITUDE`, `MONTH-YEAR`, `PRODUCT`, `WELLS`, `PRODUCTION`, `URL`.
-- Raw files may not include a `URL` column — treat it as optional (fill with `None` if absent).
-- Records where `MONTH-YEAR` has `Month=0` (yearly summary) or `Month=-1` (starting cumulative) must be **filtered out** at ingest time — they are not part of the monthly production time-series.
-- Dask DataFrame must **not** call `.compute()` internally; the orchestrator `run_ingest_pipeline()` is the only place `.compute()` is called.
-- The interim Parquet output is partitioned by `LEASE_KID` using `dask.dataframe.to_parquet()` with `write_index=False`.
-- All configuration paths come from `kgs_pipeline/config.py`.
-- A `source_file` column (basename of the originating `.txt` file) must be added to each partition for traceability.
+
+- All functions in `ingest.py` must return `dask.dataframe.DataFrame` (lazy). The only place `.compute()` is called is inside `write_interim_parquet()`, at write time.
+- Raw files are comma-separated `.txt` files (same schema as CSV). They follow the schema in `references/kgs_monthly_data_dictionary.csv`.
+- Key columns from the monthly data file: `LEASE KID`, `LEASE`, `DOR_CODE`, `API_NUMBER`, `FIELD`, `PRODUCING_ZONE`, `OPERATOR`, `COUNTY`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`, `LATITUDE`, `LONGITUDE`, `MONTH-YEAR`, `PRODUCT`, `WELLS`, `PRODUCTION`.
+- The `LEASE KID` column name contains a space and must be renamed to `LEASE_KID` immediately on read.
+- `MONTH-YEAR` is a string field (format `M-YYYY`, e.g. `3-2021`). Records with Month part equal to `0` are yearly summaries; records with Month part equal to `-1` are starting cumulative values. Both must be filtered out during ingestion.
+- The archive index file (`oil_leases_2020_present.txt`) provides additional lease-level metadata columns (`FIELD`, `PRODUCING_ZONE`, `OPERATOR`, `COUNTY`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`, `LATITUDE`, `LONGITUDE`, `URL`) that supplement the per-lease monthly files.
+- A `source_file` column (string, basename of the raw `.txt` file) must be added to every ingested row for traceability.
+- The Parquet output in `data/interim/` is partitioned by `LEASE_KID`. Each partition file contains all monthly records for one lease.
+- Encoding: KGS files may be encoded as `latin-1` (ISO-8859-1). Try `utf-8` first; fall back to `latin-1` on `UnicodeDecodeError`.
+- Use `dask.dataframe.read_csv()` with `blocksize=None` (one partition per file) for raw file reading so that `source_file` can be mapped cleanly per file.
+- All logging must use the Python `logging` module. No `print()` statements.
+- Configuration values (directory paths, partition column name) must be sourced from `kgs_pipeline/config.py`.
 
 ---
 
-## Task 06: Implement `read_raw_lease_files()`
+## Task 06: Implement raw file discovery
 
-**Module:** `kgs_pipeline/ingest.py`  
-**Function:** `def read_raw_lease_files(raw_dir: Path = RAW_DATA_DIR) -> dask.dataframe.DataFrame`
+**Module:** `kgs_pipeline/ingest.py`
+**Function:** `discover_raw_files(raw_dir: Path) -> list[Path]`
 
-**Description:**  
-Read all per-lease `.txt` files downloaded into `kgs/data/raw/` as a single lazy Dask DataFrame.
+**Description:**
+Scan `raw_dir` and return a sorted list of all `.txt` files present. The function uses `Path.glob("*.txt")` to find files and returns them sorted by filename. This list drives all downstream ingestion steps.
 
-Steps:
-1. Construct the glob pattern `str(raw_dir / "lp*.txt")`.
-2. Use `dask.dataframe.read_csv(glob_pattern, dtype=str, assume_missing=True)` to read all matching files into one Dask DataFrame. Using `dtype=str` defers type coercion to the transform stage to avoid early parse errors on messy data. `assume_missing=True` ensures Dask does not error on columns present in some files but absent in others.
-3. Add a `source_file` column derived from the Dask `map_partitions` that, for each partition, extracts just the filename (basename) from a hidden `_metadata` path or by an alternative method: inject the filename as a column at read time using `include_path_column=True` if supported by the Dask version, otherwise handle via `map_partitions` with `pandas.Series`.
-4. If no files match the glob (the `raw_dir` has no `lp*.txt` files), raise `FileNotFoundError` with a descriptive message.
-5. Return the lazy Dask DataFrame — do **not** call `.compute()`.
+Log the count of files discovered at `INFO` level.
 
 **Error handling:**
-- If `raw_dir` does not exist, raise `FileNotFoundError`.
-- If no matching files are found, raise `FileNotFoundError("No raw lease files found in <raw_dir>")`.
+- If `raw_dir` does not exist, raise `FileNotFoundError` with the path in the message.
+- If `raw_dir` contains no `.txt` files, log a `WARNING` and return an empty list (do not raise).
+
+**Dependencies:** `pathlib.Path`, `logging`
 
 **Test cases:**
-- `@pytest.mark.unit` — Write two small temporary `.txt` CSV files matching `lp*.txt` pattern to a tmp directory; assert `read_raw_lease_files(tmp_dir)` returns a `dask.dataframe.DataFrame` (not pandas).
-- `@pytest.mark.unit` — Assert the returned Dask DataFrame has a `source_file` column.
-- `@pytest.mark.unit` — Given a non-existent directory, assert `FileNotFoundError` is raised.
-- `@pytest.mark.unit` — Given a directory with no `lp*.txt` files, assert `FileNotFoundError` is raised.
-- `@pytest.mark.integration` — Given the real `kgs/data/raw/` directory (populated by acquire), assert the Dask DataFrame has the expected columns from the data dictionary and that `.compute()` on a single partition succeeds.
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Create 3 `.txt` files and 1 `.csv` file in `tmp_path`. Assert the function returns exactly 3 `Path` objects, all ending with `.txt`, in sorted order.
+- `@pytest.mark.unit` — Call with a non-existent directory. Assert `FileNotFoundError` is raised.
+- `@pytest.mark.unit` — Call with an empty directory. Assert an empty list is returned (no exception).
+- `@pytest.mark.integration` — Call with the real `data/raw/` directory (after acquire has run). Assert the return is a non-empty list of `Path` objects.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 07: Implement `read_lease_index()`
+## Task 07: Implement single raw file reader
 
-**Module:** `kgs_pipeline/ingest.py`  
-**Function:** `def read_lease_index(lease_index_path: Path = LEASE_INDEX_FILE) -> dask.dataframe.DataFrame`
+**Module:** `kgs_pipeline/ingest.py`
+**Function:** `read_raw_file(file_path: Path) -> dask.dataframe.DataFrame`
 
-**Description:**  
-Read the lease archive index file (`oil_leases_2020_present.txt`) as a Dask DataFrame to be used for metadata enrichment.
+**Description:**
+Read a single KGS monthly production `.txt` file into a lazy Dask DataFrame. The function must:
 
-Steps:
-1. Use `dask.dataframe.read_csv(str(lease_index_path), dtype=str, assume_missing=True)`.
-2. Rename `MONTH-YEAR` column to `MONTH_YEAR` (replace hyphen with underscore) to make it a valid Python identifier and consistent with downstream column naming convention.
-3. Filter out records where the `MONTH_YEAR` value starts with `0-` (yearly summary, Month=0) or `-1-` (starting cumulative, Month=-1). Use `dask.dataframe.map_partitions` with a pandas-compatible filter.
-4. Select only the metadata columns needed for enrichment: `LEASE_KID`, `LEASE`, `DOR_CODE`, `FIELD`, `PRODUCING_ZONE`, `OPERATOR`, `COUNTY`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`, `LATITUDE`, `LONGITUDE`. Drop `PRODUCTION`, `WELLS`, `PRODUCT`, `MONTH_YEAR`, `URL` from this read — they come from the per-lease files.
-5. Deduplicate on `LEASE_KID` (keep first) since metadata columns are the same for all rows of the same lease.
-6. Return the lazy Dask DataFrame — do **not** call `.compute()`.
+1. Attempt to read the file using `dask.dataframe.read_csv()` with `encoding="utf-8"` and `blocksize=None`.
+2. If a `UnicodeDecodeError` is raised (caught via Dask's deferred execution on `.dtypes` access), retry with `encoding="latin-1"`.
+3. Rename the column `"LEASE KID"` to `"LEASE_KID"` immediately (using `rename(columns=...)`).
+4. Add a `source_file` column containing the basename string of `file_path` (e.g. `"lp564.txt"`). Use `dask.dataframe.map_partitions` to assign this constant string column.
+5. Return the lazy Dask DataFrame.
+
+The function must not call `.compute()`.
 
 **Error handling:**
-- If `lease_index_path` does not exist, raise `FileNotFoundError`.
-- If required columns are missing, raise `KeyError` with a descriptive message listing the missing columns.
+- If the file does not exist, raise `FileNotFoundError`.
+- If after both encoding attempts the file still cannot be parsed (malformed CSV), log an `ERROR` and raise `ValueError` with the file path in the message.
+- If the `"LEASE KID"` column is absent in the file (some files may omit it), log a `WARNING` but continue without raising.
+
+**Dependencies:** `dask.dataframe`, `pathlib.Path`, `logging`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given a small in-memory CSV written to a temp file, assert the function returns a `dask.dataframe.DataFrame`.
-- `@pytest.mark.unit` — Assert that the returned DataFrame does not contain `PRODUCTION`, `WELLS`, or `PRODUCT` columns.
-- `@pytest.mark.unit` — Assert that records with `MONTH_YEAR` of `"0-2020"` and `"-1-2020"` are excluded from the result.
-- `@pytest.mark.unit` — Given a non-existent path, assert `FileNotFoundError` is raised.
-- `@pytest.mark.integration` — Given the real `kgs/data/external/oil_leases_2020_present.txt`, assert the result is a valid Dask DataFrame and that `.compute()` returns a pandas DataFrame with `LEASE_KID` as a column and no duplicate `LEASE_KID` values.
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Write a small valid CSV string (with `LEASE KID` column, 5 rows) to `tmp_path`. Assert the function returns a `dask.dataframe.DataFrame` (not pandas), has a `LEASE_KID` column, and has a `source_file` column.
+- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`, confirming `.compute()` has not been called inside the function.
+- `@pytest.mark.unit` — Write a file with `latin-1`-encoded content (containing a non-UTF-8 byte). Assert the function returns a Dask DataFrame without raising.
+- `@pytest.mark.unit` — Call with a non-existent path. Assert `FileNotFoundError` is raised.
+- `@pytest.mark.integration` — Call on a real file from `data/raw/`. Assert the resulting DataFrame has a `LEASE_KID` column, a `source_file` column, and the `source_file` value matches the filename.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 08: Implement `filter_monthly_records()`
+## Task 08: Implement multi-file concatenation
 
-**Module:** `kgs_pipeline/ingest.py`  
-**Function:** `def filter_monthly_records(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Module:** `kgs_pipeline/ingest.py`
+**Function:** `concatenate_raw_files(file_paths: list[Path]) -> dask.dataframe.DataFrame`
 
-**Description:**  
-Given a raw Dask DataFrame (from `read_raw_lease_files()`), filter out non-monthly records:
+**Description:**
+Given a list of raw `.txt` file paths (from `discover_raw_files()`), call `read_raw_file()` on each file and concatenate all resulting lazy Dask DataFrames into a single lazy Dask DataFrame using `dask.dataframe.concat()`.
 
-1. Rename `MONTH-YEAR` column to `MONTH_YEAR` if it exists (handle both forms for robustness).
-2. Drop rows where the month part of `MONTH_YEAR` equals `"0"` (yearly aggregate) or `"-1"` (starting cumulative). The `MONTH_YEAR` format is `"M-YYYY"` (e.g. `"3-2021"`), so parse the month by splitting on `"-"` and taking the first element.
-3. Drop rows where `MONTH_YEAR` is null or empty.
-4. Return the filtered lazy Dask DataFrame — do **not** call `.compute()`.
+Processing steps:
+1. For each path in `file_paths`, call `read_raw_file(path)`.
+2. If `read_raw_file()` raises `ValueError` for a file (malformed), log an `ERROR` for that file and skip it (do not abort).
+3. Collect all valid Dask DataFrames in a list.
+4. If the list is empty, raise `ValueError("No valid raw files could be read")`.
+5. Return `dask.dataframe.concat(valid_dfs)`.
+
+Log the count of files successfully read vs. skipped at `INFO` level.
+
+The function must not call `.compute()`.
 
 **Error handling:**
-- If neither `MONTH-YEAR` nor `MONTH_YEAR` is present in the DataFrame columns, raise `KeyError("Expected column 'MONTH_YEAR' or 'MONTH-YEAR' not found")`.
+- If `file_paths` is an empty list, raise `ValueError` with a descriptive message.
+- Per-file `ValueError` from `read_raw_file()` is caught and logged, not re-raised.
+
+**Dependencies:** `dask.dataframe`, `pathlib.Path`, `logging`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given a small pandas DataFrame with rows for months `1`, `0`, and `-1` converted to Dask, assert the returned Dask DataFrame contains only the month `1` row after `.compute()`.
-- `@pytest.mark.unit` — Assert rows where `MONTH_YEAR` is null are dropped.
-- `@pytest.mark.unit` — Given a DataFrame missing both `MONTH-YEAR` and `MONTH_YEAR`, assert `KeyError` is raised.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame` (lazy evaluation preserved).
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Provide 3 valid small CSV files in `tmp_path`. Assert the return is a `dask.dataframe.DataFrame` with 3× the rows of a single file.
+- `@pytest.mark.unit` — Provide an empty list. Assert `ValueError` is raised.
+- `@pytest.mark.unit` — Provide 2 valid files and 1 malformed file. Assert the function returns a DataFrame covering just the 2 valid files and does not raise.
+- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame` (lazy evaluation check).
+- `@pytest.mark.integration` — Run against all files in `data/raw/`. Assert the result has more rows than any single file alone.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 09: Implement `merge_with_metadata()`
+## Task 09: Implement monthly record filter
 
-**Module:** `kgs_pipeline/ingest.py`  
-**Function:** `def merge_with_metadata(raw_ddf: dask.dataframe.DataFrame, metadata_ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Module:** `kgs_pipeline/ingest.py`
+**Function:** `filter_monthly_records(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
-**Description:**  
-Left-join the raw per-lease production DataFrame with the lease metadata DataFrame on `LEASE_KID`, enriching each production record with lease-level metadata fields.
+**Description:**
+Filter out non-monthly records from the concatenated raw Dask DataFrame. The `MONTH-YEAR` field (string, format `M-YYYY`) encodes both monthly and non-monthly records:
+- Records where the month portion equals `"0"` are yearly production summaries — exclude them.
+- Records where the month portion equals `"-1"` are starting cumulative values — exclude them.
+- All other records (month 1–12) are valid monthly records — retain them.
 
-Steps:
-1. Ensure both DataFrames have `LEASE_KID` as a string column (cast if necessary using `map_partitions`).
-2. Perform a Dask merge: `raw_ddf.merge(metadata_ddf, on="LEASE_KID", how="left", suffixes=("", "_meta"))`.
-3. Drop any `_meta`-suffixed duplicate columns that result from the merge (metadata columns already present in the raw file).
-4. Return the merged lazy Dask DataFrame — do **not** call `.compute()`.
+Processing steps:
+1. Extract the month portion from `MONTH-YEAR` by splitting on `"-"` and taking the first element. Handle the edge case where `MONTH-YEAR` is null.
+2. Keep only rows where the extracted month string is a digit in the range `1` to `12` (inclusive). Specifically, cast the month part to integer and check `1 <= month <= 12`.
+3. Return the filtered lazy Dask DataFrame.
+
+Log the approximate percentage of records retained vs. filtered (using `len()` on the dask graph metadata, not `.compute()`) at `DEBUG` level if feasible; otherwise log a static message at `INFO`.
+
+The function must not call `.compute()`.
 
 **Error handling:**
-- If `LEASE_KID` is not in `raw_ddf.columns`, raise `KeyError("LEASE_KID column missing from raw DataFrame")`.
-- If `LEASE_KID` is not in `metadata_ddf.columns`, raise `KeyError("LEASE_KID column missing from metadata DataFrame")`.
+- If the `MONTH-YEAR` column is absent, raise `KeyError` with a descriptive message.
+- Rows where `MONTH-YEAR` is null are silently dropped (they are not valid monthly records).
+
+**Dependencies:** `dask.dataframe`, `logging`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given two small Dask DataFrames with matching `LEASE_KID`, assert the merged result has columns from both.
-- `@pytest.mark.unit` — Assert that `_meta`-suffixed columns are not present in the result.
-- `@pytest.mark.unit` — Given a raw row with a `LEASE_KID` that has no match in metadata, assert the row is still present in the result (left join semantics) and metadata fields are `NaN`.
+
+- `@pytest.mark.unit` — Construct a small pandas DataFrame with 5 rows: months `1`, `6`, `12`, `0`, `-1`. Convert to Dask DataFrame. Assert the filtered result (after `.compute()`) has exactly 3 rows.
+- `@pytest.mark.unit` — Include a row with a null `MONTH-YEAR`. Assert the row is excluded from the result.
+- `@pytest.mark.unit` — Include only rows with month `0` and `-1`. Assert the result is an empty DataFrame (not an error).
 - `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
-- `@pytest.mark.unit` — Given a `raw_ddf` missing `LEASE_KID`, assert `KeyError` is raised.
+- `@pytest.mark.unit` — Assert that a DataFrame missing the `MONTH-YEAR` column raises `KeyError`.
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 10: Implement `write_interim_parquet()`
+## Task 10: Implement lease metadata enrichment
 
-**Module:** `kgs_pipeline/ingest.py`  
-**Function:** `def write_interim_parquet(ddf: dask.dataframe.DataFrame, interim_dir: Path = INTERIM_DATA_DIR) -> None`
+**Module:** `kgs_pipeline/ingest.py`
+**Function:** `enrich_with_lease_metadata(ddf: dask.dataframe.DataFrame, lease_index_file: Path) -> dask.dataframe.DataFrame`
 
-**Description:**  
-Persist the unified Dask DataFrame to the interim Parquet store, partitioned by `LEASE_KID`.
+**Description:**
+Enrich the monthly production Dask DataFrame with lease-level metadata sourced from the KGS lease archive index file (`oil_leases_2020_present.txt`). This file contains columns such as `LEASE KID`, `FIELD`, `PRODUCING_ZONE`, `OPERATOR`, `COUNTY`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`, `LATITUDE`, `LONGITUDE`, `URL`.
 
-Steps:
-1. Create `interim_dir` if it does not exist (`interim_dir.mkdir(parents=True, exist_ok=True)`).
-2. Call `ddf.to_parquet(str(interim_dir), partition_on=["LEASE_KID"], write_index=False, overwrite=True, engine="pyarrow")`.
-3. This call triggers computation (`.to_parquet()` is an action in Dask). This is the only point in the ingest module where Dask computation occurs — it is acceptable here because writing to disk is inherently an eager action.
-4. Log the number of partitions written and the target directory on completion.
+Processing steps:
+1. Read the lease archive index into a pandas DataFrame using `pandas.read_csv()` (it is small enough for in-memory handling). Apply the same comma/tab delimiter auto-detection as in `load_lease_urls()`. Rename `"LEASE KID"` to `"LEASE_KID"`.
+2. Select only the metadata columns not already present in the monthly data (to avoid duplication). Always include `LEASE_KID` as the join key. Include `URL` if present.
+3. Broadcast the pandas metadata DataFrame into a Dask DataFrame using `dask.dataframe.from_pandas()` with `npartitions=1`.
+4. Perform a left join of the monthly production Dask DataFrame on `LEASE_KID`, keeping all production records even if no metadata match exists.
+5. Return the enriched lazy Dask DataFrame.
+
+The function must not call `.compute()`.
 
 **Error handling:**
-- If `ddf` is not a `dask.dataframe.DataFrame`, raise `TypeError("Expected a dask DataFrame")`.
-- Wrap the `to_parquet` call in a try/except for `OSError` and re-raise with a descriptive message including the target directory.
+- If `lease_index_file` does not exist, raise `FileNotFoundError`.
+- If `LEASE_KID` is absent from either DataFrame, raise `KeyError` with a clear message identifying which DataFrame is missing the column.
+- Duplicate metadata columns (columns present in both DataFrames) must be handled by suffixing with `_meta` on the right side and then dropping the suffixed duplicates.
+
+**Dependencies:** `dask.dataframe`, `pandas`, `pathlib.Path`, `logging`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given a small Dask DataFrame, assert `write_interim_parquet` creates the target directory and at least one `.parquet` file within it.
-- `@pytest.mark.unit` — Given a plain pandas DataFrame (not Dask), assert `TypeError` is raised.
-- `@pytest.mark.unit` — Assert the written Parquet files are readable by `pandas.read_parquet()`.
-- `@pytest.mark.integration` — Given the merged Dask DataFrame produced from real raw data, assert Parquet files are written to `kgs/data/interim/` and each file's `LEASE_KID` column contains only one unique value (partition correctness).
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Construct a small production Dask DataFrame (3 leases) and a metadata pandas DataFrame (2 matching leases + 1 extra). Assert the join result has 3 rows and that metadata columns are present for the 2 matching leases and null for the 1 unmatched.
+- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
+- `@pytest.mark.unit` — Call with a non-existent `lease_index_file` path. Assert `FileNotFoundError` is raised.
+- `@pytest.mark.unit` — Call with a DataFrame missing `LEASE_KID`. Assert `KeyError` is raised.
+- `@pytest.mark.integration` — Run against the real lease index file and an interim concatenated DataFrame. Assert the `OPERATOR` column is non-null for at least 80% of rows after enrichment.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 11: Implement `run_ingest_pipeline()`
+## Task 11: Implement interim Parquet writer and pipeline orchestrator
 
-**Module:** `kgs_pipeline/ingest.py`  
-**Function:** `def run_ingest_pipeline(raw_dir: Path = RAW_DATA_DIR, lease_index_path: Path = LEASE_INDEX_FILE, interim_dir: Path = INTERIM_DATA_DIR) -> None`
+**Module:** `kgs_pipeline/ingest.py`
+**Functions:**
+- `write_interim_parquet(ddf: dask.dataframe.DataFrame, output_dir: Path) -> Path`
+- `run_ingest_pipeline() -> Path`
 
-**Description:**  
-Synchronous orchestrator that chains all ingest steps into one callable pipeline entry point.
+**Description:**
 
-Steps:
-1. Call `read_raw_lease_files(raw_dir)` → `raw_ddf`.
-2. Call `filter_monthly_records(raw_ddf)` → `filtered_ddf`.
-3. Call `read_lease_index(lease_index_path)` → `metadata_ddf`.
-4. Call `merge_with_metadata(filtered_ddf, metadata_ddf)` → `merged_ddf`.
-5. Call `write_interim_parquet(merged_ddf, interim_dir)` — this is the only computation trigger.
-6. Log pipeline start, each step completion, and overall pipeline completion.
+### `write_interim_parquet`
+Write the enriched, filtered Dask DataFrame to Parquet format in `output_dir`, partitioned by `LEASE_KID`. Steps:
+1. Ensure `output_dir` exists (`mkdir(parents=True, exist_ok=True)`).
+2. Repartition the Dask DataFrame by `LEASE_KID` using `ddf.set_index("LEASE_KID", drop=False, sorted=False)` — this groups records by lease for efficient per-lease processing downstream.
+3. Call `ddf.to_parquet(str(output_dir), engine="pyarrow", write_index=True, overwrite=True)`. This is the single `.compute()` call for the ingest pipeline (Dask calls `.compute()` internally in `to_parquet()`).
+4. Log the output directory and number of partitions written at `INFO` level.
+5. Return `output_dir` as a `Path`.
+
+### `run_ingest_pipeline`
+Synchronous entry-point that wires together the full ingest workflow:
+1. Read config from `kgs_pipeline/config.py`.
+2. Call `discover_raw_files(RAW_DATA_DIR)`.
+3. Call `concatenate_raw_files(file_paths)`.
+4. Call `filter_monthly_records(ddf)`.
+5. Call `enrich_with_lease_metadata(ddf, LEASE_INDEX_FILE)`.
+6. Call `write_interim_parquet(ddf, INTERIM_DATA_DIR)`.
+7. Return `INTERIM_DATA_DIR`.
+
+Log pipeline start and completion with elapsed time at `INFO` level.
+
+**Error handling:**
+- If `discover_raw_files()` returns an empty list, log an `ERROR` and raise `RuntimeError("No raw files to ingest")`.
+- Any exception in steps 3–5 must propagate with full traceback (do not swallow).
+
+**Dependencies:** `dask.dataframe`, `pyarrow`, `pathlib.Path`, `logging`, `time`
 
 **Test cases:**
-- `@pytest.mark.unit` — Mock all five sub-functions; assert each is called exactly once in the correct order.
-- `@pytest.mark.unit` — If `read_raw_lease_files` raises `FileNotFoundError`, assert the exception propagates from `run_ingest_pipeline` (no swallowing).
-- `@pytest.mark.integration` — Run `run_ingest_pipeline()` end-to-end using real raw data (requires acquire to have run); assert that `kgs/data/interim/` contains subdirectories named `LEASE_KID=<value>` each holding at least one `.parquet` file.
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Provide a small valid Dask DataFrame (5 rows, 2 unique `LEASE_KID` values). Call `write_interim_parquet()` with `tmp_path`. Assert the directory contains Parquet files and each file is readable by `pandas.read_parquet()`.
+- `@pytest.mark.unit` — Patch `discover_raw_files` to return an empty list. Assert `run_ingest_pipeline()` raises `RuntimeError`.
+- `@pytest.mark.unit` — Patch all pipeline steps. Assert `run_ingest_pipeline()` calls each step exactly once in the correct order.
+- `@pytest.mark.unit` — Assert that `write_interim_parquet()` creates `output_dir` if it does not exist.
+- `@pytest.mark.integration` — Run `run_ingest_pipeline()` end-to-end against `data/raw/`. Assert that `data/interim/` is populated with readable Parquet files containing a `LEASE_KID` column, a `source_file` column, and a `PRODUCTION` column with no negative values surviving the ingest (pre-cleaning).
+
+**Parquet readability test:**
+- `@pytest.mark.integration` — For each Parquet file written to `data/interim/`, attempt to read it with `pandas.read_parquet()`. Assert no file raises an exception on read.
+
+**Definition of done:** Both functions are implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.

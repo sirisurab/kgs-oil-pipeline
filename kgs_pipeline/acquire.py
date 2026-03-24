@@ -8,7 +8,7 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 
 import kgs_pipeline.config as config
 
@@ -65,11 +65,7 @@ def load_lease_urls(index_file: Path) -> list[str]:
         )
 
     urls: list[str] = (
-        df["URL"]
-        .dropna()
-        .loc[lambda s: s.str.strip() != ""]
-        .drop_duplicates()
-        .tolist()
+        df["URL"].dropna().loc[lambda s: s.str.strip() != ""].drop_duplicates().tolist()
     )
 
     logger.info("Loaded %d unique lease URLs from %s", len(urls), index_file)
@@ -177,10 +173,7 @@ async def _scrape_chunk(
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         try:
-            tasks = [
-                scrape_lease_page(url, output_dir, semaphore, browser)
-                for url in chunk
-            ]
+            tasks = [scrape_lease_page(url, output_dir, semaphore, browser) for url in chunk]
             raw_results = await asyncio.gather(*tasks, return_exceptions=True)
             for url, result in zip(chunk, raw_results):
                 if isinstance(result, ScrapingError):
@@ -224,8 +217,7 @@ def run_acquire_pipeline() -> list[Path]:
     chunks = [urls[i : i + chunk_size] for i in range(0, len(urls), chunk_size)]
 
     delayed_tasks = [
-        dask.delayed(_run_chunk_sync)((chunk, output_dir, max_concurrent))
-        for chunk in chunks
+        dask.delayed(_run_chunk_sync)((chunk, output_dir, max_concurrent)) for chunk in chunks
     ]
 
     try:

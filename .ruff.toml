@@ -1,0 +1,10 @@
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W"]
+ignore = ["W293", "E501"]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"validate_setup.py" = ["F401"]

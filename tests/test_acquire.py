@@ -163,10 +163,13 @@ def test_scrape_lease_page_returns_path(tmp_path: Path):
     mock_page.close = AsyncMock()
 
     # expect_download context manager
+    async def fake_download():
+        return mock_download
+
     download_ctx = AsyncMock()
     download_ctx.__aenter__ = AsyncMock(return_value=download_ctx)
     download_ctx.__aexit__ = AsyncMock(return_value=False)
-    download_ctx.value = mock_download
+    download_ctx.value = fake_download()
     mock_page.expect_download = MagicMock(return_value=download_ctx)
 
     mock_browser = AsyncMock()
@@ -175,9 +178,7 @@ def test_scrape_lease_page_returns_path(tmp_path: Path):
     semaphore = asyncio.Semaphore(5)
     lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
 
-    result = asyncio.get_event_loop().run_until_complete(
-        scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser)
-    )
+    result = asyncio.run(scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser))
     assert result is not None
     assert str(result).endswith(".txt")
 
@@ -201,9 +202,7 @@ def test_scrape_lease_page_raises_when_no_save_button(tmp_path: Path):
     lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=999"
 
     with pytest.raises(ScrapingError):
-        asyncio.get_event_loop().run_until_complete(
-            scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser)
-        )
+        asyncio.run(scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser))
 
 
 @pytest.mark.unit
@@ -221,10 +220,13 @@ def test_scrape_lease_page_returns_none_when_no_txt_link(tmp_path: Path):
     txt_locator = AsyncMock()
     txt_locator.count = AsyncMock(return_value=0)
 
+    async def fake_download():
+        return AsyncMock()
+
     download_ctx = AsyncMock()
     download_ctx.__aenter__ = AsyncMock(return_value=download_ctx)
     download_ctx.__aexit__ = AsyncMock(return_value=False)
-    download_ctx.value = AsyncMock()
+    download_ctx.value = fake_download()
     mock_page.expect_download = MagicMock(return_value=download_ctx)
 
     call_count = [0]
@@ -243,7 +245,7 @@ def test_scrape_lease_page_returns_none_when_no_txt_link(tmp_path: Path):
     mock_browser.new_page = AsyncMock(return_value=mock_page)
 
     semaphore = asyncio.Semaphore(5)
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         scrape_lease_page(
             "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1",
             tmp_path,
@@ -273,12 +275,15 @@ def test_scrape_lease_page_skips_existing_file(tmp_path: Path):
     txt_locator.first = AsyncMock()
     txt_locator.first.get_attribute = AsyncMock(return_value="lp564.txt")
 
+    async def fake_download():
+        return mock_download
+
     download_ctx = AsyncMock()
     download_ctx.__aenter__ = AsyncMock(return_value=download_ctx)
     download_ctx.__aexit__ = AsyncMock(return_value=False)
     mock_download = AsyncMock()
     mock_download.save_as = AsyncMock()
-    download_ctx.value = mock_download
+    download_ctx.value = fake_download()
     mock_page.expect_download = MagicMock(return_value=download_ctx)
 
     call_count = [0]
@@ -297,7 +302,7 @@ def test_scrape_lease_page_skips_existing_file(tmp_path: Path):
     mock_browser.new_page = AsyncMock(return_value=mock_page)
 
     semaphore = asyncio.Semaphore(5)
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         scrape_lease_page(
             "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564",
             tmp_path,
@@ -321,7 +326,10 @@ def test_run_acquire_pipeline_returns_paths(tmp_path: Path):
 
     with (
         patch("kgs_pipeline.acquire.load_lease_urls", return_value=["url1", "url2", "url3"]),
-        patch("kgs_pipeline.acquire._run_chunk_sync", return_value=[dummy_path, dummy_path, dummy_path]),
+        patch(
+            "kgs_pipeline.acquire._run_chunk_sync",
+            return_value=[dummy_path, dummy_path, dummy_path],
+        ),
         patch("dask.compute", return_value=([dummy_path, dummy_path, dummy_path],)),
     ):
         result = run_acquire_pipeline()
@@ -356,7 +364,7 @@ def test_run_acquire_pipeline_none_results(tmp_path: Path):
 def test_run_acquire_pipeline_return_type(tmp_path: Path):
     with (
         patch("kgs_pipeline.acquire.load_lease_urls", return_value=[]),
-        patch("dask.compute", return_value=([], )),
+        patch("dask.compute", return_value=([],)),
     ):
         result = run_acquire_pipeline()
     assert isinstance(result, list)

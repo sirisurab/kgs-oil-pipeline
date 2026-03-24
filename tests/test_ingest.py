@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import dask.dataframe as dd
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
 import kgs_pipeline.config as config
@@ -160,6 +160,7 @@ def test_concatenate_raw_files_skips_malformed(tmp_path: Path):
     bad.write_bytes(b"\x00\x01\x02\x03")
 
     with patch("kgs_pipeline.ingest.read_raw_file") as mock_read:
+
         def side_effect(fp: Path):
             if "bad" in fp.name:
                 raise ValueError("malformed")
@@ -317,7 +318,7 @@ def test_write_interim_parquet_creates_files(tmp_path: Path):
         }
     )
     ddf = dd.from_pandas(df, npartitions=1)
-    output = write_interim_parquet(ddf, tmp_path / "interim")
+    write_interim_parquet(ddf, tmp_path / "interim")
     parquet_files = list((tmp_path / "interim").glob("*.parquet"))
     assert len(parquet_files) > 0
     loaded = pd.read_parquet(parquet_files[0])
@@ -356,16 +357,24 @@ def test_run_ingest_pipeline_calls_steps_in_order(tmp_path: Path):
     sample_ddf = dd.from_pandas(sample_df, npartitions=1)
 
     with (
-        patch("kgs_pipeline.ingest.discover_raw_files", return_value=[tmp_path / "x.txt"]) as mock_disc,
+        patch(
+            "kgs_pipeline.ingest.discover_raw_files", return_value=[tmp_path / "x.txt"]
+        ) as mock_disc,
         patch("kgs_pipeline.ingest.concatenate_raw_files", return_value=sample_ddf) as mock_concat,
         patch("kgs_pipeline.ingest.filter_monthly_records", return_value=sample_ddf) as mock_filter,
-        patch("kgs_pipeline.ingest.enrich_with_lease_metadata", return_value=sample_ddf) as mock_enrich,
-        patch("kgs_pipeline.ingest.write_interim_parquet", return_value=config.INTERIM_DATA_DIR) as mock_write,
+        patch(
+            "kgs_pipeline.ingest.enrich_with_lease_metadata", return_value=sample_ddf
+        ) as mock_enrich,
+        patch(
+            "kgs_pipeline.ingest.write_interim_parquet", return_value=config.INTERIM_DATA_DIR
+        ) as mock_write,
     ):
+
         def track(name: str, fn):
             def wrapper(*args, **kwargs):
                 call_order.append(name)
                 return fn(*args, **kwargs)
+
             return wrapper
 
         mock_disc.side_effect = track("discover", lambda *a, **k: [tmp_path / "x.txt"])

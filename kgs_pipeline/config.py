@@ -14,7 +14,13 @@ FEATURES_DATA_DIR = _PROJECT_ROOT / "data" / "processed" / "features"
 EXTERNAL_DATA_DIR = _PROJECT_ROOT / "data" / "external"
 
 # Auto-create all data directories on import
-for _dir in (RAW_DATA_DIR, INTERIM_DATA_DIR, PROCESSED_DATA_DIR, FEATURES_DATA_DIR, EXTERNAL_DATA_DIR):
+for _dir in (
+    RAW_DATA_DIR,
+    INTERIM_DATA_DIR,
+    PROCESSED_DATA_DIR,
+    FEATURES_DATA_DIR,
+    EXTERNAL_DATA_DIR,
+):
     _dir.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------

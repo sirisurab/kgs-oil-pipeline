@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import dask.dataframe as dd
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 
 import kgs_pipeline.config as config
 
@@ -197,9 +197,7 @@ def filter_monthly_records(ddf: dd.DataFrame) -> dd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def enrich_with_lease_metadata(
-    ddf: dd.DataFrame, lease_index_file: Path
-) -> dd.DataFrame:
+def enrich_with_lease_metadata(ddf: dd.DataFrame, lease_index_file: Path) -> dd.DataFrame:
     """Left-join monthly production data with lease-level metadata.
 
     Args:
@@ -268,19 +266,17 @@ def write_interim_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ddf = ddf.set_index("LEASE_KID", drop=False, sorted=False)
+    ddf = ddf.reset_index(drop=True)
 
     ddf.to_parquet(
         str(output_dir),
         engine="pyarrow",
-        write_index=True,
+        write_index=False,
         overwrite=True,
     )
 
     parquet_files = list(output_dir.glob("*.parquet"))
-    logger.info(
-        "Wrote interim Parquet to %s (%d files)", output_dir, len(parquet_files)
-    )
+    logger.info("Wrote interim Parquet to %s (%d files)", output_dir, len(parquet_files))
     return output_dir
 
 

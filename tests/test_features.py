@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import dask.dataframe as dd
 import numpy as np
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
 import kgs_pipeline.config as config
@@ -721,18 +721,37 @@ def test_run_features_pipeline_calls_steps(tmp_path: Path):
         def side_effect(*args, **kwargs):
             call_order.append(name)
             return return_val if return_val is not None else sample_ddf
+
         return side_effect
 
     with (
         patch("kgs_pipeline.features.dd.read_parquet", return_value=sample_ddf),
-        patch("kgs_pipeline.features.compute_cumulative_production", side_effect=_track("cumulative", sample_ddf)),
-        patch("kgs_pipeline.features.compute_decline_rate", side_effect=_track("decline", sample_ddf)),
-        patch("kgs_pipeline.features.compute_rolling_statistics", side_effect=_track("rolling", sample_ddf)),
-        patch("kgs_pipeline.features.compute_time_features", side_effect=_track("time", sample_ddf)),
+        patch(
+            "kgs_pipeline.features.compute_cumulative_production",
+            side_effect=_track("cumulative", sample_ddf),
+        ),
+        patch(
+            "kgs_pipeline.features.compute_decline_rate", side_effect=_track("decline", sample_ddf)
+        ),
+        patch(
+            "kgs_pipeline.features.compute_rolling_statistics",
+            side_effect=_track("rolling", sample_ddf),
+        ),
+        patch(
+            "kgs_pipeline.features.compute_time_features", side_effect=_track("time", sample_ddf)
+        ),
         patch("kgs_pipeline.features.compute_gor", side_effect=_track("gor", sample_ddf)),
-        patch("kgs_pipeline.features.add_water_placeholders", side_effect=_track("water", sample_ddf)),
-        patch("kgs_pipeline.features.encode_categorical_features", side_effect=_track("encode", sample_ddf)),
-        patch("kgs_pipeline.features.write_features_parquet", side_effect=_track("write", config.FEATURES_DATA_DIR)),
+        patch(
+            "kgs_pipeline.features.add_water_placeholders", side_effect=_track("water", sample_ddf)
+        ),
+        patch(
+            "kgs_pipeline.features.encode_categorical_features",
+            side_effect=_track("encode", sample_ddf),
+        ),
+        patch(
+            "kgs_pipeline.features.write_features_parquet",
+            side_effect=_track("write", config.FEATURES_DATA_DIR),
+        ),
     ):
         # Make PROCESSED_DATA_DIR appear to have parquet files
         with patch("kgs_pipeline.config.PROCESSED_DATA_DIR", tmp_path):
@@ -742,5 +761,12 @@ def test_run_features_pipeline_calls_steps(tmp_path: Path):
             run_features_pipeline()
 
     assert call_order == [
-        "cumulative", "decline", "rolling", "time", "gor", "water", "encode", "write"
+        "cumulative",
+        "decline",
+        "rolling",
+        "time",
+        "gor",
+        "water",
+        "encode",
+        "write",
     ]
