@@ -1,45 +1,61 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
+*$py.class
 *.so
-*.egg
-*.egg-info/
-dist/
+.Python
 build/
+dist/
+*.egg-info/
 .eggs/
+pip-wheel-metadata/
 
 # Virtual environments
 .venv/
 venv/
 env/
+.env
 
-# Testing
+# Testing & coverage
 .pytest_cache/
 .coverage
 htmlcov/
-*.xml
+.tox/
 
-# Mypy / type checking
+# Type checking
 .mypy_cache/
 
-# Ruff
+# Linting
 .ruff_cache/
 
-# Data directories (large files not tracked)
-data/raw/
-data/interim/
-data/processed/
-data/external/
+# Data files (large, generated)
+data/
+conversation_history/
+# data/raw/*.txt
+# data/interim/*.parquet
+# data/interim/**/*.parquet
+# data/processed/*.parquet
+# data/processed/**/*.parquet
+# data/processed/features/*.parquet
+# data/processed/features/**/*.parquet
+# data/processed/features/feature_matrix.csv
+# data/processed/cleaning_report.json
+# data/pipeline_metadata.json
 
-# OS
+# Logs
+logs/*.log
+logs/*.log.*
+
+# Editor / OS
 .DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
 .idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
 
 # Playwright
 playwright-report/

@@ -3,65 +3,95 @@
 ## Overview
 
 The features component is responsible for:
-1. Loading the processed, well-level Parquet store from `data/processed/`.
-2. Computing per-well cumulative production (Np for oil, Gp for gas) as a running total sorted chronologically.
-3. Computing month-over-month production decline rate per well.
-4. Computing rolling mean and standard deviation at 3-month and 6-month windows per well.
-5. Deriving time-based features: `months_since_first_prod`, `production_year`, `production_month`.
-6. Computing gas-oil ratio (GOR) by pivoting oil and gas production for the same well-month.
-7. Adding placeholder columns for `water_cut` and `wor` (water-oil ratio) as `NaN`, reserved for future integration when water production data becomes available.
-8. Label-encoding categorical columns (`county`, `operator`, `producing_zone`, `field_name`, `product`) with globally consistent integer codes across all Dask partitions.
-9. Writing the ML-ready feature set to `data/processed/features/` as Parquet files partitioned by `well_id`.
+1. Loading the cleaned, processed Parquet data from `data/processed/` via Dask.
+2. Engineering per-well ML-ready features: cumulative production (Np, Gp, Wp), month-over-month decline rate, rolling statistics, time-based features, Gas-Oil Ratio (GOR), water cut, Water-Oil Ratio (WOR), production lag features, and geographic/operator aggregate features.
+3. Encoding categorical columns with consistent integer codes across all Dask partitions.
+4. Writing the feature Parquet dataset to `data/processed/features/`, partitioned by `well_id`, with a fixed `pyarrow.schema()`.
+5. Exporting a feature matrix CSV to `data/processed/features/feature_matrix.csv` for quick inspection.
+6. Implementing the pipeline orchestrator (`kgs_pipeline/pipeline.py`) as a CLI entry point that runs all four pipeline stages in sequence, with structured logging, run metadata tracking, and a JSON summary output.
 
-**Source module:** `kgs_pipeline/features.py`
-**Test file:** `tests/test_features.py`
+**Source modules:** `kgs_pipeline/features.py`, `kgs_pipeline/pipeline.py`
+**Test files:** `tests/test_features.py`, `tests/test_pipeline.py`
 
 ---
 
 ## Design Decisions & Constraints
 
-- All functions in `features.py` must return `dask.dataframe.DataFrame` (lazy). The only place `.compute()` is called is inside `write_features_parquet()`, triggered by Dask's internal `to_parquet()` machinery.
-- Per-well operations (cumulative sum, rolling windows, decline rate, time features) require all records for a well to reside in the same Dask partition. The processed data from the transform step is already partitioned and indexed by `well_id` — this must be verified at the start of `run_features_pipeline()`.
-- Cumulative production: computed using `pandas.DataFrame.groupby("well_id")["production"].cumsum()` inside `map_partitions`. Since each partition contains exactly one well's records (after sort-and-repartition), this is correct and does not require a cross-partition merge.
-- Decline rate definition: `(production[t] - production[t-1]) / production[t-1]`. Clipped to the range `[-1.0, 10.0]`. When `production[t-1]` is `0` or `NaN`, decline rate is `NaN`.
-- Rolling windows: use `pandas.Series.rolling(window=N, min_periods=1).mean()` and `.std()` within `map_partitions`. `min_periods=1` ensures wells with fewer than N records still get a value (no unnecessary NaN introduction).
-- Time features: `months_since_first_prod` is an integer computed as the number of full months between `production_date` and the earliest `production_date` for that well. Use `(production_date.dt.year - first_prod_year) * 12 + (production_date.dt.month - first_prod_month)`.
-- GOR (gas-oil ratio): For each `(well_id, production_date)` pair, pivot on `product` to get oil and gas volumes side by side, then compute `GOR = gas_production / oil_production`. Where oil production is `0` or `NaN`, GOR is `NaN`. Rows for gas-only wells have `GOR = NaN`.
-- Label encoding: each categorical column is encoded with a globally consistent mapping. The mapping is computed by calling `.compute()` once per column to collect all unique values, building a `{value: integer_code}` dict, then applying it across all partitions via `map_partitions`. This single pre-computation is the only permitted non-write `.compute()` call in this component.
-- Column naming convention for features: `cumulative_production`, `decline_rate`, `rolling_mean_3m`, `rolling_std_3m`, `rolling_mean_6m`, `rolling_std_6m`, `months_since_first_prod`, `production_year`, `production_month`, `gor`, `water_cut`, `wor`, and `<col>_encoded` for each label-encoded categorical.
-- Output Parquet in `data/processed/features/` is partitioned by `well_id`. Schema enforcement via `pyarrow.schema()` at write time is mandatory.
-- All logging must use the Python `logging` module. No `print()` statements.
-- Configuration values must come from `kgs_pipeline/config.py`. Add `FEATURES_DATA_DIR` and `DECLINE_RATE_CLIP_MIN / DECLINE_RATE_CLIP_MAX` to config.
+- Python 3.11+. All functions must carry full type hints. Both modules must have module-level docstrings.
+- Use `dask.dataframe` throughout in `features.py`. Functions must return `dask.dataframe.DataFrame` unless otherwise stated. Never call `.compute()` in helper functions — only in `write_features_parquet()`.
+- All per-well operations (cumulative sums, rolling windows, lag features) require that each well's records are sorted by `production_date` ascending before the calculation is applied. After sorting by `well_id` and `production_date` in the transform stage, the features stage must re-sort within each partition using `map_partitions` before applying window operations.
+- Cumulative production is computed separately for each product type (`O` and `G`) per well. Oil cumulative = Np; gas cumulative = Gp.
+- GOR = `gas_mcf / oil_bbl` per month per well. Since the processed data stores oil and gas in separate rows (one row per product per month per well), a pivot is required to compute GOR.
+- Water production (`water_bbl`) is not present in the KGS dataset. The `water_cut` and `WOR` columns must be written as `NaN` (placeholder for future data enrichment) with a note in the module docstring.
+- Rolling windows: 3-month and 6-month. For months where fewer than `window` observations are available (early in a well's life), use `min_periods=1` for rolling mean and `min_periods=2` for rolling standard deviation so partial windows return a value rather than `NaN`, unless otherwise required by test specifications.
+- Decline rate is computed as `(production[t] - production[t-1]) / production[t-1]`. When `production[t-1] == 0` (shut-in month), the raw calculation is undefined; assign `NaN` before applying the clip. Then clip to `[CONFIG.decline_rate_clip_min, CONFIG.decline_rate_clip_max]` = `[-1.0, 10.0]`.
+- Use `CONFIG` from `kgs_pipeline/config.py` and `setup_logging("features", CONFIG.logs_dir)` from `kgs_pipeline/utils.py`.
+- Enforce a fixed Parquet output schema using `pyarrow.schema()` at write time.
+- The global categorical encoding map must be computed **once** from the full dataset (by calling `.compute()` once on the unique values of each categorical column) before being broadcast to all Dask partitions via `map_partitions`. This guarantees consistent integer codes across all partitions for ML reproducibility.
+
+### Expected features Parquet schema
+
+| Column | dtype | Description |
+|--------|-------|-------------|
+| `well_id` | `string` | API number or `UNKNOWN_*` |
+| `production_date` | `datetime64[ns]` | First day of production month |
+| `product` | `string` | `O` or `G` |
+| `production` | `float64` | Raw monthly production volume |
+| `unit` | `string` | `BBL` or `MCF` |
+| `lease_kid` | `int64` | KGS lease unique ID |
+| `operator` | `string` | Operator name |
+| `county` | `string` | County name |
+| `field` | `string` | Field name |
+| `producing_zone` | `string` | Producing formation |
+| `latitude` | `float64` | NAD 1927 latitude |
+| `longitude` | `float64` | NAD 1927 longitude |
+| `cum_production` | `float64` | Cumulative production per well per product (Np for oil, Gp for gas) |
+| `decline_rate` | `float64` | Month-over-month decline rate, clipped to [-1.0, 10.0] |
+| `rolling_mean_3m` | `float64` | 3-month rolling average of production |
+| `rolling_mean_6m` | `float64` | 6-month rolling average of production |
+| `rolling_mean_12m` | `float64` | 12-month rolling average of production |
+| `rolling_std_3m` | `float64` | 3-month rolling standard deviation of production |
+| `rolling_std_6m` | `float64` | 6-month rolling standard deviation of production |
+| `lag_1m` | `float64` | Production 1 month prior (lag-1 feature) |
+| `lag_3m` | `float64` | Production 3 months prior (lag-3 feature) |
+| `months_since_first_prod` | `int64` | Months elapsed since the well's first production date |
+| `production_year` | `int32` | Calendar year of the production month |
+| `production_month` | `int32` | Calendar month (1–12) |
+| `production_quarter` | `int32` | Calendar quarter (1–4) |
+| `gor` | `float64` | Gas-Oil Ratio (gas MCF / oil BBL); NaN if oil=0 or no oil row for that month |
+| `water_cut` | `float64` | Water cut placeholder — `NaN` (no water data in KGS dataset) |
+| `wor` | `float64` | Water-Oil Ratio placeholder — `NaN` (no water data in KGS dataset) |
+| `county_encoded` | `int32` | Integer-encoded county (consistent global map) |
+| `operator_encoded` | `int32` | Integer-encoded operator (consistent global map) |
+| `producing_zone_encoded` | `int32` | Integer-encoded producing zone (consistent global map) |
+| `field_encoded` | `int32` | Integer-encoded field name (consistent global map) |
+| `product_encoded` | `int32` | Integer-encoded product type (`O`=0, `G`=1) |
+| `outlier_flag` | `bool` | Inherited from transform stage |
 
 ---
 
-## Task 22: Extend configuration for features stage
+## Task 22: Implement processed Parquet reader for features stage
 
-**Module:** `kgs_pipeline/config.py`
-**Function:** N/A — add constants
+**Module:** `kgs_pipeline/features.py`
+**Function:** `load_processed_parquet(processed_dir: Path | None = None) -> dask.dataframe.DataFrame`
 
 **Description:**
-Add the following constants to `kgs_pipeline/config.py` for use by the features component:
+Load all Parquet files from `processed_dir` (default: `CONFIG.processed_dir`) using `dask.dataframe.read_parquet()`. Use the `pyarrow` engine. Return the lazy Dask DataFrame without calling `.compute()`. Log the partition count at INFO level.
 
-- `FEATURES_DATA_DIR` — `Path` pointing to `data/processed/features/` (may already exist from Task 01; ensure it is present).
-- `DECLINE_RATE_CLIP_MIN` — float `-1.0`
-- `DECLINE_RATE_CLIP_MAX` — float `10.0`
-- `ROLLING_WINDOW_SHORT` — integer `3` (months)
-- `ROLLING_WINDOW_LONG` — integer `6` (months)
-- `CATEGORICAL_COLUMNS` — list of strings `["county", "operator", "producing_zone", "field_name", "product"]`
+**Error handling:**
+- Raise `FileNotFoundError` if `processed_dir` does not exist.
+- Raise `RuntimeError("No Parquet files found in processed_dir; run transform pipeline first.")` if no Parquet files are found.
 
-**Error handling:** N/A.
+**Dependencies:** dask.dataframe, pathlib, logging, kgs_pipeline.config
 
-**Dependencies:** None beyond what already exists in `config.py`.
+**Test cases (`tests/test_features.py`):**
+- `@pytest.mark.unit` — Write a small fixture Parquet file to `tmp_path`; call `load_processed_parquet(tmp_path)` and assert return type is `dask.dataframe.DataFrame`.
+- `@pytest.mark.unit` — Call with a non-existent directory; assert `FileNotFoundError`.
+- `@pytest.mark.unit` — Call with empty directory; assert `RuntimeError`.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (not pandas — lazy evaluation).
+- `@pytest.mark.integration` — Call with `CONFIG.processed_dir`; assert `ddf.npartitions >= 1`.
 
-**Test cases:**
-
-- `@pytest.mark.unit` — Assert `DECLINE_RATE_CLIP_MIN` is `-1.0` and `DECLINE_RATE_CLIP_MAX` is `10.0`.
-- `@pytest.mark.unit` — Assert `ROLLING_WINDOW_SHORT` is `3` and `ROLLING_WINDOW_LONG` is `6`.
-- `@pytest.mark.unit` — Assert `CATEGORICAL_COLUMNS` is a list containing `"county"` and `"operator"`.
-- `@pytest.mark.unit` — Assert `FEATURES_DATA_DIR` is a `pathlib.Path`.
-
-**Definition of done:** Constants are added, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
@@ -71,362 +101,391 @@ Add the following constants to `kgs_pipeline/config.py` for use by the features 
 **Function:** `compute_cumulative_production(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Add a `cumulative_production` column representing the running total of `production` for each well over time (Np for oil, Gp for gas). This is the fundamental production depletion metric used in decline curve analysis.
+Compute the cumulative production column `cum_production` per well per product type:
 
-Processing steps:
-1. Using `dask.dataframe.map_partitions`, apply a pandas-level function that:
-   - Sorts rows within the partition by `["well_id", "production_date"]` in ascending order (records are already sorted, but enforce it for safety).
-   - Fills `NaN` production values with `0.0` temporarily for the cumsum only (so the running total does not propagate NaN across months), then restores NaN in the original `production` column.
-   - Computes `cumulative_production = production.fillna(0.0).cumsum()` within the partition (since each partition is exactly one well's data).
-2. Assigns `cumulative_production` as a new `float64` column.
-3. Returns the Dask DataFrame with the new column appended.
+1. Sort within each partition by `[well_id, product, production_date]` ascending using `map_partitions`.
+2. Group by `[well_id, product]` and compute a cumulative sum of the `production` column using `.cumsum()`.
+3. Assign the result as the `cum_production` column.
+4. `cum_production` must be monotonically non-decreasing over time within each `[well_id, product]` group.
+5. For zero-production months (shut-in wells), `cum_production` must equal the previous month's value (flat, not decreased).
+6. Return the Dask DataFrame with `cum_production` added.
 
-The function must not call `.compute()`.
+**Domain note:** Cumulative production (Np for oil, Gp for gas) is a fundamental decline curve analysis metric. It physically cannot decrease — once oil has been produced it cannot re-enter the reservoir. A flat period during shut-in is correct; a decrease indicates a pipeline bug.
 
 **Error handling:**
-- If `production` or `production_date` columns are absent, raise `KeyError`.
+- Raise `KeyError` if `production`, `well_id`, or `product` columns are absent.
+- Must not call `.compute()`.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `logging`
+**Dependencies:** dask.dataframe, logging
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
 
-- `@pytest.mark.unit` — Provide a single well with monthly production `[100.0, 200.0, 150.0]`. Assert `cumulative_production` is `[100.0, 300.0, 450.0]`.
-- `@pytest.mark.unit` — Provide a well with a `NaN` month: `[100.0, NaN, 150.0]`. Assert `cumulative_production` is `[100.0, 100.0, 250.0]` (NaN treated as zero in cumsum, original `production` column retains `NaN`).
-- `@pytest.mark.unit` — Provide a well with all zeros. Assert `cumulative_production` is `[0.0, 0.0, 0.0]`.
-- `@pytest.mark.unit` — Assert the `cumulative_production` column exists and is `float64` dtype.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
+*Decline curve monotonicity (domain):*
+- `@pytest.mark.unit` — Build a synthetic well sequence with monthly productions `[100, 80, 0, 60, 50]`; after `compute_cumulative_production` and `.compute()`, assert `cum_production` = `[100, 180, 180, 240, 290]` (monotonically non-decreasing).
+- `@pytest.mark.unit` — Assert `cum_production` never decreases between consecutive rows within the same `[well_id, product]` group.
 
-**Decline curve monotonicity test (domain rule):**
-- `@pytest.mark.integration` — Load processed Parquet from `data/processed/` (or features Parquet after this step). For a sample of 50 wells, assert `cumulative_production` is monotonically non-decreasing over time. A well cannot un-produce oil — any decrease is a pipeline error.
+*Cumulative production flat periods (domain):*
+- `@pytest.mark.unit` — Build a synthetic sequence with zero-production months mid-sequence: `[100, 50, 0, 0, 75]`; assert `cum_production` = `[100, 150, 150, 150, 225]` (flat during shut-in months, correct resumption).
+- `@pytest.mark.unit` — Build a sequence with zero-production at the start (well not yet online): `[0, 0, 100, 80]`; assert `cum_production` = `[0, 0, 100, 180]`.
+- `@pytest.mark.unit` — Build a sequence with zero-production at the end: `[100, 80, 0, 0]`; assert `cum_production` = `[100, 180, 180, 180]`.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 24: Implement production decline rate feature
+## Task 24: Implement decline rate feature
 
 **Module:** `kgs_pipeline/features.py`
 **Function:** `compute_decline_rate(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Add a `decline_rate` column representing the month-over-month proportional change in production for each well. Decline rate is the primary indicator of reservoir depletion behaviour and is a key input for decline curve analysis ML models.
+Compute the month-over-month production decline rate `decline_rate` per well per product:
 
-Processing steps:
-1. Using `dask.dataframe.map_partitions`, apply a pandas-level function that:
-   - Sorts rows by `production_date` (ascending).
-   - Computes `decline_rate = (production - production.shift(1)) / production.shift(1)`.
-   - Where `production.shift(1)` is `0.0` or `NaN`, sets `decline_rate = NaN`.
-   - Clips `decline_rate` to `[DECLINE_RATE_CLIP_MIN, DECLINE_RATE_CLIP_MAX]` using `pandas.Series.clip()`.
-2. Assigns `decline_rate` as a new `float64` column.
-3. The first record for each well always has `decline_rate = NaN` (no previous month).
+1. Sort within each partition by `[well_id, product, production_date]` ascending using `map_partitions`.
+2. Group by `[well_id, product]` and compute the lag-1 production value.
+3. Compute raw decline rate as `(production[t] - production[t-1]) / production[t-1]`.
+4. When `production[t-1] == 0.0` (denominator is zero — shut-in prior month), assign `decline_rate = NaN` **before** clipping. Do not allow division by zero to produce `inf` or raise an exception.
+5. Clip the final `decline_rate` to `[CONFIG.decline_rate_clip_min, CONFIG.decline_rate_clip_max]` = `[-1.0, 10.0]`.
+6. The first record for each well has no prior month; assign `NaN` for the first row.
+7. Assign the result as the `decline_rate` column and return the updated Dask DataFrame.
 
-The function must not call `.compute()`.
+**Domain note:** Decline rate is the primary indicator of reservoir performance. A rate of -1.0 means 100% decline (complete cessation). A rate above 10.0 would imply an 1000%+ increase — physically implausible as a sustained rate and is treated as a data artefact (e.g., well returning from extended shut-in after cumulative recalculation). The clip bounds are engineering design choices for ML feature stability.
 
 **Error handling:**
-- If `production` or `production_date` columns are absent, raise `KeyError`.
-- `DECLINE_RATE_CLIP_MIN` and `DECLINE_RATE_CLIP_MAX` must come from `kgs_pipeline/config.py`.
+- Raise `KeyError` if `production`, `well_id`, or `product` columns are absent.
+- Division by zero must not raise; assign `NaN` as described.
+- Must not call `.compute()`.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `numpy`, `logging`
+**Dependencies:** dask.dataframe, numpy, logging, kgs_pipeline.config
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
 
-- `@pytest.mark.unit` — Provide production `[100.0, 80.0, 60.0]`. Assert `decline_rate` is `[NaN, -0.2, -0.25]`.
-- `@pytest.mark.unit` — Provide production `[0.0, 50.0]`. Assert `decline_rate[1]` is `NaN` (division by zero → NaN).
-- `@pytest.mark.unit` — Provide production `[100.0, NaN, 80.0]`. Assert `decline_rate[2]` is `NaN` (prior month is NaN → NaN).
-- `@pytest.mark.unit` — Provide a case where the raw decline rate would be `15.0` (greater than clip max). Assert `decline_rate` is clipped to `10.0`.
-- `@pytest.mark.unit` — Provide a case where the raw decline rate would be `-5.0` (less than clip min). Assert `decline_rate` is clipped to `-1.0`.
+*Decline rate clip bounds (domain):*
+- `@pytest.mark.unit` — Build a well sequence where the computed raw decline rate would be `-2.5` (production drops from 100 to -150, but since negative production is already coerced to NaN in transform, test with production going from 100 to a very small positive value); alternatively build a sequence that yields raw decline < -1.0; assert the clipped value is exactly `-1.0`.
+- `@pytest.mark.unit` — Build a well sequence where the raw decline rate would be `15.0` (production jumps from 10 to 160); assert the clipped value is exactly `10.0`.
+- `@pytest.mark.unit` — Build a well sequence with a decline rate of `-0.5` (within bounds); assert the value passes through unchanged as `-0.5`.
+- `@pytest.mark.unit` — Build a well sequence where `production[t-1] = 0.0` and `production[t] = 100.0` (well returning from shut-in); assert `decline_rate` for that row is `NaN`, not `inf`, and not an unclipped large value before clipping.
 - `@pytest.mark.unit` — Assert the first row for each well has `decline_rate = NaN`.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
 ## Task 25: Implement rolling statistics features
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `compute_rolling_statistics(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `compute_rolling_features(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Add rolling mean and rolling standard deviation features at two window sizes (3-month and 6-month) to capture short-term and medium-term production trends. These are standard smoothing features for time-series ML models.
+Compute rolling window statistics of `production` per `[well_id, product]` group:
 
-Processing steps:
-1. Using `dask.dataframe.map_partitions`, apply a pandas-level function that:
-   - Sorts rows by `production_date` ascending.
-   - Computes `rolling_mean_3m = production.rolling(window=3, min_periods=1).mean()`.
-   - Computes `rolling_std_3m = production.rolling(window=3, min_periods=1).std()`.
-   - Computes `rolling_mean_6m = production.rolling(window=6, min_periods=1).mean()`.
-   - Computes `rolling_std_6m = production.rolling(window=6, min_periods=1).std()`.
-2. Assigns all four columns as `float64`.
-3. Returns the Dask DataFrame with the four new columns appended.
+For each window size `w` in `CONFIG.rolling_windows` (default: `[3, 6, 12]`):
+- `rolling_mean_{w}m`: rolling mean over the last `w` months, `min_periods=1`.
+- `rolling_std_{w}m`: rolling standard deviation over the last `w` months, `min_periods=2` (returns `NaN` for windows with fewer than 2 observations).
 
-Use `ROLLING_WINDOW_SHORT` and `ROLLING_WINDOW_LONG` from `kgs_pipeline/config.py` for window sizes.
+Implementation must use `map_partitions` with pandas groupby rolling operations applied per partition. Note that because the data is partitioned by `well_id`, all records for a well are in a single partition — the rolling window calculation is correct within-partition.
 
-The function must not call `.compute()`.
+Assign all computed columns to the Dask DataFrame and return it.
 
 **Error handling:**
-- If `production` or `production_date` columns are absent, raise `KeyError`.
+- Raise `KeyError` if `production`, `well_id`, or `product` columns are absent.
+- Must not call `.compute()`.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `logging`
+**Dependencies:** dask.dataframe, pandas, logging, kgs_pipeline.config
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
 
-- `@pytest.mark.unit` — Provide production `[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]`. Assert `rolling_mean_3m[2]` equals `20.0` (mean of 10, 20, 30).
-- `@pytest.mark.unit` — Provide production `[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]`. Assert `rolling_mean_6m[5]` equals `35.0` (mean of all 6 values).
-- `@pytest.mark.unit` — Provide a well with only 2 records. Assert `rolling_mean_3m` is not `NaN` for either record (due to `min_periods=1`).
-- `@pytest.mark.unit` — Provide a well with a `NaN` production month. Assert rolling calculations treat it as a gap and do not propagate error.
-- `@pytest.mark.unit` — Assert all four rolling columns exist and are `float64` dtype.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
+*Feature calculation correctness (domain):*
+- `@pytest.mark.unit` — Build a single-well oil sequence with 6 known monthly production values `[100, 120, 80, 140, 100, 110]`; after `compute_rolling_features` and `.compute()`:
+  - Assert `rolling_mean_3m` at month 3 (index 2) = `mean([100, 120, 80])` = `100.0`.
+  - Assert `rolling_mean_3m` at month 4 (index 3) = `mean([120, 80, 140])` = `113.33...` (within 0.01 tolerance).
+  - Assert `rolling_mean_6m` at month 6 (index 5) = `mean([100, 120, 80, 140, 100, 110])` = `108.33...` (within 0.01 tolerance).
+- `@pytest.mark.unit` — Build a sequence with only 2 months of data; assert `rolling_mean_3m` for month 2 uses a partial window (`min_periods=1`) and returns a non-NaN value; assert `rolling_std_3m` for month 2 returns `NaN` (only 2 observations, `min_periods=2` met — actually returns a value; clarify: `rolling_std` with `min_periods=2` and window 3 on 2 observations returns a value; assert it is a valid finite float).
+- `@pytest.mark.unit` — Build a sequence with only 1 month of data; assert `rolling_std_3m` is `NaN` (fewer than 2 observations for std dev).
+- `@pytest.mark.unit` — Assert that columns `rolling_mean_3m`, `rolling_mean_6m`, `rolling_mean_12m`, `rolling_std_3m`, `rolling_std_6m` are all present in the output schema.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 26: Implement time-based features
+## Task 26: Implement lag production features
+
+**Module:** `kgs_pipeline/features.py`
+**Function:** `compute_lag_features(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+
+**Description:**
+Compute lag production features per `[well_id, product]` group:
+
+- `lag_1m`: production value from 1 month prior (shift of 1 within the sorted group).
+- `lag_3m`: production value from 3 months prior (shift of 3 within the sorted group).
+
+The first `n` rows per group (where `n` is the lag period) must have `NaN` for the corresponding lag column.
+
+Implementation must sort within each partition by `[well_id, product, production_date]` ascending, then apply the group shift using `map_partitions`.
+
+**Error handling:**
+- Raise `KeyError` if `production`, `well_id`, or `product` columns are absent.
+- Must not call `.compute()`.
+
+**Dependencies:** dask.dataframe, pandas, logging
+
+**Test cases (`tests/test_features.py`):**
+
+*Lag feature correctness (domain):*
+- `@pytest.mark.unit` — Build a single-well sequence with productions `[100, 80, 60, 40, 20]` (months 1–5); after `compute_lag_features` and `.compute()`:
+  - Assert `lag_1m` at month 2 = `100.0`, month 3 = `80.0`, month 4 = `60.0`.
+  - Assert `lag_1m` at month 1 = `NaN`.
+  - Assert `lag_3m` at month 4 = `100.0`, month 5 = `80.0`.
+  - Assert `lag_3m` at months 1, 2, 3 = `NaN`.
+- `@pytest.mark.unit` — Assert `lag_1m` for month N equals exactly the raw production for month N-1 (test at least 3 consecutive months, verifying the lag-1 formula is `gas_mcf` or `oil_bbl` of the preceding month and not unit-swapped or incorrect).
+- `@pytest.mark.unit` — Assert columns `lag_1m` and `lag_3m` are present in the output.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 27: Implement time-based features
 
 **Module:** `kgs_pipeline/features.py`
 **Function:** `compute_time_features(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Derive three time-based features that encode well age and temporal position for ML models:
+Compute time-based features from `production_date` per well:
 
-- `months_since_first_prod` (integer): number of full calendar months from the first production date for the well to the current row's production date. A well's first production month has `months_since_first_prod = 0`.
-- `production_year` (integer): calendar year extracted from `production_date` (e.g. `2021`).
-- `production_month` (integer): calendar month extracted from `production_date` (1–12).
-
-Processing steps:
-1. Using `dask.dataframe.map_partitions`, apply a pandas-level function that:
-   - Determines `first_prod_date = production_date.min()` within the partition (valid because each partition is exactly one well).
-   - Computes `months_since_first_prod = (production_date.dt.year - first_prod_date.year) * 12 + (production_date.dt.month - first_prod_date.month)`.
-   - Extracts `production_year = production_date.dt.year`.
-   - Extracts `production_month = production_date.dt.month`.
-2. Assigns all three as integer (`int32`) columns.
-
-The function must not call `.compute()`.
+- `production_year`: calendar year as `int32`.
+- `production_month`: calendar month (1–12) as `int32`.
+- `production_quarter`: calendar quarter (1–4) as `int32`.
+- `months_since_first_prod`: for each `[well_id, product]` group, compute the number of months elapsed since the well's first non-null `production_date`. The first production month is `0`. Result is `int64`.
 
 **Error handling:**
-- If `production_date` column is absent, raise `KeyError`.
-- Rows with `NaT` `production_date` get `months_since_first_prod = NaN`, `production_year = NaN`, `production_month = NaN`.
+- Raise `KeyError` if `production_date` or `well_id` columns are absent.
+- Rows with `NaT` `production_date` must have `NaN` for `months_since_first_prod` and null for the year/month/quarter columns (do not drop).
+- Must not call `.compute()`.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `logging`
+**Dependencies:** dask.dataframe, pandas, logging
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
+- `@pytest.mark.unit` — Build a fixture with `production_date = Timestamp("2020-03-01")`; assert `production_year = 2020`, `production_month = 3`, `production_quarter = 1`.
+- `@pytest.mark.unit` — Build a 3-row well sequence with dates 2020-01-01, 2020-02-01, 2020-03-01; assert `months_since_first_prod` = `[0, 1, 2]`.
+- `@pytest.mark.unit` — Build a sequence with a gap: dates 2020-01-01, 2020-04-01; assert `months_since_first_prod` = `[0, 3]`.
+- `@pytest.mark.unit` — Assert all four time columns are present in the output.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
 
-- `@pytest.mark.unit` — Provide 3 monthly records starting from `2021-01-01`. Assert `months_since_first_prod` is `[0, 1, 2]`.
-- `@pytest.mark.unit` — Provide records from `2021-11-01` and `2022-02-01`. Assert `months_since_first_prod` is `[0, 3]`.
-- `@pytest.mark.unit` — Assert `production_year` and `production_month` match the year and month of `production_date` for a known row.
-- `@pytest.mark.unit` — Provide a row with `NaT` `production_date`. Assert `months_since_first_prod` is `NaN`.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 27: Implement gas-oil ratio (GOR) feature
+## Task 28: Implement GOR, water cut, and WOR features
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `compute_gor(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `compute_ratio_features(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Compute the gas-oil ratio (GOR) for each `(well_id, production_date)` pair. GOR = gas production (MCF) / oil production (BBL) for the same well and month. This ratio is a critical reservoir characterisation metric used in production engineering and ML feature sets.
+Compute ratio-based production metrics:
 
-Processing steps:
-1. Using `dask.dataframe.map_partitions`, apply a pandas-level function that:
-   - Pivots the partition on `product` to produce `oil_production` and `gas_production` side-by-side columns for each `(well_id, production_date)` pair, using `pandas.DataFrame.pivot_table(index=["well_id", "production_date"], columns="product", values="production", aggfunc="first")`.
-   - Renames the pivoted columns to `oil_production` (from `"O"`) and `gas_production` (from `"G"`). If either column is absent (e.g. oil-only well), fill it with `NaN`.
-   - Computes `gor = gas_production / oil_production`. Where `oil_production == 0.0` or is `NaN`, set `gor = NaN`.
-   - Merges the `gor` column back into the original partition on `(well_id, production_date)`.
-2. Returns the Dask DataFrame with the `gor` column appended (`float64`, nullable).
+**GOR (Gas-Oil Ratio):**
+Since each row in the processed data represents one product type (`O` or `G`) per well per month, GOR requires pivoting to align oil and gas on the same row:
 
-Wells with only oil records have `gor = NaN`. Wells with only gas records have `gor = NaN`.
+1. Filter the DataFrame to `product == "O"` rows (oil) and `product == "G"` rows (gas) separately.
+2. Perform a left join on `[well_id, production_date]` to align oil and gas production for the same well-month.
+3. Compute `gor = gas_mcf / oil_bbl` where `gas_mcf` is the gas production and `oil_bbl` is the oil production.
+4. GOR handling rules (domain-specified):
+   - `oil_bbl > 0` and `gas_mcf >= 0`: compute normally; result is `gas_mcf / oil_bbl`.
+   - `oil_bbl == 0` and `gas_mcf > 0`: assign `NaN` (mathematically undefined, physically valid gas-only state).
+   - `oil_bbl == 0` and `gas_mcf == 0`: assign `NaN` or `0.0` as documented in the module (shut-in well).
+   - `oil_bbl > 0` and `gas_mcf == 0`: assign `0.0` (producing oil with no associated gas).
+5. Merge the computed `gor` column back onto the full DataFrame. Rows with `product == "G"` will have `gor = NaN` (GOR is defined for the well level, assigned to oil rows only).
 
-The function must not call `.compute()`.
+**Water cut and WOR:**
+- `water_cut`: assign `NaN` for all rows (KGS data does not include water production).
+- `wor`: assign `NaN` for all rows.
+- Add a comment in the code: `# water_bbl not available in KGS dataset; reserved for future enrichment`.
+
+Return the updated Dask DataFrame with `gor`, `water_cut`, and `wor` columns added.
 
 **Error handling:**
-- If `product`, `production`, `well_id`, or `production_date` columns are absent, raise `KeyError`.
-- Division-by-zero (`oil_production == 0`) must be handled explicitly: result is `NaN`, not `inf`.
+- Must not raise `ZeroDivisionError`. All division must be handled with `pandas.Series.where()` or equivalent.
+- Must not call `.compute()`.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `numpy`, `logging`
+**Dependencies:** dask.dataframe, pandas, numpy, logging
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
 
-- `@pytest.mark.unit` — Provide a well with `production_date = 2021-03-01`, oil `= 1000.0 BBL`, gas `= 500.0 MCF`. Assert `gor = 0.5`.
-- `@pytest.mark.unit` — Provide a well-month with `oil_production = 0.0`. Assert `gor = NaN` (not `inf`).
-- `@pytest.mark.unit` — Provide a gas-only well. Assert `gor = NaN` for all rows.
-- `@pytest.mark.unit` — Provide an oil-only well. Assert `gor = NaN` for all rows (no gas data to divide).
-- `@pytest.mark.unit` — Assert `gor` column is `float64` dtype.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
+*GOR zero-denominator handling (domain):*
+- `@pytest.mark.unit` — Build a fixture with one well-month where `oil_bbl=0` and `gas_mcf=100`; assert `gor = NaN` (not an exception, not `inf`).
+- `@pytest.mark.unit` — Build a fixture with `oil_bbl=0` and `gas_mcf=0`; assert `gor` is `NaN` or `0.0` (not an exception).
+- `@pytest.mark.unit` — Build a fixture with `oil_bbl=50` and `gas_mcf=0`; assert `gor = 0.0` (not `NaN`).
+- `@pytest.mark.unit` — Build a fixture with `oil_bbl=100` and `gas_mcf=500`; assert `gor = 5.0`.
+- `@pytest.mark.unit` — Assert GOR formula is `gas_mcf / oil_bbl` and not unit-swapped (i.e., the numerator is gas, denominator is oil).
+- `@pytest.mark.unit` — Assert `water_cut` column is present and all values are `NaN`.
+- `@pytest.mark.unit` — Assert `wor` column is present and all values are `NaN`.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+*Water cut boundary values (domain):*
+- `@pytest.mark.unit` — Document that `water_cut` is a `NaN` placeholder due to missing KGS water data; assert that the column exists and contains no non-NaN values in the output (since water data is unavailable, no outlier flagging should occur on this column).
 
----
-
-## Task 28: Implement water cut and WOR placeholder columns
-
-**Module:** `kgs_pipeline/features.py`
-**Function:** `add_water_placeholders(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
-
-**Description:**
-Add `water_cut` and `wor` (water-oil ratio) columns as `NaN` float64 placeholders. The KGS dataset does not include water production volumes; these columns are reserved for future integration when water production data becomes available from additional data sources. Including them now ensures a stable, forward-compatible schema.
-
-Processing steps:
-1. Add column `water_cut` of dtype `float64`, all values `NaN`, with the docstring note: "Reserved: water production data not available in KGS monthly records."
-2. Add column `wor` of dtype `float64`, all values `NaN`, with the same note.
-3. Return the Dask DataFrame with both columns appended.
-
-The function must not call `.compute()`.
-
-**Error handling:** None — this is a schema extension only.
-
-**Dependencies:** `dask.dataframe`, `numpy`, `logging`
-
-**Test cases:**
-
-- `@pytest.mark.unit` — Assert `water_cut` and `wor` columns exist in the output DataFrame.
-- `@pytest.mark.unit` — Assert all values in `water_cut` and `wor` are `NaN` (not zero).
-- `@pytest.mark.unit` — Assert `water_cut` and `wor` are `float64` dtype.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
-
-**Domain test:**
-- `@pytest.mark.unit` — Assert `water_cut` values, when non-null, would need to satisfy `0 <= water_cut <= 1`. Since all values are currently `NaN`, assert no value violates this bound (vacuously true, but the test documents the constraint for future implementation).
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
 ## Task 29: Implement categorical label encoding
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `encode_categorical_features(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Functions:**
+- `build_encoding_maps(ddf: dask.dataframe.DataFrame) -> dict[str, dict[str, int]]`
+- `encode_categorical_features(ddf: dask.dataframe.DataFrame, encoding_maps: dict[str, dict[str, int]]) -> dask.dataframe.DataFrame`
 
-**Description:**
-Label-encode the categorical columns `["county", "operator", "producing_zone", "field_name", "product"]` with globally consistent integer codes. This is required for ML models that cannot consume string categories. The encoding must be consistent across all Dask partitions — the same string value must always receive the same integer code.
+**Description — `build_encoding_maps`:**
+Compute a global encoding map (string → integer) for each categorical column: `county`, `operator`, `producing_zone`, `field`, `product`. For each column:
+1. Call `.compute()` to materialise the unique values (this is one of two permitted `.compute()` calls in the features component — the other is in `write_features_parquet()`).
+2. Sort the unique values alphabetically for deterministic encoding.
+3. Map each value to a 0-based integer index.
+4. Return a dict of dicts, e.g., `{"county": {"Barton": 0, "Ellis": 1, ...}, ...}`.
 
-Processing steps:
-1. For each column in `CATEGORICAL_COLUMNS` (from `config.py`):
-   a. Compute the global set of unique values by calling `ddf[col].unique().compute()` — this is the single permitted pre-computation `.compute()` call per column.
-   b. Sort the unique values alphabetically to ensure deterministic ordering.
-   c. Build an encoding dict: `{value: index for index, value in enumerate(sorted_unique_values)}`. Missing/null values map to `-1`.
-   d. Apply the encoding dict to the column using `dask.dataframe.map_partitions` with a pandas `.map()` call, creating a new column named `<col>_encoded` (e.g. `county_encoded`).
-2. Return the Dask DataFrame with all `_encoded` columns appended. The original string columns are retained.
+**Description — `encode_categorical_features`:**
+Using the precomputed `encoding_maps`, add integer-encoded columns to the Dask DataFrame via `map_partitions`:
+- `county_encoded` (int32)
+- `operator_encoded` (int32)
+- `producing_zone_encoded` (int32)
+- `field_encoded` (int32)
+- `product_encoded` (int32): `O` → 0, `G` → 1 (fixed, not from encoding map, for stability).
 
-Log the encoding map for each column at `DEBUG` level for reproducibility auditing.
-
-The function must not call `.compute()` except in the one permitted pre-computation per column.
+Unseen values (not in the encoding map) must map to `-1` (not raise a `KeyError`). Return the updated lazy Dask DataFrame.
 
 **Error handling:**
-- If any column in `CATEGORICAL_COLUMNS` is absent from the DataFrame, log a `WARNING` and skip that column (do not raise).
+- `build_encoding_maps` must call `.compute()` — this is intentional and documented.
+- `encode_categorical_features` must not call `.compute()`.
+- If a column required for encoding is absent, log a WARNING and skip encoding for that column.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `logging`
+**Dependencies:** dask.dataframe, pandas, logging
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
+- `@pytest.mark.unit` — Build a small fixture with 3 distinct `county` values; call `build_encoding_maps`; assert the returned map for `county` has 3 entries and values are 0, 1, 2.
+- `@pytest.mark.unit` — Assert the encoding map is alphabetically sorted (deterministic).
+- `@pytest.mark.unit` — Call `encode_categorical_features` with a known map; assert `county_encoded`, `operator_encoded`, `producing_zone_encoded`, `field_encoded`, `product_encoded` are all present in the output.
+- `@pytest.mark.unit` — Assert `product_encoded` is `0` for `O` rows and `1` for `G` rows.
+- `@pytest.mark.unit` — Pass a row with a `county` value not in the encoding map; assert `county_encoded = -1` (not an exception).
+- `@pytest.mark.unit` — Assert return type of `encode_categorical_features` is `dask.dataframe.DataFrame`.
 
-- `@pytest.mark.unit` — Provide a DataFrame with `county` values `["Allen", "Butler", "Allen", "Clark"]`. Assert `county_encoded` values map consistently: the same county name always gets the same integer, codes are 0-indexed, and `"Allen"` < `"Butler"` < `"Clark"` alphabetically.
-- `@pytest.mark.unit` — Provide a row with `county = NaN`. Assert `county_encoded = -1`.
-- `@pytest.mark.unit` — Assert the original `county` column is still present in the output.
-- `@pytest.mark.unit` — Assert all `_encoded` columns are integer dtype.
-- `@pytest.mark.unit` — Assert the encoding is deterministic: run `encode_categorical_features` twice on the same input and assert the encoded values are identical.
-- `@pytest.mark.unit` — Provide a DataFrame missing the `product` column. Assert the function logs a `WARNING` for that column and returns a DataFrame without `product_encoded`, but with all other `_encoded` columns.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Both functions are implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 30: Implement features Parquet writer with schema enforcement
+## Task 30: Implement features Parquet writer and CSV export
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `write_features_parquet(ddf: dask.dataframe.DataFrame, output_dir: Path) -> Path`
+**Functions:**
+- `write_features_parquet(ddf: dask.dataframe.DataFrame, output_dir: Path | None = None) -> list[Path]`
+- `export_feature_matrix_csv(ddf: dask.dataframe.DataFrame, output_dir: Path | None = None) -> Path`
 
-**Description:**
-Write the fully engineered ML-ready feature Dask DataFrame to Parquet format, partitioned by `well_id`, with schema enforcement via PyArrow. This mirrors the pattern of `write_processed_parquet()` in the transform component but extends the schema to include all feature columns.
+**Description — `write_features_parquet`:**
+Write the ML-ready Dask DataFrame to Parquet in `output_dir` (default: `CONFIG.features_dir`), partitioned by `well_id`. Use `pyarrow` engine. Enforce the expected schema by constructing a `pyarrow.schema()` object and passing it to `ddf.to_parquet(schema=...)`. This is one of the two permitted `.compute()` calls in the features component. Call `ensure_dir(output_dir)` before writing. Return a sorted list of all written `.parquet` file paths.
 
-Processing steps:
-1. Ensure `output_dir` exists.
-2. Define a `pyarrow.schema()` object that explicitly types every expected column. In addition to the base processed columns, include:
-   - `cumulative_production`: `pa.float64()`
-   - `decline_rate`: `pa.float64()`
-   - `rolling_mean_3m`: `pa.float64()`
-   - `rolling_std_3m`: `pa.float64()`
-   - `rolling_mean_6m`: `pa.float64()`
-   - `rolling_std_6m`: `pa.float64()`
-   - `months_since_first_prod`: `pa.int32()`
-   - `production_year`: `pa.int32()`
-   - `production_month`: `pa.int32()`
-   - `gor`: `pa.float64()`
-   - `water_cut`: `pa.float64()`
-   - `wor`: `pa.float64()`
-   - `<col>_encoded` for each categorical column: `pa.int32()`
-3. Call `ddf.to_parquet(str(output_dir), engine="pyarrow", schema=enforced_schema, write_index=True, overwrite=True)`.
-4. Log the output directory and number of files written at `INFO` level.
-5. Return `output_dir` as a `Path`.
+**Description — `export_feature_matrix_csv`:**
+Write a sampled (up to 100,000 rows) version of the features DataFrame as a CSV to `output_dir / "feature_matrix.csv"`. Call `.compute()` on the sampled rows only. This is a convenience export for quick inspection — it is not ML-pipeline input. Use `ensure_dir(output_dir)`. Return the `Path` to the written CSV.
 
 **Error handling:**
-- If `output_dir` cannot be created, let `OSError` propagate.
-- Schema mismatch errors from `to_parquet()` must be logged at `ERROR` level and re-raised.
+- If writing fails, log the exception at ERROR level and re-raise.
+- Must not call `.compute()` except as explicitly described.
 
-**Dependencies:** `dask.dataframe`, `pyarrow`, `pathlib.Path`, `logging`
+**Dependencies:** dask.dataframe, pyarrow, pathlib, logging, kgs_pipeline.config, kgs_pipeline.utils
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
+- `@pytest.mark.unit` — Build a small typed fixture Dask DataFrame; call `write_features_parquet(ddf, tmp_path)`; assert at least one `.parquet` file is written.
+- `@pytest.mark.unit` — Read back one written Parquet file with `pandas.read_parquet`; assert all expected feature columns are present (spot-check the complete column list from the schema table above).
+- `@pytest.mark.unit` — Assert every written Parquet file is readable by `dask.dataframe.read_parquet` without raising (Parquet readability test).
+- `@pytest.mark.unit` — Call `export_feature_matrix_csv(ddf, tmp_path)`; assert the returned path exists and the CSV is parseable with `pandas.read_csv`.
 
-- `@pytest.mark.unit` — Provide a minimal valid Dask DataFrame with all expected feature columns. Call `write_features_parquet(ddf, tmp_path)`. Assert the directory contains at least one `.parquet` file.
-- `@pytest.mark.unit` — Assert every `.parquet` file written is readable by `pandas.read_parquet()` without error.
-- `@pytest.mark.unit` — Assert the function returns a `Path` equal to `output_dir`.
+**Feature column presence test (technical):**
+- `@pytest.mark.unit` — Build a minimal single-well fixture and run all feature computation functions in sequence (Tasks 23–29). Call `write_features_parquet`. Read back the output and assert the output DataFrame contains **all** of the following columns: `well_id`, `production_date`, `product`, `production`, `unit`, `cum_production`, `decline_rate`, `rolling_mean_3m`, `rolling_mean_6m`, `rolling_mean_12m`, `rolling_std_3m`, `rolling_std_6m`, `lag_1m`, `lag_3m`, `months_since_first_prod`, `production_year`, `production_month`, `production_quarter`, `gor`, `water_cut`, `wor`, `county_encoded`, `operator_encoded`, `producing_zone_encoded`, `field_encoded`, `product_encoded`, `outlier_flag`.
 
-**Parquet readability test:**
-- `@pytest.mark.integration` — For every Parquet file in `data/processed/features/`, attempt to read it with `pandas.read_parquet()`. Assert no file raises an exception on read.
+**Schema stability test (technical):**
+- `@pytest.mark.unit` — Write features Parquet from two fixture DataFrames representing two wells (one with all-null `latitude`); read each back and assert both have identical column names and dtypes.
 
-**Schema stability test:**
-- `@pytest.mark.integration` — Sample the schema from any two Parquet files in `data/processed/features/` using `pyarrow.parquet.read_schema()`. Assert the two schemas are identical (same column names and dtypes).
-
-**Partition correctness test:**
-- `@pytest.mark.integration` — Read each Parquet partition from `data/processed/features/` individually. Assert each file contains exactly one unique `well_id` value.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Both functions are implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 31: Implement features pipeline orchestrator and domain integrity tests
+## Task 31: Implement features orchestrator
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `run_features_pipeline() -> Path`
+**Function:** `run_features_pipeline(processed_dir: Path | None = None, output_dir: Path | None = None) -> list[Path]`
 
 **Description:**
-Synchronous entry-point that wires together the full features engineering workflow end-to-end:
-1. Read config from `kgs_pipeline/config.py`.
-2. Load the processed Parquet store from `PROCESSED_DATA_DIR` using `dask.dataframe.read_parquet()`.
-3. Verify the Dask DataFrame index is `well_id` (each partition corresponds to one well). If not, call `sort_and_repartition()` from `kgs_pipeline/transform.py` to enforce it.
-4. Call `compute_cumulative_production(ddf)`.
-5. Call `compute_decline_rate(ddf)`.
-6. Call `compute_rolling_statistics(ddf)`.
-7. Call `compute_time_features(ddf)`.
-8. Call `compute_gor(ddf)`.
-9. Call `add_water_placeholders(ddf)`.
-10. Call `encode_categorical_features(ddf)`.
-11. Call `write_features_parquet(ddf, FEATURES_DATA_DIR)`.
-12. Return `FEATURES_DATA_DIR`.
+Orchestrate the full features workflow in sequence:
+1. `load_processed_parquet(processed_dir)` → lazy Dask DataFrame.
+2. `compute_cumulative_production(ddf)`.
+3. `compute_decline_rate(ddf)`.
+4. `compute_rolling_features(ddf)`.
+5. `compute_lag_features(ddf)`.
+6. `compute_time_features(ddf)`.
+7. `compute_ratio_features(ddf)`.
+8. `build_encoding_maps(ddf)` → encoding maps (calls `.compute()` once here).
+9. `encode_categorical_features(ddf, encoding_maps)`.
+10. `write_features_parquet(ddf, output_dir)` → written paths (calls `.compute()` via `to_parquet`).
+11. `export_feature_matrix_csv(ddf, output_dir)`.
 
-Log pipeline start, each step name, and completion with elapsed time at `INFO` level.
+Return the list of written Parquet file paths. Log a summary at INFO level: input row count (from Parquet metadata), output Parquet file count, and elapsed time.
 
 **Error handling:**
-- If `PROCESSED_DATA_DIR` contains no Parquet files, raise `RuntimeError`.
-- Any exception in steps 4–10 must propagate with full traceback.
+- If `load_processed_parquet` raises `RuntimeError`, propagate it.
+- Log each stage at INFO level with elapsed time using `timer` decorator.
 
-**Dependencies:** `dask.dataframe`, `pathlib.Path`, `logging`, `time`
+**Dependencies:** dask.dataframe, pathlib, logging, kgs_pipeline.config, kgs_pipeline.utils
 
-**Test cases:**
+**Test cases (`tests/test_features.py`):**
+- `@pytest.mark.unit` — Run `run_features_pipeline` with all stage functions patched to return a small fixture DataFrame; assert the function returns a non-empty list and both `write_features_parquet` and `export_feature_matrix_csv` are called exactly once.
+- `@pytest.mark.unit` — Patch `load_processed_parquet` to raise `RuntimeError`; assert `run_features_pipeline` propagates the error.
+- `@pytest.mark.integration` — Run against real `CONFIG.processed_dir`; assert output files land in `CONFIG.features_dir`.
 
-- `@pytest.mark.unit` — Patch all sub-functions. Assert `run_features_pipeline()` calls each step exactly once in the correct order.
-- `@pytest.mark.unit` — Patch `dask.dataframe.read_parquet` to simulate empty processed store. Assert `RuntimeError` is raised.
+**Lazy Dask evaluation test (technical):**
+- `@pytest.mark.unit` — For each of the feature computation functions (Tasks 23–29), assert that when called on a fixture `dask.dataframe.DataFrame` the return type is `dask.dataframe.DataFrame`, not `pandas.DataFrame`. This verifies no hidden `.compute()` calls exist.
 
-**Domain-specific integrity tests (against features output in `data/processed/features/`):**
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
 
-- `@pytest.mark.integration` — **Decline curve monotonicity**: For a sample of 50 wells, load features Parquet and assert `cumulative_production` is monotonically non-decreasing over `production_date`. Any decrease is a pipeline bug.
-- `@pytest.mark.integration` — **Decline rate bounds**: Assert no `decline_rate` value in the features dataset falls outside `[DECLINE_RATE_CLIP_MIN, DECLINE_RATE_CLIP_MAX]` (excluding NaN rows).
-- `@pytest.mark.integration` — **GOR non-negative**: Assert all non-null `gor` values are `>= 0`. GOR is a ratio of physical volumes and cannot be negative.
-- `@pytest.mark.integration` — **Time feature consistency**: For any well, assert `months_since_first_prod` is `0` for the row where `production_date` equals the minimum `production_date` of that well.
-- `@pytest.mark.integration` — **Encoding consistency**: Assert `county_encoded` is identical for all rows sharing the same `county` value across the entire features dataset (global code consistency).
-- `@pytest.mark.integration` — **Lazy evaluation**: Load `data/processed/` and call each features function in sequence (except `write_features_parquet`). After each function call, assert the return type is `dask.dataframe.DataFrame`, confirming no premature `.compute()` call has occurred.
-- `@pytest.mark.integration` — **Data integrity**: For 50 randomly selected `(well_id, production_date, product)` triples, assert that `production` in the features Parquet matches `production` in the processed Parquet for the same triple (features layer must not mutate base production values).
+---
 
-**Definition of done:** Function and all integration tests are implemented, all test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+## Task 32: Implement pipeline orchestrator CLI
+
+**Module:** `kgs_pipeline/pipeline.py`
+**Functions:**
+- `setup_pipeline_logging() -> logging.Logger`
+- `run_pipeline(stages: list[str], years: list[int] | None, workers: int) -> dict`
+- `main() -> None` (CLI entry point)
+
+**Description — `setup_pipeline_logging`:**
+Configure and return a root pipeline logger that writes structured logs with timestamps to both `logs/pipeline.log` (rotating, max 10 MB, 3 backups) and `stdout`. Use the `setup_logging` helper from `kgs_pipeline/utils.py` with name `"pipeline"`.
+
+**Description — `run_pipeline`:**
+Execute pipeline stages in the sequence: acquire → ingest → transform → features. Accept a list of stage names in `stages` (valid values: `"acquire"`, `"ingest"`, `"transform"`, `"features"`, `"all"`). If `stages == ["all"]`, run all four in sequence. Skip stages not in `stages`. Track:
+- Start and end timestamps for the full pipeline run.
+- Per-stage start time, end time, and status (`"success"` or `"failed"`).
+- Total rows processed (read from Parquet metadata after each write step).
+- File counts written per stage.
+
+On stage failure, log the exception at ERROR level, mark the stage status as `"failed"`, and continue with the next stage if possible (acquire failure can still allow ingest to proceed with existing raw files; ingest failure blocks transform and features).
+
+Return a `dict` with pipeline run metadata matching the structure saved to `data/pipeline_metadata.json`.
+
+**Description — `main`:**
+Parse CLI arguments using `argparse`:
+- `--stages`: comma-separated list of stages to run (default: `"all"`).
+- `--years`: comma-separated list of years to process (default: all years in `CONFIG.year_start`–`CONFIG.year_end`). This argument is informational and passed to acquire for filtering lease URLs by year if needed.
+- `--workers`: number of Dask workers (default: `CONFIG.dask_n_workers`).
+
+After parsing, call `run_pipeline(stages, years, workers)`. Serialize the returned metadata dict to `data/pipeline_metadata.json` using `json.dump` (with ISO 8601 datetime strings). Exit with code `0` on success, `1` if any stage failed.
+
+**Dependencies:** argparse, json, logging, pathlib, datetime, kgs_pipeline.acquire, kgs_pipeline.ingest, kgs_pipeline.transform, kgs_pipeline.features, kgs_pipeline.config, kgs_pipeline.utils
+
+**Test cases (`tests/test_pipeline.py`):**
+- `@pytest.mark.unit` — Patch all four stage `run_*_pipeline` functions to return mock results; call `run_pipeline(["all"], None, 4)`; assert the returned dict contains keys `start_time`, `end_time`, `stages`, and `pipeline_metadata_path`.
+- `@pytest.mark.unit` — Call `run_pipeline(["ingest", "transform"], None, 4)` with patched stages; assert only `run_ingest_pipeline` and `run_transform_pipeline` are called (not acquire or features).
+- `@pytest.mark.unit` — Patch `run_acquire_pipeline` to raise an exception; assert `run_pipeline` does not raise, marks the acquire stage as `"failed"` in the returned dict, and continues to attempt the next stages.
+- `@pytest.mark.unit` — Call `main()` with patched `run_pipeline`; assert `data/pipeline_metadata.json` is written and is valid JSON.
+- `@pytest.mark.unit` — Call `main()` with `--stages acquire,ingest` as sys.argv; assert only the acquire and ingest stages are invoked.
+- `@pytest.mark.integration` — Run the full pipeline end-to-end with 2 real lease URLs (mocked scraping returning fixture files); assert all four stages complete, output files exist in their respective directories, and `data/pipeline_metadata.json` is written.
+
+**Definition of done:** All functions are implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.

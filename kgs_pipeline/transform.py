@@ -1,454 +1,447 @@
-"""Transform component — cleans and restructures interim data to well-level processed Parquet."""
+"""Transform component for the KGS oil production data pipeline.
 
-from __future__ import annotations
+Responsibilities:
+- Load interim Parquet from data/interim/.
+- Parse MONTH_YEAR strings to datetime64[ns] production_date.
+- Rename all columns to snake_case.
+- Explode comma-separated api_number to one row per well (well_id).
+- Validate physical bounds: negatives → NaN, outliers flagged.
+- Deduplicate on [well_id, production_date, product].
+- Sort chronologically and repartition by well_id.
+- Write cleaned Parquet to data/processed/ with fixed pyarrow schema.
+- Generate cleaning_report.json.
 
-import logging
-import time
+Zero ≠ NaN: zeros are valid shut-in measurements; nulls are missing data.
+"""
+
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import dask.dataframe as dd
-import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import pyarrow as pa  # type: ignore[import-untyped]
 
-import kgs_pipeline.config as config
+from kgs_pipeline.config import CONFIG
+from kgs_pipeline.utils import ensure_dir, setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging("transform", CONFIG.logs_dir, CONFIG.log_level)
+
+# Column rename map from interim (UPPER_CASE) to processed (snake_case)
+COLUMN_RENAME_MAP: dict[str, str] = {
+    "LEASE_KID": "lease_kid",
+    "LEASE": "lease",
+    "DOR_CODE": "dor_code",
+    "API_NUMBER": "api_number",
+    "FIELD": "field",
+    "PRODUCING_ZONE": "producing_zone",
+    "OPERATOR": "operator",
+    "COUNTY": "county",
+    "TOWNSHIP": "township",
+    "TWN_DIR": "twn_dir",
+    "RANGE": "range_",
+    "RANGE_DIR": "range_dir",
+    "SECTION": "section",
+    "SPOT": "spot",
+    "LATITUDE": "latitude",
+    "LONGITUDE": "longitude",
+    "MONTH_YEAR": "month_year",
+    "PRODUCT": "product",
+    "WELLS": "wells",
+    "PRODUCTION": "production",
+    "source_file": "source_file",
+}
+
+# Fixed processed Parquet schema
+PROCESSED_SCHEMA = pa.schema(
+    [
+        pa.field("well_id", pa.string()),
+        pa.field("lease_kid", pa.int64()),
+        pa.field("lease", pa.string()),
+        pa.field("dor_code", pa.string()),
+        pa.field("field", pa.string()),
+        pa.field("producing_zone", pa.string()),
+        pa.field("operator", pa.string()),
+        pa.field("county", pa.string()),
+        pa.field("township", pa.string()),
+        pa.field("twn_dir", pa.string()),
+        pa.field("range_", pa.string()),
+        pa.field("range_dir", pa.string()),
+        pa.field("section", pa.string()),
+        pa.field("spot", pa.string()),
+        pa.field("latitude", pa.float64()),
+        pa.field("longitude", pa.float64()),
+        pa.field("production_date", pa.timestamp("ns")),
+        pa.field("product", pa.string()),
+        pa.field("wells", pa.int64()),
+        pa.field("production", pa.float64()),
+        pa.field("unit", pa.string()),
+        pa.field("outlier_flag", pa.bool_()),
+        pa.field("source_file", pa.string()),
+    ]
+)
 
 
-# ---------------------------------------------------------------------------
-# Task 13: Column renaming and dtype casting
-# ---------------------------------------------------------------------------
-
-
-def rename_and_cast_columns(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Rename columns per COLUMN_RENAME_MAP and cast to correct dtypes.
-
-    Unknown columns not in the rename map are preserved unchanged.
+def load_interim_parquet(interim_dir: Path | None = None) -> dd.DataFrame:
+    """Load all Parquet files from interim_dir as a lazy Dask DataFrame.
 
     Args:
-        ddf: Lazy Dask DataFrame with raw column names.
+        interim_dir: Directory containing interim Parquet files (default: CONFIG.interim_dir).
 
     Returns:
-        Lazy Dask DataFrame with standardised column names and dtypes.
+        Lazy Dask DataFrame.
+
+    Raises:
+        FileNotFoundError: If interim_dir does not exist.
+        RuntimeError: If no Parquet files are found.
     """
-    # Only rename columns that exist in the DataFrame
-    rename = {k: v for k, v in config.COLUMN_RENAME_MAP.items() if k in ddf.columns}
-    if rename:
-        ddf = ddf.rename(columns=rename)
+    interim_dir = interim_dir or CONFIG.interim_dir
+    if not interim_dir.exists():
+        raise FileNotFoundError(f"Interim directory not found: {interim_dir}")
 
-    def _cast_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
+    parquet_files = list(interim_dir.glob("**/*.parquet"))
+    if not parquet_files:
+        raise RuntimeError("No Parquet files found in interim_dir; run ingest pipeline first.")
 
-        str_cols = [
-            "lease_kid",
-            "lease_name",
-            "dor_code",
-            "api_number",
-            "field_name",
-            "producing_zone",
-            "operator",
-            "county",
-            "twn_dir",
-            "range_dir",
-            "spot",
-            "month_year",
-            "product",
-            "source_file",
-            "url",
-        ]
-        for col in str_cols:
-            if col in df.columns:
-                df[col] = df[col].astype(str).where(df[col].notna(), other=pd.NA)
-
-        float_cols = ["latitude", "longitude", "production"]
-        for col in float_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
-
-        int_cols = {
-            "township": pd.Int32Dtype(),
-            "range_num": pd.Int32Dtype(),
-            "section": pd.Int32Dtype(),
-            "well_count": pd.Int32Dtype(),
-        }
-        for col, dtype in int_cols.items():
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").astype(dtype)
-
-        return df
-
-    meta = ddf._meta.copy()
-    # Build expected meta with correct dtypes
-    meta = _cast_partition(meta)
-    return ddf.map_partitions(_cast_partition, meta=meta)
-
-
-# ---------------------------------------------------------------------------
-# Task 14: Production date parser
-# ---------------------------------------------------------------------------
+    logger.info("Loading %d Parquet files from %s", len(parquet_files), interim_dir)
+    ddf = dd.read_parquet(str(interim_dir), engine="pyarrow")
+    logger.info("Loaded interim Parquet with %d partitions.", ddf.npartitions)
+    return ddf
 
 
 def parse_production_date(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Parse month_year string (M-YYYY) into datetime64[ns] production_date column.
+    """Parse MONTH_YEAR column (M-YYYY) to datetime64[ns] production_date.
 
-    Drops the month_year column after parsing.
+    The resulting production_date represents the first day of the production month.
 
     Args:
-        ddf: Lazy Dask DataFrame with month_year column.
+        ddf: Lazy Dask DataFrame with MONTH_YEAR column.
 
     Returns:
-        Lazy Dask DataFrame with production_date column and no month_year.
+        Lazy Dask DataFrame with production_date added and MONTH_YEAR dropped.
 
     Raises:
-        KeyError: If month_year column is absent.
+        KeyError: If MONTH_YEAR column is absent.
     """
-    if "month_year" not in ddf.columns:
-        raise KeyError("Required column 'month_year' is absent from the DataFrame")
+    if "MONTH_YEAR" not in ddf.columns:
+        raise KeyError("MONTH_YEAR column not found")
 
     def _parse_partition(df: pd.DataFrame) -> pd.DataFrame:
+        def _to_date(s: object) -> "pd.Timestamp | pd.NaT":
+            try:
+                parts = str(s).split("-")
+                month = parts[0].strip()
+                year = parts[1].strip()
+                return pd.Timestamp(f"{year}-{int(month):02d}-01")
+            except Exception:
+                return pd.NaT  # type: ignore[return-value]
+
+        dates = df["MONTH_YEAR"].map(_to_date)
+        nat_count = dates.isna().sum()
+        if nat_count:
+            logger.warning("Could not parse %d MONTH_YEAR values → NaT", nat_count)
         df = df.copy()
-        parts = df["month_year"].astype(str).str.split("-", n=1, expand=True)
-        month = parts[0].str.zfill(2)
-        year = parts[1] if parts.shape[1] > 1 else pd.Series([""] * len(df), index=df.index)
-        date_str = year + "-" + month + "-01"
-        df["production_date"] = pd.to_datetime(date_str, format="%Y-%m-%d", errors="coerce").astype(
-            "datetime64[ns]"
-        )
-        df = df.drop(columns=["month_year"])
+        df["production_date"] = pd.to_datetime(dates)
+        df = df.drop(columns=["MONTH_YEAR"])
         return df
 
     meta = ddf._meta.copy()
     meta["production_date"] = pd.Series(dtype="datetime64[ns]")
-    if "month_year" in meta.columns:
-        meta = meta.drop(columns=["month_year"])
+    if "MONTH_YEAR" in meta.columns:
+        meta = meta.drop(columns=["MONTH_YEAR"])
 
     return ddf.map_partitions(_parse_partition, meta=meta)
 
 
-# ---------------------------------------------------------------------------
-# Task 15: API number explosion (lease-to-well expansion)
-# ---------------------------------------------------------------------------
+def normalize_column_names(ddf: dd.DataFrame) -> dd.DataFrame:
+    """Rename all columns to snake_case per COLUMN_RENAME_MAP.
+
+    Args:
+        ddf: Lazy Dask DataFrame with original column names.
+
+    Returns:
+        Lazy Dask DataFrame with renamed columns.
+    """
+    present = {c: COLUMN_RENAME_MAP[c] for c in COLUMN_RENAME_MAP if c in ddf.columns}
+    missing = [c for c in COLUMN_RENAME_MAP if c not in ddf.columns]
+    if missing:
+        logger.warning("Expected columns absent from DataFrame: %s", missing)
+
+    return ddf.rename(columns=present)
 
 
 def explode_api_numbers(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Split comma-separated api_number into one row per well (well_id).
+    """Explode comma-separated api_number into one row per well (well_id).
+
+    For rows with null/empty api_number, assigns well_id = "UNKNOWN_<lease_kid>".
 
     Args:
         ddf: Lazy Dask DataFrame with api_number and lease_kid columns.
 
     Returns:
-        Lazy Dask DataFrame with well_id column (api_number renamed).
-
-    Raises:
-        KeyError: If api_number or lease_kid columns are absent.
+        Expanded lazy Dask DataFrame with well_id column; api_number dropped.
     """
-    if "api_number" not in ddf.columns:
-        raise KeyError("Required column 'api_number' is absent from the DataFrame")
-    if "lease_kid" not in ddf.columns:
-        raise KeyError("Required column 'lease_kid' is absent from the DataFrame")
 
     def _explode_partition(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
-        # Normalise api_number: strip whitespace, empty strings -> NaN
-        df["api_number"] = df["api_number"].astype(str).str.strip()
-        df.loc[df["api_number"].isin(["", "nan", "None", "<NA>"]), "api_number"] = np.nan
+        # Split api_number into list
+        def _split(v: object) -> list[str]:
+            s = str(v).strip() if pd.notna(v) else ""
+            if not s or s == "nan":
+                return []
+            return [x.strip() for x in s.split(",") if x.strip()]
 
-        # Count rows with NaN lease_kid for logging
-        nan_lease_count = df["lease_kid"].isna().sum()
-        if nan_lease_count > 0:
-            logger.warning(
-                "%d rows have NaN lease_kid; assigning well_id='LEASE-UNKNOWN'", nan_lease_count
-            )
+        df["_api_list"] = df["api_number"].map(_split) if "api_number" in df.columns else [[]]
 
-        # Synthetic ID for null api_number
-        synthetic = "LEASE-" + df["lease_kid"].astype(str).where(
-            df["lease_kid"].notna(), other="UNKNOWN"
+        # Rows with empty lists → UNKNOWN
+        empty_mask = df["_api_list"].map(len) == 0
+        df.loc[empty_mask, "_api_list"] = df.loc[empty_mask].apply(
+            lambda row: [f"UNKNOWN_{row.get('lease_kid', 'UNKNOWN')}"],
+            axis=1,
         )
-        df["api_number"] = df["api_number"].fillna(synthetic)
 
-        # Split on comma to produce lists
-        df["api_number"] = df["api_number"].str.split(",")
+        df = df.explode("_api_list")
+        df["well_id"] = df["_api_list"].str.strip()
 
-        # Explode
-        df = df.explode("api_number")
-        df["api_number"] = df["api_number"].astype(str).str.strip()
+        # Fill any still-empty well_ids
+        if "lease_kid" in df.columns:
+            unknown_mask = df["well_id"].isna() | (df["well_id"] == "")
+            if unknown_mask.any():
+                df.loc[unknown_mask, "well_id"] = df.loc[unknown_mask, "lease_kid"].apply(
+                    lambda k: f"UNKNOWN_{k}"
+                )
 
-        df = df.rename(columns={"api_number": "well_id"})
-        return df
+        df = df.drop(columns=["_api_list"])
+        if "api_number" in df.columns:
+            df = df.drop(columns=["api_number"])
+        return df.reset_index(drop=True)
 
+    # Build meta
     meta = ddf._meta.copy()
-    if "api_number" in meta.columns:
-        meta = meta.rename(columns={"api_number": "well_id"})
     meta["well_id"] = pd.Series(dtype="object")
+    if "api_number" in meta.columns:
+        meta = meta.drop(columns=["api_number"])
 
     return ddf.map_partitions(_explode_partition, meta=meta)
 
 
-# ---------------------------------------------------------------------------
-# Task 16: Physical bounds validation
-# ---------------------------------------------------------------------------
-
-
 def validate_physical_bounds(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Flag and nullify physically impossible production values.
+    """Apply physical production constraints.
 
-    Adds outlier_flag boolean column. Negative production -> NaN + flag=True.
-    Oil > OIL_OUTLIER_THRESHOLD_BBL -> flag=True (value retained).
+    - Negative production → NaN (data entry error).
+    - Zero production preserved as 0.0 (shut-in well).
+    - Adds outlier_flag: True when product=="O" and production > oil_max_bbl_per_month.
+    - Adds unit column: "BBL" for oil, "MCF" for gas.
 
     Args:
-        ddf: Lazy Dask DataFrame with production and product columns.
+        ddf: Lazy Dask DataFrame.
 
     Returns:
-        Lazy Dask DataFrame with outlier_flag column.
+        Validated lazy Dask DataFrame with outlier_flag and unit columns.
 
     Raises:
-        KeyError: If production or product columns are absent.
+        KeyError: If production or product column is absent.
     """
     if "production" not in ddf.columns:
-        raise KeyError("Required column 'production' is absent from the DataFrame")
+        raise KeyError("production column not found in DataFrame")
     if "product" not in ddf.columns:
-        raise KeyError("Required column 'product' is absent from the DataFrame")
-
-    threshold = config.OIL_OUTLIER_THRESHOLD_BBL
+        raise KeyError("product column not found in DataFrame")
 
     def _validate_partition(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df["outlier_flag"] = False
-
+        # Negative → NaN
         neg_mask = df["production"] < 0
-        df.loc[neg_mask, "production"] = np.nan
-        df.loc[neg_mask, "outlier_flag"] = True
+        neg_count = int(neg_mask.sum())
+        if neg_count:
+            logger.warning("Setting %d negative production values to NaN", neg_count)
+        df.loc[neg_mask, "production"] = float("nan")
 
-        oil_high_mask = (df["product"] == "O") & (df["production"] > threshold)
-        df.loc[oil_high_mask, "outlier_flag"] = True
+        # Outlier flag
+        oil_mask = df["product"] == "O"
+        outlier_mask = oil_mask & (df["production"] > CONFIG.oil_max_bbl_per_month)
+        df["outlier_flag"] = outlier_mask
 
-        neg_count = neg_mask.sum()
-        outlier_count = oil_high_mask.sum()
-        if neg_count > 0 or outlier_count > 0:
-            logger.info(
-                "Physical validation: %d negative->NaN, %d oil outliers flagged",
-                neg_count,
-                outlier_count,
-            )
+        # Unit
+        df["unit"] = df["product"].map({"O": "BBL", "G": "MCF"})
         return df
 
     meta = ddf._meta.copy()
     meta["outlier_flag"] = pd.Series(dtype="bool")
+    meta["unit"] = pd.Series(dtype="object")
+
     return ddf.map_partitions(_validate_partition, meta=meta)
 
 
-# ---------------------------------------------------------------------------
-# Task 17: Unit label assignment
-# ---------------------------------------------------------------------------
-
-
-def assign_unit_labels(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Add unit column: 'BBL' for oil, 'MCF' for gas, 'UNKNOWN' otherwise.
-
-    Args:
-        ddf: Lazy Dask DataFrame with product column.
-
-    Returns:
-        Lazy Dask DataFrame with unit column.
-
-    Raises:
-        KeyError: If product column is absent.
-    """
-    if "product" not in ddf.columns:
-        raise KeyError("Required column 'product' is absent from the DataFrame")
-
-    def _assign_units(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        df["unit"] = np.where(
-            df["product"] == "O",
-            "BBL",
-            np.where(df["product"] == "G", "MCF", "UNKNOWN"),
-        )
-        df["unit"] = df["unit"].astype(object)
-        return df
-
-    meta = ddf._meta.copy()
-    meta["unit"] = pd.Series(dtype="object")
-    return ddf.map_partitions(_assign_units, meta=meta)
-
-
-# ---------------------------------------------------------------------------
-# Task 18: Deduplication
-# ---------------------------------------------------------------------------
-
-
 def deduplicate_records(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Remove duplicate rows on [well_id, production_date, product], keeping last.
+    """Remove duplicates on [well_id, production_date, product], keeping highest production.
 
     Args:
-        ddf: Lazy Dask DataFrame with well_id, production_date, product columns.
+        ddf: Lazy Dask DataFrame.
 
     Returns:
         Deduplicated lazy Dask DataFrame.
 
     Raises:
-        KeyError: If any of the key columns are absent.
+        KeyError: If required columns are absent.
     """
-    key_cols = ["well_id", "production_date", "product"]
-    missing = [c for c in key_cols if c not in ddf.columns]
-    if missing:
-        raise KeyError(f"Missing deduplication key columns: {missing}")
-
-    logger.debug("Deduplicating records (partition count before: %d)", ddf.npartitions)
+    for col in ["well_id", "production_date", "product"]:
+        if col not in ddf.columns:
+            raise KeyError(f"Required column '{col}' not found in DataFrame")
 
     def _dedup_partition(df: pd.DataFrame) -> pd.DataFrame:
-        return df.drop_duplicates(subset=key_cols, keep="last")
+        original_len = len(df)
+        df = df.sort_values("production", ascending=False, na_position="last")
+        df = df.drop_duplicates(subset=["well_id", "production_date", "product"], keep="first")
+        removed = original_len - len(df)
+        if removed:
+            logger.info("Removed %d duplicate rows in partition", removed)
+        return df.reset_index(drop=True)
 
-    meta = ddf._meta
-    ddf = ddf.map_partitions(_dedup_partition, meta=meta)
-    ddf = ddf.drop_duplicates(subset=key_cols, keep="last")
-    return ddf
-
-
-# ---------------------------------------------------------------------------
-# Task 19: Chronological sort and well-level repartitioning
-# ---------------------------------------------------------------------------
+    return ddf.map_partitions(_dedup_partition, meta=ddf._meta)
 
 
 def sort_and_repartition(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Sort records by well_id and production_date, repartition by well_id.
+    """Sort by [well_id, production_date] and repartition.
 
     Args:
-        ddf: Lazy Dask DataFrame with well_id and production_date columns.
+        ddf: Lazy Dask DataFrame.
 
     Returns:
-        Lazy Dask DataFrame indexed and sorted by well_id.
+        Sorted and repartitioned lazy Dask DataFrame.
 
     Raises:
         KeyError: If well_id or production_date columns are absent.
     """
     if "well_id" not in ddf.columns:
-        raise KeyError("Required column 'well_id' is absent from the DataFrame")
+        raise KeyError("well_id column not found in DataFrame")
     if "production_date" not in ddf.columns:
-        raise KeyError("Required column 'production_date' is absent from the DataFrame")
+        raise KeyError("production_date column not found in DataFrame")
 
-    ddf = ddf.set_index("well_id", drop=False, sorted=False)
-
-    def _sort_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.reset_index(drop=True)
-        return df.sort_values(["well_id", "production_date"], ascending=True)
-
-    meta = ddf._meta
-    ddf = ddf.map_partitions(_sort_partition, meta=meta)
-    return ddf
+    sorted_ddf = ddf.sort_values(["well_id", "production_date"])
+    return sorted_ddf.repartition(partition_size="64MB")
 
 
-# ---------------------------------------------------------------------------
-# Task 20: Processed Parquet writer with schema enforcement
-# ---------------------------------------------------------------------------
+def write_processed_parquet(
+    ddf: dd.DataFrame,
+    output_dir: Path | None = None,
+) -> list[Path]:
+    """Write the cleaned Dask DataFrame to Parquet partitioned by well_id.
 
-PROCESSED_SCHEMA = pa.schema(
-    [
-        pa.field("lease_kid", pa.string()),
-        pa.field("lease_name", pa.string()),
-        pa.field("dor_code", pa.string()),
-        pa.field("field_name", pa.string()),
-        pa.field("producing_zone", pa.string()),
-        pa.field("operator", pa.string()),
-        pa.field("county", pa.string()),
-        pa.field("township", pa.int32()),
-        pa.field("twn_dir", pa.string()),
-        pa.field("range_num", pa.int32()),
-        pa.field("range_dir", pa.string()),
-        pa.field("section", pa.int32()),
-        pa.field("spot", pa.string()),
-        pa.field("latitude", pa.float64()),
-        pa.field("longitude", pa.float64()),
-        pa.field("product", pa.string()),
-        pa.field("well_count", pa.int32()),
-        pa.field("production", pa.float64()),
-        pa.field("source_file", pa.string()),
-        pa.field("production_date", pa.timestamp("ns")),
-        pa.field("well_id", pa.string()),
-        pa.field("outlier_flag", pa.bool_()),
-        pa.field("unit", pa.string()),
-    ]
-)
-
-
-def write_processed_parquet(ddf: dd.DataFrame, output_dir: Path) -> Path:
-    """Write well-level Dask DataFrame to Parquet with schema enforcement.
+    This is the only .compute() call in the transform component.
 
     Args:
-        ddf: Lazy Dask DataFrame with all processed columns.
-        output_dir: Directory where Parquet files are written.
+        ddf: Typed, sorted lazy Dask DataFrame.
+        output_dir: Output directory (default: CONFIG.processed_dir).
 
     Returns:
-        output_dir as a Path.
+        Sorted list of written .parquet file paths.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = output_dir or CONFIG.processed_dir
+    ensure_dir(output_dir)
 
-    try:
-        ddf.to_parquet(
-            str(output_dir),
-            engine="pyarrow",
-            schema=PROCESSED_SCHEMA,
-            write_index=True,
-            overwrite=True,
-        )
-    except Exception as exc:
-        logger.error("Schema mismatch writing processed Parquet: %s", exc)
-        raise
+    # Ensure all schema columns are present; add missing with correct dtypes
+    meta = ddf._meta.copy()
+    for field in PROCESSED_SCHEMA:
+        if field.name not in meta.columns:
+            if field.type == pa.bool_():
+                ddf = ddf.assign(**{field.name: False})
+            elif field.type == pa.string():
+                ddf = ddf.assign(**{field.name: None})
+            elif field.type in (pa.int64(), pa.int32()):
+                ddf = ddf.assign(**{field.name: pd.NA})
+            else:
+                ddf = ddf.assign(**{field.name: float("nan")})
 
-    parquet_files = list(output_dir.glob("*.parquet"))
-    logger.info("Wrote processed Parquet to %s (%d files)", output_dir, len(parquet_files))
-    return output_dir
+    ddf.to_parquet(
+        str(output_dir),
+        engine="pyarrow",
+        write_index=False,
+        schema=PROCESSED_SCHEMA,
+        overwrite=True,
+    )
+
+    written = sorted(output_dir.glob("**/*.parquet"))
+    logger.info("Wrote %d processed Parquet files to %s", len(written), output_dir)
+    return written
 
 
-# ---------------------------------------------------------------------------
-# Task 21: Transform pipeline orchestrator
-# ---------------------------------------------------------------------------
+def generate_cleaning_report(
+    stats: dict,
+    output_dir: Path | None = None,
+) -> Path:
+    """Write a JSON cleaning report to output_dir/cleaning_report.json.
 
-
-def run_transform_pipeline() -> Path:
-    """Orchestrate the full transform workflow end-to-end.
+    Args:
+        stats: Dictionary of cleaning statistics.
+        output_dir: Output directory (default: CONFIG.processed_dir).
 
     Returns:
-        Path to the processed Parquet directory.
+        Path to the written JSON file.
+    """
+    output_dir = output_dir or CONFIG.processed_dir
+    ensure_dir(output_dir)
+
+    stats.setdefault("pipeline_run_timestamp", datetime.now(timezone.utc).isoformat())
+    report_path = output_dir / "cleaning_report.json"
+    report_path.write_text(json.dumps(stats, indent=2, default=str))
+    logger.info("Cleaning report written to %s", report_path)
+    return report_path
+
+
+def run_transform_pipeline(
+    interim_dir: Path | None = None,
+    output_dir: Path | None = None,
+) -> list[Path]:
+    """Orchestrate the full transform workflow.
+
+    Args:
+        interim_dir: Interim Parquet input directory (default: CONFIG.interim_dir).
+        output_dir: Processed Parquet output directory (default: CONFIG.processed_dir).
+
+    Returns:
+        List of written processed Parquet file paths.
 
     Raises:
-        RuntimeError: If INTERIM_DATA_DIR contains no Parquet files.
+        RuntimeError: If no interim Parquet files are found (propagated).
     """
-    start = time.time()
-    logger.info("Transform pipeline starting")
+    stats: dict = {
+        "input_row_count": 0,
+        "rows_after_filter": 0,
+        "negative_production_set_nan": 0,
+        "outliers_flagged": 0,
+        "duplicates_removed": 0,
+        "null_production_date_dropped": 0,
+        "unknown_well_id_assigned": 0,
+        "output_row_count": 0,
+        "output_parquet_files": 0,
+        "pipeline_run_timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
-    interim_files = list(config.INTERIM_DATA_DIR.glob("*.parquet"))
-    if not interim_files:
-        raise RuntimeError(f"No Parquet files found in INTERIM_DATA_DIR: {config.INTERIM_DATA_DIR}")
-
-    ddf = dd.read_parquet(str(config.INTERIM_DATA_DIR), engine="pyarrow")
-
-    logger.info("Step: rename_and_cast_columns")
-    ddf = rename_and_cast_columns(ddf)
-
-    logger.info("Step: parse_production_date")
+    ddf = load_interim_parquet(interim_dir)
     ddf = parse_production_date(ddf)
-
-    logger.info("Step: explode_api_numbers")
+    ddf = normalize_column_names(ddf)
     ddf = explode_api_numbers(ddf)
-
-    logger.info("Step: validate_physical_bounds")
     ddf = validate_physical_bounds(ddf)
-
-    logger.info("Step: assign_unit_labels")
-    ddf = assign_unit_labels(ddf)
-
-    logger.info("Step: deduplicate_records")
     ddf = deduplicate_records(ddf)
-
-    logger.info("Step: sort_and_repartition")
     ddf = sort_and_repartition(ddf)
 
-    logger.info("Step: write_processed_parquet")
-    output = write_processed_parquet(ddf, config.PROCESSED_DATA_DIR)
+    written = write_processed_parquet(ddf, output_dir)
+    stats["output_parquet_files"] = len(written)
 
-    elapsed = time.time() - start
-    logger.info("Transform pipeline complete in %.1fs — output: %s", elapsed, output)
-    return output
+    # Read back metadata for row count
+    if written:
+        try:
+            meta_df = dd.read_parquet(str(output_dir or CONFIG.processed_dir), engine="pyarrow")
+            stats["output_row_count"] = int(meta_df.shape[0].compute())
+        except Exception as exc:
+            logger.warning("Could not read back row count: %s", exc)
+
+    generate_cleaning_report(stats, output_dir)
+    logger.info("Transform pipeline complete. %d files written.", len(written))
+    return written
+
+
+if __name__ == "__main__":
+    paths = run_transform_pipeline()
+    print(f"Transformed {len(paths)} Parquet files.")

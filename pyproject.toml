@@ -5,35 +5,45 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "kgs-pipeline"
 version = "0.1.0"
-description = "KGS oil and gas production data pipeline"
+description = "KGS Kansas oil and gas production data pipeline"
 requires-python = ">=3.11"
 dependencies = [
     "pandas>=2.0.0",
-    "numpy>=1.24.0",
-    "dask[dataframe]>=2023.1.0",
-    "pyarrow>=12.0.0",
+    "pyarrow>=14.0.0",
+    "dask[dataframe]>=2024.1.0",
+    "fsspec>=2024.1.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
     "playwright>=1.40.0",
-    "distributed>=2023.1.0",
+    "requests>=2.31.0",
+    "tqdm>=4.66.0",
+    "numpy>=1.26.0",
 ]
+
+[project.scripts]
+kgs-pipeline = "kgs_pipeline.pipeline:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
     "pytest-asyncio>=0.23.0",
-    "ruff>=0.1.0",
-    "mypy>=1.5.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["kgs_pipeline*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-ignore = ["E501"]
+select = ["E", "F", "W"]
+ignore = ["W293", "E501"]
 
 [tool.mypy]
 python_version = "3.11"
+warn_return_any = true
 ignore_missing_imports = true
-warn_return_any = false
-warn_unused_ignores = false

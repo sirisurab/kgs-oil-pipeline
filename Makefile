@@ -1,43 +1,37 @@
-.PHONY: install test test-unit test-integration lint typecheck clean acquire ingest transform features pipeline
+.PHONY: install test test-integration lint type-check clean acquire ingest transform features pipeline
 
 install:
 	pip install -e ".[dev]"
 	playwright install chromium
 
 test:
-	pytest tests -v
-
-test-unit:
-	pytest tests -v -m unit
+	pytest tests/ -m "not integration" -v
 
 test-integration:
-	pytest tests -v -m integration
+	pytest tests/ -m "integration" -v
 
 lint:
-	ruff check kgs_pipeline tests
+	ruff check kgs_pipeline/ tests/
 
-typecheck:
-	mypy kgs_pipeline
+type-check:
+	mypy kgs_pipeline/
 
 clean:
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -name "*.pyc" -delete
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; true
+	find . -name "*.pyc" -delete 2>/dev/null; true
 	rm -rf .pytest_cache .mypy_cache .ruff_cache
 
 acquire:
-	python -c "from kgs_pipeline.acquire import run_acquire_pipeline; run_acquire_pipeline()"
+	python -m kgs_pipeline.pipeline --stages acquire
 
 ingest:
-	python -c "from kgs_pipeline.ingest import run_ingest_pipeline; run_ingest_pipeline()"
+	python -m kgs_pipeline.pipeline --stages ingest
 
 transform:
-	python -c "from kgs_pipeline.transform import run_transform_pipeline; run_transform_pipeline()"
+	python -m kgs_pipeline.pipeline --stages transform
 
 features:
-	python -c "from kgs_pipeline.features import run_features_pipeline; run_features_pipeline()"
+	python -m kgs_pipeline.pipeline --stages features
 
 pipeline:
-	$(MAKE) acquire
-	$(MAKE) ingest
-	$(MAKE) transform
-	$(MAKE) features
+	python -m kgs_pipeline.pipeline --stages all

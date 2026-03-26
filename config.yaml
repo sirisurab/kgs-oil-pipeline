@@ -1,0 +1,39 @@
+paths:
+  lease_file: references/oil_leases_2020_present.txt
+  raw_data_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  encoders_dir: data/processed/encoders
+  logs_dir: logs
+
+scraping:
+  max_concurrency: 5
+  retry_attempts: 3
+  retry_backoff_base: 2
+  page_timeout_seconds: 30
+  button_timeout_seconds: 10
+
+ingestion:
+  file_glob: "lease_*.txt"
+  interim_filename: raw_combined.parquet
+
+transform:
+  dedup_keys:
+    - lease_kid
+    - production_date
+    - product
+    - production
+  oil_outlier_threshold_bbl: 50000
+  invalid_product_codes:
+    - O
+    - G
+
+features:
+  rolling_windows:
+    - 3
+    - 6
+  gor_high_threshold: 100000
+  categorical_columns:
+    - county
+    - operator
+    - producing_zone

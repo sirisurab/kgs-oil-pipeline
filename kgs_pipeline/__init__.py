@@ -1,5 +1,5 @@
-"""KGS Oil and Gas Pipeline package."""
+"""KGS Oil Production Data Pipeline package."""
 
-from kgs_pipeline.acquire import ScrapingError
+from kgs_pipeline.config import CONFIG, PipelineConfig
 
-__all__ = ["ScrapingError"]
+__all__ = ["CONFIG", "PipelineConfig"]

@@ -1,79 +1,76 @@
-# KGS Oil and Gas Production Pipeline
+# KGS Oil Production Data Pipeline
 
-A Python pipeline for downloading, ingesting, cleaning, and feature-engineering
-Kansas Geological Survey (KGS) per-lease monthly oil and gas production data.
+A pipeline for acquiring, ingesting, transforming, and engineering ML-ready features from
+Kansas Geological Survey (KGS) lease-level monthly oil and gas production data.
 
 ## Pipeline Stages
 
 ```
-acquire.py → ingest.py → transform.py → features.py
-data/raw/   data/interim/  data/processed/  data/processed/features/
+acquire → ingest → transform → features
+data/raw/  data/interim/  data/processed/  data/processed/features/
 ```
 
 | Stage | Module | Description |
 |-------|--------|-------------|
-| Acquire | `kgs_pipeline/acquire.py` | Playwright async scraper with rate-limiting; downloads per-lease `.txt` files |
-| Ingest | `kgs_pipeline/ingest.py` | Dask-based ingestion, metadata enrichment, monthly-record filtering, Parquet write |
-| Transform | `kgs_pipeline/transform.py` | Column standardisation, date parsing, API explosion, bounds validation, deduplication |
-| Features | `kgs_pipeline/features.py` | Cumulative production, decline rate, rolling stats, GOR, label encoding |
+| acquire | `kgs_pipeline/acquire.py` | Scrapes per-lease .txt files from KGS via Playwright |
+| ingest | `kgs_pipeline/ingest.py` | Reads raw .txt files into partitioned interim Parquet |
+| transform | `kgs_pipeline/transform.py` | Cleans, validates, deduplicates, writes processed Parquet |
+| features | `kgs_pipeline/features.py` | Engineers ML features, writes feature Parquet + CSV |
 
-## Quick Start
+## Setup
 
 ```bash
-# Install dependencies
-pip install -e ".[dev]"
+pip install -r requirements.txt
 playwright install chromium
+```
 
-# Run unit tests only (no network or data required)
-make test-unit
+## Usage
 
-# Run full pipeline
-make pipeline
+Run all stages:
+```bash
+python -m kgs_pipeline.pipeline --stages all
+```
+
+Run specific stages:
+```bash
+python -m kgs_pipeline.pipeline --stages acquire,ingest
+python -m kgs_pipeline.pipeline --stages transform,features
+```
+
+Options:
+- `--stages`: Comma-separated list of stages (acquire, ingest, transform, features, all)
+- `--years`: Comma-separated list of years to process (default: 2020–2025)
+- `--workers`: Number of Dask workers (default: 4)
+
+## Testing
+
+```bash
+# Unit tests only (no network required)
+pytest tests/ -m "not integration"
+
+# All tests including integration
+pytest tests/ -m "integration"
 ```
 
 ## Directory Structure
 
 ```
-kgs_pipeline/
-├── __init__.py
-├── config.py       # All configuration constants
-├── acquire.py      # Stage 1: Download raw .txt files from KGS
-├── ingest.py       # Stage 2: Ingest to interim Parquet
-├── transform.py    # Stage 3: Clean and restructure to well-level
-└── features.py     # Stage 4: ML-ready feature engineering
-
 data/
-├── raw/            # Downloaded raw per-lease .txt files
-├── interim/        # Parquet partitioned by LEASE_KID
-├── processed/      # Parquet partitioned by well_id
-└── processed/features/  # ML-ready feature Parquet
-
-references/
-├── oil_leases_2020_present.txt      # Lease index with URLs
-├── kgs_archives_data_dictionary.csv
-└── kgs_monthly_data_dictionary.csv
-
-tests/
-├── test_acquire.py
-├── test_ingest.py
-├── test_transform.py
-└── test_features.py
+├── external/        # Lease index file (oil_leases_2020_present.txt)
+├── raw/             # Downloaded per-lease .txt files
+├── interim/         # Interim Parquet (partitioned by LEASE_KID)
+├── processed/       # Cleaned Parquet (partitioned by well_id) + cleaning_report.json
+└── processed/features/  # ML feature Parquet + feature_matrix.csv
+logs/                # Rotating log files per component
+references/          # Data dictionaries
 ```
 
 ## Configuration
 
-All configuration is centralised in `kgs_pipeline/config.py`:
+All parameters are configurable via `kgs_pipeline/config.py` (Pydantic BaseSettings).
+Override with environment variables prefixed with `KGS_`, e.g.:
 
-- `RAW_DATA_DIR`, `INTERIM_DATA_DIR`, `PROCESSED_DATA_DIR`, `FEATURES_DATA_DIR`
-- `LEASE_INDEX_FILE`: path to the KGS lease archive index
-- `KGS_BASE_URL`, `KGS_MONTH_SAVE_URL`: KGS portal URLs
-- `MAX_CONCURRENT_REQUESTS`: Playwright concurrency limit (default 5)
-- `OIL_OUTLIER_THRESHOLD_BBL`: Physical bounds threshold (50,000 BBL/month)
-- `DECLINE_RATE_CLIP_MIN` / `DECLINE_RATE_CLIP_MAX`: Decline rate bounds
-
-## Test Markers
-
-- `@pytest.mark.unit` — No network or data files required
-- `@pytest.mark.integration` — Requires real data in `data/raw/`, `data/interim/`, etc.
-
-By default `pytest` runs only unit tests. Use `make test-integration` to run integration tests.
+```bash
+export KGS_DASK_N_WORKERS=8
+export KGS_OIL_MAX_BBL_PER_MONTH=100000
+```

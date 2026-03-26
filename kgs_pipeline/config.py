@@ -1,88 +1,99 @@
-"""Pipeline configuration constants — single source of truth for all components."""
+"""Pipeline configuration module using Pydantic v2 BaseSettings.
+
+Provides a validated, type-safe configuration singleton for the KGS oil production
+data pipeline. All pipeline modules import CONFIG from this module.
+"""
 
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Root and data directories
-# ---------------------------------------------------------------------------
-_PROJECT_ROOT = Path(__file__).parent.parent
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings
 
-RAW_DATA_DIR = _PROJECT_ROOT / "data" / "raw"
-INTERIM_DATA_DIR = _PROJECT_ROOT / "data" / "interim"
-PROCESSED_DATA_DIR = _PROJECT_ROOT / "data" / "processed"
-FEATURES_DATA_DIR = _PROJECT_ROOT / "data" / "processed" / "features"
-EXTERNAL_DATA_DIR = _PROJECT_ROOT / "data" / "external"
 
-# Auto-create all data directories on import
-for _dir in (
-    RAW_DATA_DIR,
-    INTERIM_DATA_DIR,
-    PROCESSED_DATA_DIR,
-    FEATURES_DATA_DIR,
-    EXTERNAL_DATA_DIR,
-):
-    _dir.mkdir(parents=True, exist_ok=True)
+class PipelineConfig(BaseSettings):
+    """All configurable constants for the KGS data pipeline."""
 
-# ---------------------------------------------------------------------------
-# Reference files
-# ---------------------------------------------------------------------------
-LEASE_INDEX_FILE = _PROJECT_ROOT / "references" / "oil_leases_2020_present.txt"
+    # Data directories
+    raw_dir: Path = Path("data/raw")
+    interim_dir: Path = Path("data/interim")
+    processed_dir: Path = Path("data/processed")
+    features_dir: Path = Path("data/processed/features")
+    external_dir: Path = Path("data/external")
+    logs_dir: Path = Path("logs")
 
-# ---------------------------------------------------------------------------
-# KGS URLs
-# ---------------------------------------------------------------------------
-KGS_BASE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease"
-KGS_MONTH_SAVE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave"
+    # Source files
+    lease_index_file: Path = Path("data/external/oil_leases_2020_present.txt")
 
-# ---------------------------------------------------------------------------
-# Concurrency and Dask settings
-# ---------------------------------------------------------------------------
-MAX_CONCURRENT_REQUESTS: int = 5
-DASK_N_WORKERS: int = 4
+    # Year range
+    year_start: int = 2020
+    year_end: int = 2025
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-LOG_LEVEL: str = "INFO"
+    # KGS web portal URLs
+    kgs_base_url: str = "https://chasm.kgs.ku.edu/ords"
+    kgs_main_lease_path: str = "oil.ogl5.MainLease"
+    kgs_month_save_path: str = "oil.ogl5.MonthSave"
 
-# ---------------------------------------------------------------------------
-# Transform-stage constants (Task 12)
-# ---------------------------------------------------------------------------
-OIL_OUTLIER_THRESHOLD_BBL: int = 50000
-PARTITION_COLUMN_PROCESSED: str = "well_id"
-INTERIM_PARTITION_COLUMN: str = "LEASE_KID"
+    # Concurrency
+    max_concurrent_requests: int = 5
+    scrape_timeout_ms: int = 30000
+    http_retry_attempts: int = 3
+    http_retry_backoff_s: float = 2.0
 
-COLUMN_RENAME_MAP: dict[str, str] = {
-    "LEASE KID": "lease_kid",
-    "LEASE_KID": "lease_kid",
-    "LEASE": "lease_name",
-    "DOR_CODE": "dor_code",
-    "API_NUMBER": "api_number",
-    "FIELD": "field_name",
-    "PRODUCING_ZONE": "producing_zone",
-    "OPERATOR": "operator",
-    "COUNTY": "county",
-    "TOWNSHIP": "township",
-    "TWN_DIR": "twn_dir",
-    "RANGE": "range_num",
-    "RANGE_DIR": "range_dir",
-    "SECTION": "section",
-    "SPOT": "spot",
-    "LATITUDE": "latitude",
-    "LONGITUDE": "longitude",
-    "MONTH-YEAR": "month_year",
-    "PRODUCT": "product",
-    "WELLS": "well_count",
-    "PRODUCTION": "production",
-    "source_file": "source_file",
-    "URL": "url",
-}
+    # Production units
+    oil_unit: str = "BBL"
+    gas_unit: str = "MCF"
+    water_unit: str = "BBL"
 
-# ---------------------------------------------------------------------------
-# Features-stage constants (Task 22)
-# ---------------------------------------------------------------------------
-DECLINE_RATE_CLIP_MIN: float = -1.0
-DECLINE_RATE_CLIP_MAX: float = 10.0
-ROLLING_WINDOW_SHORT: int = 3
-ROLLING_WINDOW_LONG: int = 6
-CATEGORICAL_COLUMNS: list[str] = ["county", "operator", "producing_zone", "field_name", "product"]
+    # Outlier thresholds
+    oil_max_bbl_per_month: float = 50000.0
+
+    # Feature engineering
+    rolling_windows: list[int] = [3, 6, 12]
+    decline_rate_clip_min: float = -1.0
+    decline_rate_clip_max: float = 10.0
+
+    # Dask
+    dask_n_workers: int = 4
+    parquet_engine: str = "pyarrow"
+
+    # Logging
+    log_level: str = "INFO"
+
+    @field_validator("year_start")
+    @classmethod
+    def validate_year_start(cls, v: int) -> int:
+        if v < 2000:
+            raise ValueError("year_start must be >= 2000")
+        return v
+
+    @field_validator("year_end")
+    @classmethod
+    def validate_year_end(cls, v: int) -> int:
+        if v > 2030:
+            raise ValueError("year_end must be <= 2030")
+        return v
+
+    @model_validator(mode="after")
+    def validate_year_range(self) -> "PipelineConfig":
+        if self.year_start > self.year_end:
+            raise ValueError("year_start must be <= year_end")
+        return self
+
+    @field_validator("max_concurrent_requests")
+    @classmethod
+    def validate_max_concurrent_requests(cls, v: int) -> int:
+        if not 1 <= v <= 20:
+            raise ValueError("max_concurrent_requests must be between 1 and 20")
+        return v
+
+    @field_validator("oil_max_bbl_per_month")
+    @classmethod
+    def validate_oil_max_bbl(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("oil_max_bbl_per_month must be > 0")
+        return v
+
+    model_config = {"env_prefix": "KGS_", "extra": "ignore"}
+
+
+CONFIG = PipelineConfig()
