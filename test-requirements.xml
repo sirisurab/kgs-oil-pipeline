@@ -1,0 +1,216 @@
+<test-requirements>
+	<test-requirement id="TR-01" stages="transform, features" type="domain">
+		<n>Physical bound validation</n>
+		<description>Production volumes cannot be negative. Pressure and temperature cannot be
+		negative. Water cut must be between 0 and 1. GOR (gas-oil ratio) must be non-negative.
+		These are physical laws, not data quality preferences — any violation is either a sensor
+		error or a pipeline bug and should be caught explicitly.</description>
+	</test-requirement>
+	<test-requirement id="TR-02" stages="transform" type="domain">
+		<n>Unit consistency</n>
+		<description>Oil volumes should be in BBL, gas in MCF, water in BBL throughout. If the
+		raw data mixes units across wells or time periods (common in KGS data), the pipeline
+		should normalize them and a test should verify the normalized values fall within realistic
+		ranges — for example oil rates above 50,000 BBL/month for a single well are almost
+		certainly a unit error.</description>
+	</test-requirement>
+	<test-requirement id="TR-03" stages="features" type="domain">
+		<n>Decline curve monotonicity</n>
+		<description>Cumulative production (Np, Gp, Wp) should be monotonically non-decreasing
+		over time per well. A well cannot un-produce oil. If cumulative values decrease between
+		months, the pipeline has either sorted incorrectly or introduced a processing error.
+		</description>
+	</test-requirement>
+	<test-requirement id="TR-04" stages="transform" type="domain">
+		<n>Well completeness check</n>
+		<description>Each well in the processed folder should have a continuous date range with
+		no unexpected gaps. A well producing from January to December should have 12 monthly
+		records, not 11. Test that the count of records per well matches the expected span from
+		first to last production date.</description>
+	</test-requirement>
+	<test-requirement id="TR-05" stages="transform" type="domain">
+		<n>Zero production handling</n>
+		<description>Wells that reported zero production in a given month are different from wells
+		with missing data for that month. Your pipeline should preserve the distinction — a zero
+		is a valid measurement, a null is missing data. Test that zeros in the raw data remain as
+		zeros (not nulls) in the processed data.</description>
+	</test-requirement>
+	<!-- ============================================================ -->
+	<!-- FEATURES STAGE — domain correctness                          -->
+	<!-- ============================================================ -->
+ 
+	<test-requirement id="TR-06" stages="features" type="domain">
+		<n>GOR zero-denominator handling</n>
+		<description>Gas-Oil Ratio (GOR) is defined as gas_mcf / oil_bbl. When oil_bbl is zero
+		and gas_mcf is greater than zero — a physically valid state for a late-life or pure gas
+		well — the result is mathematically undefined. The pipeline must not raise a
+		ZeroDivisionError or produce a NaN silently swallowed by downstream operations. Test
+		explicitly that: (a) oil_bbl=0 and gas_mcf>0 returns NaN or a defined sentinel value,
+		not an exception; (b) both oil_bbl=0 and gas_mcf=0 (shut-in well) returns 0 or NaN, not
+		an exception; (c) oil_bbl>0 and gas_mcf=0 returns 0.0, not NaN. Do not treat high GOR
+		on low oil production as a data error — a well in pressure depletion below bubble point
+		will produce predominantly gas with very little oil, yielding a legitimately high GOR.
+		</description>
+	</test-requirement>
+ 
+	<test-requirement id="TR-07" stages="features" type="domain">
+		<n>Decline rate clip bounds</n>
+		<description>The pipeline computes period-over-period production decline rate as a
+		feature and clips it to the range [-1.0, 10.0]. These are engineering design bounds for
+		ML feature stability, not physical constants. Test that: (a) a computed decline rate
+		below -1.0 is clipped to exactly -1.0; (b) a computed decline rate above 10.0 is clipped
+		to exactly 10.0; (c) a value within bounds passes through unchanged; (d) a well with
+		zero production in two consecutive months (shut-in) does not produce an unclipped extreme
+		value before clipping is applied — the raw computation should be handled before the clip
+		is evaluated. Use synthetic well sequences with known month-over-month changes to make
+		assertions exact.
+		</description>
+	</test-requirement>
+ 
+	<test-requirement id="TR-08" stages="features" type="domain">
+		<n>Cumulative production flat periods</n>
+		<description>A well that is temporarily shut in will report zero production for one or
+		more months. Cumulative production (Np for oil, Gp for gas, Wp for water) must remain
+		flat — equal to the previous month's value — not decrease, and not skip forward
+		incorrectly. This is a separate failure mode from the monotonicity decrease case: a
+		recalculation bug can produce a flat period where cumulative jumps to a wrong value
+		when production resumes. Test with a synthetic sequence containing: (a) one or more
+		consecutive zero-production months mid-sequence; (b) zero-production months at the start
+		of the record (well not yet online); (c) resumption of production after shut-in, verifying
+		cumulative resumes correctly from the flat value.
+		</description>
+	</test-requirement>
+ 
+	<test-requirement id="TR-09" stages="features" type="domain">
+		<n>Feature calculation correctness</n>
+		<description>The features stage computes derived columns including rolling averages, lag
+		features, GOR, and water cut. These must be verified for correctness against a known
+		synthetic input, not merely for the absence of errors. Required checks: (a) rolling 3-month
+		and 6-month oil, gas, and water averages match hand-computed values for a known sequence;
+		(b) when the rolling window is larger than the available history (e.g. first 2 months of
+		a well's life), the result is NaN or a partial window as specified — not silently zero or
+		a wrong value; (c) lag-1 feature for month N equals the raw production value for month
+		N-1, verified for at least 3 consecutive months; (d) GOR formula is gas_mcf / oil_bbl
+		with correct unit handling — not gas_bbl / oil_mcf or any unit-swapped variant; (e) water
+		cut formula is water_bbl / (oil_bbl + water_bbl) — denominator uses total liquid, not
+		just oil.
+		</description>
+	</test-requirement>
+ 
+	<test-requirement id="TR-10" stages="features" type="domain">
+		<n>Water cut boundary values — valid at 0 and 1</n>
+		<description>Water cut of exactly 0.0 is physically valid — a new well or a well in a
+		dry reservoir produces no water. Water cut of exactly 1.0 is also physically valid — a
+		well in late-life producing 100% water with trace or zero oil. Neither value should be
+		treated as an outlier, flagged, or nulled by the cleaning or feature engineering stage.
+		Test that: (a) a row with water_bbl=0 and oil_bbl>0 produces water_cut=0.0 and is
+		retained in the processed output; (b) a row with oil_bbl=0 and water_bbl>0 produces
+		water_cut=1.0 and is retained — this is a valid end-of-life well state, not a data
+		error; (c) only values outside [0, 1] are treated as invalid.
+		</description>
+	</test-requirement>
+	
+	<test-requirement id="TR-11" stages="transform" type="technical">
+		<n>Data Integrity checks</n>
+		<description>Spot-checking production volumes from raw to processed for randomly chosen
+		wells and months run across a statistically meaningful sample.</description>
+	</test-requirement>
+	<test-requirement id="TR-12" stages="transform" type="technical">
+		<n>Data Cleaning validation</n>
+		<description>Checks to confirm appropriate handling of nulls, missing values, outliers
+		and duplicates. Checks to see if data-types have been set correctly in the processed data
+		files (datetime, float, str).</description>
+	</test-requirement>
+	<test-requirement id="TR-13" stages="transform" type="technical">
+		<n>Partition correctness</n>
+		<description>Verify that each Parquet partition file contains data for exactly one well —
+		no partition should contain rows from multiple well_id values.</description>
+	</test-requirement>
+	<test-requirement id="TR-14" stages="transform, features" type="technical">
+		<n>Schema stability across wells</n>
+		<description>All processed Parquet files across all wells should have identical column
+		names and data types. It is possible for per-well processing to produce schema drift if
+		one well has all nulls in a column and type inference guesses wrong. Test that a schema
+		sampled from one well's file matches a schema sampled from another.</description>
+	</test-requirement>
+	<test-requirement id="TR-15" stages="transform" type="technical">
+		<n>Row count reconciliation</n>
+		<description>After deduplication, the processed row count should be less than or equal to
+		the raw row count, never greater. Also test that the deduplication is idempotent — running
+		the cleaning step twice on the same data should produce the same output as running it once.
+		</description>
+	</test-requirement>
+	<test-requirement id="TR-16" stages="transform" type="technical">
+		<n>Sort stability</n>
+		<description>Verify that the sort is stable across the partition boundary — the last row
+		of one Parquet file for a well should have a date earlier than the first row of the next
+		file for the same well, if the data is partitioned into multiple files per well.</description>
+	</test-requirement>
+	<test-requirement id="TR-17" stages="all" type="technical">
+		<n>Lazy Dask Evaluation</n>
+		<description>Verify that the pipeline modules do not call .compute() internally. This can
+		be tested by checking that the return type of each pipeline function is
+		dask.dataframe.DataFrame rather than pandas.DataFrame. A function returning a pandas
+		DataFrame has either called .compute() or bypassed Dask entirely.</description>
+	</test-requirement>
+	<test-requirement id="TR-18" stages="ingest, transform, features" type="technical">
+		<n>Parquet Readability</n>
+		<description>Test that every output Parquet file is actually readable by a fresh Dask or
+		pandas process. A file that was written incorrectly can exist on disk but raise an error
+		on read. This catches silent write failures.</description>
+	</test-requirement>
+	
+ 
+	<!-- ============================================================ -->
+	<!-- FEATURES STAGE — technical correctness                       -->
+	<!-- ============================================================ -->
+ 
+	<test-requirement id="TR-19" stages="features" type="technical">
+		<n>Feature column presence in output schema</n>
+		<description>The features Parquet output must contain all expected derived columns.
+		A run that silently drops a feature column due to a computation error or an unhandled
+		exception that is caught and swallowed will pass schema stability and partition tests
+		but produce unusable ML output. Test that the output DataFrame contains all of the
+		following columns: well_id, production_date, oil_bbl, gas_mcf, water_bbl, cum_oil,
+		cum_gas, cum_water, gor, water_cut, decline_rate, and all rolling and lag columns
+		specified in the features task spec. Use a synthetic single-well input and assert on
+		the complete column list.
+		</description>
+	</test-requirement>
+ 
+	<!-- ============================================================ -->
+	<!-- ACQUIRE STAGE — technical correctness                        -->
+	<!-- ============================================================ -->
+ 
+	<test-requirement id="TR-20" stages="acquire" type="technical">
+		<n>Acquire idempotency</n>
+		<description>Running the acquire stage twice on the same target directory must not
+		duplicate files, corrupt existing files, or raise an error because a file already exists.
+		The acquire step should detect already-downloaded files and skip them. Test that: (a)
+		after a first acquire run, a second run on the same directory produces the same file
+		count — not doubled; (b) the content of a pre-existing file is unchanged after the
+		second run; (c) no exception is raised when the target file already exists on disk.
+		</description>
+	</test-requirement>
+ 
+	<test-requirement id="TR-21" stages="acquire" type="technical">
+		<n>Acquired file integrity</n>
+		<description>A file that was downloaded but is empty (0 bytes) or is not valid UTF-8
+		text is a silent failure — it will exist on disk and pass a file-exists check but cause
+		an error at ingest time. Test that: (a) every file in the raw data directory after
+		acquire has size greater than 0 bytes; (b) every file is readable as text without a
+		UnicodeDecodeError; (c) every file contains at least one row of data beyond a header
+		line. Use the output of a real or mocked acquire run as the test fixture.
+		</description>
+	</test-requirement>
+	<test-requirement id="TR-22" stages="ingest" type="technical">
+		<n>Schema completeness across partitions</n>
+		<description>
+			After ingest is complete, read a sample of at least 3 interim Parquet
+			partitions and assert that all expected columns are present in every partition:
+			LEASE_KID, LEASE, API_NUMBER, MONTH_YEAR, PRODUCT, PRODUCTION, WELLS,
+			OPERATOR, COUNTY, source_file. Assert no expected column is missing or
+			renamed in any sampled partition.
+		</description>
+	</test-requirement>
+</test-requirements>

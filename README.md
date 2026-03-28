@@ -12,7 +12,7 @@ data/raw/  data/interim/  data/processed/  data/processed/features/
 
 | Stage | Module | Description |
 |-------|--------|-------------|
-| acquire | `kgs_pipeline/acquire.py` | Scrapes per-lease .txt files from KGS via Playwright |
+| acquire | `kgs_pipeline/acquire.py` | Scrapes per-lease .txt files from KGS via BeautifulSoup |
 | ingest | `kgs_pipeline/ingest.py` | Reads raw .txt files into partitioned interim Parquet |
 | transform | `kgs_pipeline/transform.py` | Cleans, validates, deduplicates, writes processed Parquet |
 | features | `kgs_pipeline/features.py` | Engineers ML features, writes feature Parquet + CSV |
@@ -20,8 +20,9 @@ data/raw/  data/interim/  data/processed/  data/processed/features/
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-playwright install chromium
+make env
+source .venv/bin/activate
+make install
 ```
 
 ## Usage
