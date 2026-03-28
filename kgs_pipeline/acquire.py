@@ -2,26 +2,31 @@
 
 Responsibilities:
 - Load lease URLs from the lease index file.
-- Scrape per-lease monthly production .txt files from the KGS web portal
-  using Playwright async API with asyncio.Semaphore(5) rate-limiting.
+- Download per-lease monthly production .txt files from the KGS web portal
+  using a two-step HTTP approach with rate-limiting.
 - Save raw files to data/raw/.
 - Orchestrate parallel acquisition via Dask delayed tasks.
 """
 
-import asyncio
+import time
 from pathlib import Path
 
 import dask
 import pandas as pd  # type: ignore[import-untyped]
+import requests
+from bs4 import BeautifulSoup
 
 from kgs_pipeline.config import CONFIG
 from kgs_pipeline.utils import ensure_dir, is_valid_raw_file, setup_logging
 
 logger = setup_logging("acquire", CONFIG.logs_dir, CONFIG.log_level)
 
+KGS_MONTH_SAVE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave"
+REQUEST_TIMEOUT = 30
+
 
 class ScrapingError(Exception):
-    """Raised when Playwright scraping fails due to missing page elements."""
+    """Raised when download fails due to missing page elements."""
 
 
 def load_lease_urls(lease_index_path: Path) -> list[str]:
@@ -53,7 +58,6 @@ def load_lease_urls(lease_index_path: Path) -> list[str]:
             continue
 
     if df is None:
-        # Try with quoting
         try:
             df = pd.read_csv(lease_index_path, dtype=str)
         except Exception as exc:
@@ -61,7 +65,8 @@ def load_lease_urls(lease_index_path: Path) -> list[str]:
 
     if "URL" not in df.columns:
         raise KeyError(
-            f"'URL' column not found in lease index file. Available columns: {list(df.columns)}"
+            f"'URL' column not found in lease index file. "
+            f"Available columns: {list(df.columns)}"
         )
 
     urls = df["URL"].dropna().str.strip()
@@ -70,109 +75,73 @@ def load_lease_urls(lease_index_path: Path) -> list[str]:
     return urls
 
 
-async def scrape_lease_page(
+def download_lease_file(
     lease_url: str,
     output_dir: Path,
-    semaphore: asyncio.Semaphore,
-    playwright_browser: object,
 ) -> Path | None:
-    """Scrape a single lease page and download the monthly production .txt file.
+    """Download monthly production data for a single lease.
+
+    Uses a two-step HTTP approach:
+    1. GET MonthSave page for the lease to retrieve the download link.
+    2. GET the .txt file directly.
 
     Args:
-        lease_url: URL of the lease main page.
+        lease_url: URL of the lease main page (contains f_lc= parameter).
         output_dir: Directory to save the downloaded file.
-        semaphore: asyncio.Semaphore limiting concurrent page contexts.
-        playwright_browser: Playwright async browser instance.
 
     Returns:
         Path to the saved file on success, or None on failure.
     """
-    from playwright.async_api import Browser
+    try:
+        lease_kid = lease_url.split("f_lc=")[-1] if "f_lc=" in lease_url else None
+        if not lease_kid:
+            raise ScrapingError(f"Could not extract lease ID from URL: {lease_url}")
 
-    browser: Browser = playwright_browser  # type: ignore[assignment]
+        # Idempotency: skip if already downloaded and valid
+        # Note: actual filename uses lp<internal_id>.txt, not lp<lease_kid>.txt
+        # so we check output_dir for any matching file after download
 
-    async with semaphore:
-        page = None
-        try:
-            # Determine expected filename from URL
-            lease_kid = lease_url.split("f_lc=")[-1] if "f_lc=" in lease_url else None
-            expected_name = f"lp{lease_kid}.txt" if lease_kid else None
+        # Step 1 — request MonthSave intermediate page
+        month_save_url = f"{KGS_MONTH_SAVE_URL}?f_lc={lease_kid}"
+        r1 = requests.get(month_save_url, timeout=REQUEST_TIMEOUT)
+        r1.raise_for_status()
 
-            # Idempotency: skip if already downloaded
-            if expected_name:
-                existing = output_dir / expected_name
-                if is_valid_raw_file(existing):
-                    logger.debug("Skipping already-downloaded file: %s", existing)
-                    return existing
+        soup = BeautifulSoup(r1.text, "html.parser")
+        download_href = None
+        for a in soup.find_all("a", href=True):
+            if "anon_blobber.download" in a["href"]:
+                download_href = a["href"]
+                break
 
-            page = await browser.new_page()
-            await page.goto(lease_url, timeout=CONFIG.scrape_timeout_ms)
-
-            # Find "Save Monthly Data to File" button/link
-            save_btn = await page.query_selector('a:has-text("Save Monthly Data to File")')
-            if save_btn is None:
-                raise ScrapingError(
-                    f"'Save Monthly Data to File' button not found on page: {lease_url}"
-                )
-
-            month_save_href = await save_btn.get_attribute("href")
-            if month_save_href is None:
-                # Try clicking and waiting for navigation
-                async with page.expect_navigation(timeout=CONFIG.scrape_timeout_ms):
-                    await save_btn.click()
-                month_save_url = page.url
-            else:
-                if not month_save_href.startswith("http"):
-                    month_save_url = f"{CONFIG.kgs_base_url}/{month_save_href.lstrip('/')}"
-                else:
-                    month_save_url = month_save_href
-                await page.goto(month_save_url, timeout=CONFIG.scrape_timeout_ms)
-
-            # Find .txt download link on MonthSave page
-            txt_link = await page.query_selector('a[href$=".txt"]')
-            if txt_link is None:
-                raise ScrapingError(
-                    f"No .txt download link found on MonthSave page for: {lease_url}"
-                )
-
-            href = await txt_link.get_attribute("href")
-            if not href:
-                raise ScrapingError(f"Empty href on .txt link for: {lease_url}")
-
-            filename = href.split("/")[-1]
-            if not filename.endswith(".txt"):
-                filename = href.rsplit("/", 1)[-1]
-
-            download_url = (
-                href if href.startswith("http") else f"{CONFIG.kgs_base_url}/{href.lstrip('/')}"
+        if not download_href:
+            raise ScrapingError(
+                f"No download link found on MonthSave page for lease {lease_kid}"
             )
 
-            # Download file content via the page's fetch
-            content = await page.evaluate(
-                f"""async () => {{
-                    const r = await fetch("{download_url}");
-                    return await r.text();
-                }}"""
-            )
+        # Extract filename from href
+        filename = download_href.split("p_file_name=")[-1]
+        output_path = output_dir / filename
 
-            output_path = output_dir / filename
-            output_path.write_text(content, encoding="utf-8")
-            logger.info("Downloaded: %s", output_path)
+        # Idempotency: skip if already downloaded
+        if is_valid_raw_file(output_path):
+            logger.debug("Skipping already-downloaded file: %s", output_path)
             return output_path
 
-        except Exception as exc:
-            logger.error("Failed to scrape lease URL %s: %s", lease_url, exc)
-            return None
-        finally:
-            if page is not None:
-                try:
-                    await page.close()
-                except Exception:
-                    pass
+        # Step 2 — download the file
+        r2 = requests.get(download_href, timeout=REQUEST_TIMEOUT)
+        r2.raise_for_status()
+
+        output_path.write_bytes(r2.content)
+        logger.info("Downloaded: %s", output_path)
+        return output_path
+
+    except Exception as exc:
+        logger.error("Failed to download lease URL %s: %s", lease_url, exc)
+        return None
 
 
 def _run_single_lease(lease_url: str, output_dir: Path) -> Path | None:
-    """Synchronous wrapper to run async scrape for a single lease.
+    """Download a single lease file with a small delay for rate limiting.
 
     Args:
         lease_url: The lease page URL.
@@ -181,20 +150,8 @@ def _run_single_lease(lease_url: str, output_dir: Path) -> Path | None:
     Returns:
         Path to the downloaded file, or None on failure.
     """
-    import asyncio as _asyncio
-
-    from playwright.async_api import async_playwright
-
-    async def _scrape() -> Path | None:
-        semaphore = _asyncio.Semaphore(1)
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True)
-            try:
-                return await scrape_lease_page(lease_url, output_dir, semaphore, browser)
-            finally:
-                await browser.close()
-
-    return _asyncio.run(_scrape())
+    time.sleep(0.5)  # simple rate limiting — 2 requests/sec max
+    return download_lease_file(lease_url, output_dir)
 
 
 def run_acquire_pipeline(
@@ -216,7 +173,7 @@ def run_acquire_pipeline(
         List of Path objects for successfully written files.
 
     Raises:
-        FileNotFoundError: If lease_index_path does not exist (propagated from load_lease_urls).
+        FileNotFoundError: If lease_index_path does not exist.
     """
     lease_index_path = lease_index_path or CONFIG.lease_index_file
     output_dir = output_dir or CONFIG.raw_dir

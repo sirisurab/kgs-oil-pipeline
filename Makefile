@@ -1,8 +1,17 @@
-.PHONY: install test test-integration lint type-check clean acquire ingest transform features pipeline
+.PHONY: env install test test-integration lint type-check clean acquire ingest transform features pipeline
+
+VENV_DIR ?= .venv
+PYTHON ?= python3
+
+env:
+	$(PYTHON) -m venv $(VENV_DIR)
+	@echo "Virtual environment created at '$(VENV_DIR)'."
+	@echo "Activate it with: source $(VENV_DIR)/bin/activate"
+	@echo "Then run: make install"
 
 install:
+	pip install --upgrade pip setuptools wheel
 	pip install -e ".[dev]"
-	playwright install chromium
 
 test:
 	pytest tests/ -m "not integration" -v
