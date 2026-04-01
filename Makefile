@@ -8,7 +8,7 @@ install:
 	.venv/bin/pip install -e ".[dev]"
 
 acquire:
-	python -m kgs_pipeline.acquire --index data/external/oil_leases_2024_present.txt --output-dir data/raw/
+	python -m kgs_pipeline.acquire --index data/external/oil_leases_2020_present.txt --output-dir data/raw/
 
 ingest:
 	python -m kgs_pipeline.ingest --raw-dir data/raw/ --output-dir data/interim/
