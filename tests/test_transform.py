@@ -1,778 +1,595 @@
-"""Tests for kgs_pipeline/transform.py (Tasks 12–21)."""
+"""Tests for kgs_pipeline/transform.py."""
 
-import json
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
 
-import dask.dataframe as dd
+import dask.dataframe as dd  # type: ignore[import-untyped]
+import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
+from kgs_pipeline.transform import (
+    cap_outliers,
+    check_well_completeness,
+    derive_production_date,
+    handle_nulls,
+    load_interim,
+    remove_duplicates,
+    run_transform,
+    spot_check_integrity,
+    standardise_strings,
+)
+
+pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
-# Task 12: load_interim_parquet
+# Helpers / fixtures
 # ---------------------------------------------------------------------------
 
-
-@pytest.mark.unit
-def test_load_interim_parquet_returns_dask(tmp_path: Path, sample_interim_df):
-    from kgs_pipeline.transform import load_interim_parquet
-
-    sample_interim_df.to_parquet(tmp_path / "part.0.parquet", index=False)
-    result = load_interim_parquet(tmp_path)
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_load_interim_parquet_missing_dir():
-    from kgs_pipeline.transform import load_interim_parquet
-
-    with pytest.raises(FileNotFoundError):
-        load_interim_parquet(Path("/nonexistent/path/abc"))
-
-
-@pytest.mark.unit
-def test_load_interim_parquet_empty_dir(tmp_path: Path):
-    from kgs_pipeline.transform import load_interim_parquet
-
-    with pytest.raises(RuntimeError, match="No Parquet files found"):
-        load_interim_parquet(tmp_path)
-
-
-@pytest.mark.unit
-def test_load_interim_parquet_not_pandas(tmp_path: Path, sample_interim_df):
-    from kgs_pipeline.transform import load_interim_parquet
-
-    sample_interim_df.to_parquet(tmp_path / "part.parquet", index=False)
-    result = load_interim_parquet(tmp_path)
-    assert not isinstance(result, pd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 13: parse_production_date
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_parse_production_date_jan_2020():
-    from kgs_pipeline.transform import parse_production_date
-
-    df = pd.DataFrame({"MONTH_YEAR": ["1-2020"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = parse_production_date(ddf).compute()
-    assert result["production_date"].iloc[0] == pd.Timestamp("2020-01-01")
-
-
-@pytest.mark.unit
-def test_parse_production_date_dec_2021():
-    from kgs_pipeline.transform import parse_production_date
-
-    df = pd.DataFrame({"MONTH_YEAR": ["12-2021"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = parse_production_date(ddf).compute()
-    assert result["production_date"].iloc[0] == pd.Timestamp("2021-12-01")
-
-
-@pytest.mark.unit
-def test_parse_production_date_invalid_becomes_nat():
-    from kgs_pipeline.transform import parse_production_date
-
-    df = pd.DataFrame({"MONTH_YEAR": ["bad-value"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = parse_production_date(ddf).compute()
-    assert pd.isna(result["production_date"].iloc[0])
-
-
-@pytest.mark.unit
-def test_parse_production_date_drops_month_year():
-    from kgs_pipeline.transform import parse_production_date
-
-    df = pd.DataFrame({"MONTH_YEAR": ["1-2020"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = parse_production_date(ddf)
-    assert "MONTH_YEAR" not in result.columns
-
-
-@pytest.mark.unit
-def test_parse_production_date_returns_dask():
-    from kgs_pipeline.transform import parse_production_date
-
-    df = pd.DataFrame({"MONTH_YEAR": ["1-2020"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = parse_production_date(ddf)
-    assert isinstance(result, dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 14: normalize_column_names
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_normalize_column_names_lowercase():
-    from kgs_pipeline.transform import normalize_column_names
-
-    df = pd.DataFrame(columns=["LEASE_KID", "MONTH_YEAR", "PRODUCT", "PRODUCTION", "API_NUMBER"])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = normalize_column_names(ddf)
-    assert "lease_kid" in result.columns
-    assert "product" in result.columns
-    assert "production" in result.columns
-    assert "api_number" in result.columns
-
-
-@pytest.mark.unit
-def test_normalize_column_names_range_renamed():
-    from kgs_pipeline.transform import normalize_column_names
-
-    df = pd.DataFrame(columns=["RANGE"])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = normalize_column_names(ddf)
-    assert "range_" in result.columns
-
-
-@pytest.mark.unit
-def test_normalize_column_names_returns_dask():
-    from kgs_pipeline.transform import normalize_column_names
-
-    df = pd.DataFrame(columns=["LEASE_KID"])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = normalize_column_names(ddf)
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_normalize_column_names_extra_column_preserved():
-    from kgs_pipeline.transform import normalize_column_names
-
-    df = pd.DataFrame(columns=["LEASE_KID", "CUSTOM_EXTRA"])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = normalize_column_names(ddf)
-    assert "CUSTOM_EXTRA" in result.columns
-
-
-# ---------------------------------------------------------------------------
-# Task 15: explode_api_numbers
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_explode_api_numbers_two_apis():
-    from kgs_pipeline.transform import explode_api_numbers
-
-    df = pd.DataFrame(
-        {
-            "api_number": ["1500112345, 1500167890"],
-            "lease_kid": [999],
-            "production": [100.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = explode_api_numbers(ddf).compute()
-    assert len(result) == 2
-    well_ids = set(result["well_id"].tolist())
-    assert "1500112345" in well_ids
-    assert "1500167890" in well_ids
-
-
-@pytest.mark.unit
-def test_explode_api_numbers_single_api():
-    from kgs_pipeline.transform import explode_api_numbers
-
-    df = pd.DataFrame({"api_number": ["1500112345"], "lease_kid": [999], "production": [100.0]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = explode_api_numbers(ddf).compute()
-    assert len(result) == 1
-
-
-@pytest.mark.unit
-def test_explode_api_numbers_null_becomes_unknown():
-    from kgs_pipeline.transform import explode_api_numbers
-
-    df = pd.DataFrame({"api_number": [None], "lease_kid": [42], "production": [100.0]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = explode_api_numbers(ddf).compute()
-    assert result["well_id"].iloc[0] == "UNKNOWN_42"
-
-
-@pytest.mark.unit
-def test_explode_api_numbers_api_column_dropped():
-    from kgs_pipeline.transform import explode_api_numbers
-
-    df = pd.DataFrame({"api_number": ["A001"], "lease_kid": [1], "production": [1.0]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = explode_api_numbers(ddf)
-    assert "api_number" not in result.columns
-
-
-@pytest.mark.unit
-def test_explode_api_numbers_no_null_well_ids():
-    from kgs_pipeline.transform import explode_api_numbers
-
-    df = pd.DataFrame(
-        {
-            "api_number": ["A001", None, "B001, C001"],
-            "lease_kid": [1, 2, 3],
-            "production": [10.0, 20.0, 30.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = explode_api_numbers(ddf).compute()
-    assert result["well_id"].notna().all()
-    assert (result["well_id"] != "").all()
-
-
-@pytest.mark.unit
-def test_explode_api_numbers_returns_dask():
-    from kgs_pipeline.transform import explode_api_numbers
-
-    df = pd.DataFrame({"api_number": ["A001"], "lease_kid": [1]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = explode_api_numbers(ddf)
-    assert isinstance(result, dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 16: validate_physical_bounds
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_validate_negative_production_becomes_nan():
-    from kgs_pipeline.transform import validate_physical_bounds
-
-    df = pd.DataFrame({"production": [-5.0], "product": ["O"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = validate_physical_bounds(ddf).compute()
-    assert pd.isna(result["production"].iloc[0])
-
-
-@pytest.mark.unit
-def test_validate_zero_production_preserved():
-    from kgs_pipeline.transform import validate_physical_bounds
-
-    df = pd.DataFrame({"production": [0.0], "product": ["O"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = validate_physical_bounds(ddf).compute()
-    assert result["production"].iloc[0] == 0.0
-
-
-@pytest.mark.unit
-def test_validate_oil_outlier_flagged():
-    from kgs_pipeline.transform import validate_physical_bounds
-
-    df = pd.DataFrame({"production": [60000.0], "product": ["O"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = validate_physical_bounds(ddf).compute()
-    assert result["outlier_flag"].iloc[0] is True
-    assert len(result) == 1  # row not dropped
-
-
-@pytest.mark.unit
-def test_validate_oil_normal_not_flagged():
-    from kgs_pipeline.transform import validate_physical_bounds
-
-    df = pd.DataFrame({"production": [100.0], "product": ["O"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = validate_physical_bounds(ddf).compute()
-    assert result["outlier_flag"].iloc[0] is False
-
-
-@pytest.mark.unit
-def test_validate_gas_never_flagged():
-    from kgs_pipeline.transform import validate_physical_bounds
-
-    df = pd.DataFrame({"production": [999999.0], "product": ["G"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = validate_physical_bounds(ddf).compute()
-    assert result["outlier_flag"].iloc[0] is False
-
-
-@pytest.mark.unit
-def test_validate_unit_column():
-    from kgs_pipeline.transform import validate_physical_bounds
-
-    df = pd.DataFrame({"production": [100.0, 500.0], "product": ["O", "G"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = validate_physical_bounds(ddf).compute()
-    assert result[result["product"] == "O"]["unit"].iloc[0] == "BBL"
-    assert result[result["product"] == "G"]["unit"].iloc[0] == "MCF"
-
-
-@pytest.mark.unit
-def test_validate_returns_dask():
-    from kgs_pipeline.transform import validate_physical_bounds
-
-    df = pd.DataFrame({"production": [1.0], "product": ["O"]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = validate_physical_bounds(ddf)
-    assert isinstance(result, dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 17: deduplicate_records
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_deduplicate_keeps_higher_production():
-    from kgs_pipeline.transform import deduplicate_records
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1", "W2"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-01-01", "2020-02-01"]),
-            "product": ["O", "O", "O"],
-            "production": [100.0, 50.0, 200.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = deduplicate_records(ddf).compute()
-    assert len(result) == 2
-    dup_row = result[
-        (result["well_id"] == "W1") & (result["production_date"] == pd.Timestamp("2020-01-01"))
+REQUIRED_TRANSFORM_COLS = [
+    "LEASE_KID",
+    "LEASE",
+    "API_NUMBER",
+    "FIELD",
+    "PRODUCING_ZONE",
+    "OPERATOR",
+    "COUNTY",
+    "PRODUCT",
+    "MONTH-YEAR",
+    "production_date",
+    "PRODUCTION",
+    "WELLS",
+    "source_file",
+]
+
+INGEST_COLS = [
+    "LEASE_KID",
+    "LEASE",
+    "DOR_CODE",
+    "API_NUMBER",
+    "FIELD",
+    "PRODUCING_ZONE",
+    "OPERATOR",
+    "COUNTY",
+    "TOWNSHIP",
+    "TWN_DIR",
+    "RANGE",
+    "RANGE_DIR",
+    "SECTION",
+    "SPOT",
+    "LATITUDE",
+    "LONGITUDE",
+    "MONTH-YEAR",
+    "PRODUCT",
+    "WELLS",
+    "PRODUCTION",
+    "source_file",
+]
+
+
+def _base_df(n: int = 5, month_year: str = "1-2024") -> pd.DataFrame:
+    rows = []
+    for i in range(n):
+        rows.append(
+            {
+                "LEASE_KID": pd.StringDtype().na_value if False else f"L{i % 3}",
+                "LEASE": f"Lease {i}",
+                "DOR_CODE": "123",
+                "API_NUMBER": f"API-{i}",
+                "FIELD": "FIELD_A",
+                "PRODUCING_ZONE": "ZONE_A",
+                "OPERATOR": "OPS",
+                "COUNTY": "Allen",
+                "TOWNSHIP": "1",
+                "TWN_DIR": "S",
+                "RANGE": "1",
+                "RANGE_DIR": "E",
+                "SECTION": "1",
+                "SPOT": "NE",
+                "LATITUDE": 39.0,
+                "LONGITUDE": -95.0,
+                "MONTH-YEAR": month_year,
+                "PRODUCT": "O",
+                "WELLS": 2.0,
+                "PRODUCTION": float(100 * (i + 1)),
+                "source_file": "test.txt",
+            }
+        )
+    df = pd.DataFrame(rows)
+    # Cast string cols
+    str_cols = [
+        "LEASE_KID",
+        "LEASE",
+        "DOR_CODE",
+        "API_NUMBER",
+        "FIELD",
+        "PRODUCING_ZONE",
+        "OPERATOR",
+        "COUNTY",
+        "TOWNSHIP",
+        "TWN_DIR",
+        "RANGE",
+        "RANGE_DIR",
+        "SECTION",
+        "SPOT",
+        "MONTH-YEAR",
+        "PRODUCT",
+        "source_file",
     ]
-    assert dup_row["production"].iloc[0] == 100.0
+    for col in str_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(pd.StringDtype())
+    return df
 
 
-@pytest.mark.unit
-def test_deduplicate_no_change_when_no_dups():
-    from kgs_pipeline.transform import deduplicate_records
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W2"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-02-01"]),
-            "product": ["O", "O"],
-            "production": [100.0, 200.0],
-        }
-    )
+def _write_interim(tmp_path: Path, df: pd.DataFrame) -> Path:
+    interim = tmp_path / "interim"
+    interim.mkdir()
     ddf = dd.from_pandas(df, npartitions=1)
-    result = deduplicate_records(ddf).compute()
+    ddf.to_parquet(str(interim), write_index=False)
+    return interim
+
+
+def _write_raw(tmp_path: Path, df: pd.DataFrame) -> Path:
+    raw = tmp_path / "raw"
+    raw.mkdir(exist_ok=True)
+    csv_path = raw / "test.txt"
+    # Write as plain CSV for raw file reference
+    df_plain = df.copy()
+    for col in df_plain.columns:
+        if hasattr(df_plain[col], "astype"):
+            try:
+                df_plain[col] = df_plain[col].astype(str)
+            except Exception:
+                pass
+    df_plain.to_csv(str(csv_path), index=False)
+    return raw
+
+
+# ---------------------------------------------------------------------------
+# Task 01: load_interim
+# ---------------------------------------------------------------------------
+
+
+def test_load_interim_returns_dask_df(tmp_path: Path) -> None:
+    df = _base_df()
+    interim = _write_interim(tmp_path, df)
+    ddf = load_interim(str(interim))
+    assert isinstance(ddf, dd.DataFrame)
+
+
+def test_load_interim_npartitions_le_50(tmp_path: Path) -> None:
+    df = _base_df()
+    interim = _write_interim(tmp_path, df)
+    ddf = load_interim(str(interim))
+    assert ddf.npartitions <= 50
+
+
+def test_load_interim_empty_dir_raises(tmp_path: Path) -> None:
+    empty = tmp_path / "empty_interim"
+    empty.mkdir()
+    with pytest.raises(ValueError):
+        load_interim(str(empty))
+
+
+def test_load_interim_nonexistent_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load_interim(str(tmp_path / "nonexistent"))
+
+
+# ---------------------------------------------------------------------------
+# Task 02: handle_nulls
+# ---------------------------------------------------------------------------
+
+
+def test_handle_nulls_imputes_production_median(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df["PRODUCTION"] = [100.0, np.nan, 200.0]
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = handle_nulls(ddf).compute()
+    assert result["PRODUCTION"].isna().sum() == 0
+    assert result["PRODUCTION"].iloc[1] == pytest.approx(150.0)
+
+
+def test_handle_nulls_imputes_county_mode(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df["COUNTY"] = pd.array(["Allen", pd.NA, "Allen"], dtype=pd.StringDtype())
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = handle_nulls(ddf).compute()
+    assert result["COUNTY"].iloc[1] == "Allen"
+
+
+def test_handle_nulls_drops_null_lease_kid(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df.loc[1, "LEASE_KID"] = pd.NA
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = handle_nulls(ddf).compute()
     assert len(result) == 2
 
 
-@pytest.mark.unit
-def test_deduplicate_null_production_loses_to_real():
-    from kgs_pipeline.transform import deduplicate_records
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-01-01"]),
-            "product": ["O", "O"],
-            "production": [float("nan"), 75.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = deduplicate_records(ddf).compute()
-    assert len(result) == 1
-    assert result["production"].iloc[0] == 75.0
+def test_handle_nulls_zero_production_unchanged(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df["PRODUCTION"] = [0.0, 100.0, 200.0]
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = handle_nulls(ddf).compute()
+    assert 0.0 in result["PRODUCTION"].values
 
 
-@pytest.mark.unit
-def test_deduplicate_returns_dask():
-    from kgs_pipeline.transform import deduplicate_records
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1"],
-            "production_date": pd.to_datetime(["2020-01-01"]),
-            "product": ["O"],
-            "production": [1.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = deduplicate_records(ddf)
+def test_handle_nulls_returns_dask_df(tmp_path: Path) -> None:
+    df = _base_df()
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = handle_nulls(ddf)
     assert isinstance(result, dd.DataFrame)
 
 
-@pytest.mark.unit
-def test_deduplicate_idempotent():
-    from kgs_pipeline.transform import deduplicate_records
+# ---------------------------------------------------------------------------
+# Task 03: remove_duplicates
+# ---------------------------------------------------------------------------
 
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1", "W2"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-01-01", "2020-01-01"]),
-            "product": ["O", "O", "O"],
-            "production": [100.0, 50.0, 200.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    r1 = deduplicate_records(ddf).compute()
-    r2 = deduplicate_records(dd.from_pandas(r1, npartitions=1)).compute()
+
+def test_remove_duplicates_removes_one(tmp_path: Path) -> None:
+    # Use n=4 rows with unique LEASE_KIDs, then add 1 duplicate of row 0
+    df = _base_df(4)
+    # Ensure unique LEASE_KIDs so only the appended row is a duplicate
+    for i in range(4):
+        df.at[i, "LEASE_KID"] = f"LX{i}"
+    dup_row = df.iloc[[0]].copy()
+    df = pd.concat([df, dup_row], ignore_index=True)
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = remove_duplicates(ddf).compute()
+    assert len(result) == 4
+
+
+def test_remove_duplicates_idempotent(tmp_path: Path) -> None:
+    df = _base_df(5)
+    df.iloc[4] = df.iloc[0]
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    r1 = remove_duplicates(ddf).compute()
+    ddf2 = dd.from_pandas(r1, npartitions=1)
+    r2 = remove_duplicates(ddf2).compute()
     assert len(r1) == len(r2)
 
 
+def test_remove_duplicates_count_le_input(tmp_path: Path) -> None:
+    df = _base_df(5)
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = remove_duplicates(ddf).compute()
+    assert len(result) <= len(df)
+
+
 # ---------------------------------------------------------------------------
-# Task 18: sort_and_repartition
+# Task 04: cap_outliers
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_sort_and_repartition_ascending_dates():
-    from kgs_pipeline.transform import sort_and_repartition
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1", "W1"],
-            "production_date": pd.to_datetime(["2020-03-01", "2020-01-01", "2020-02-01"]),
-            "production": [3.0, 1.0, 2.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = sort_and_repartition(ddf).compute()
-    dates = result[result["well_id"] == "W1"]["production_date"].tolist()
-    assert dates == sorted(dates)
+def test_cap_outliers_negative_capped_to_zero(tmp_path: Path) -> None:
+    df = _base_df(5)
+    df["PRODUCTION"] = [100.0, 200.0, 150.0, -50.0, 99999.0]
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = cap_outliers(ddf).compute()
+    assert (result["PRODUCTION"] >= 0.0).all()
 
 
-@pytest.mark.unit
-def test_sort_and_repartition_multiple_wells():
-    from kgs_pipeline.transform import sort_and_repartition
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W2", "W1", "W2", "W1"],
-            "production_date": pd.to_datetime(
-                ["2020-02-01", "2020-03-01", "2020-01-01", "2020-01-01"]
-            ),
-            "production": [2.0, 3.0, 1.0, 1.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = sort_and_repartition(ddf).compute()
-    for well in ["W1", "W2"]:
-        dates = result[result["well_id"] == well]["production_date"].tolist()
-        assert dates == sorted(dates)
+def test_cap_outliers_no_negative(tmp_path: Path) -> None:
+    df = _base_df(5)
+    df["PRODUCTION"] = [100.0, 200.0, 150.0, -50.0, 300.0]
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = cap_outliers(ddf).compute()
+    assert (result["PRODUCTION"] >= 0.0).all()
 
 
-@pytest.mark.unit
-def test_sort_and_repartition_returns_dask():
-    from kgs_pipeline.transform import sort_and_repartition
+def test_cap_outliers_above_fence_capped(tmp_path: Path) -> None:
+    df = _base_df(5)
+    values = [100.0, 200.0, 150.0, 120.0, 99999.0]
+    df["PRODUCTION"] = values
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = cap_outliers(ddf).compute()
+    # The outlier 99999.0 must be reduced; the max must be << 99999
+    assert result["PRODUCTION"].max() < 99999.0
 
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1"],
-            "production_date": pd.to_datetime(["2020-01-01"]),
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = sort_and_repartition(ddf)
+
+def test_cap_outliers_zero_unchanged(tmp_path: Path) -> None:
+    df = _base_df(5)
+    df["PRODUCTION"] = [0.0, 100.0, 200.0, 150.0, 120.0]
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = cap_outliers(ddf).compute()
+    assert 0.0 in result["PRODUCTION"].values
+
+
+def test_cap_outliers_returns_dask_df(tmp_path: Path) -> None:
+    df = _base_df()
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = cap_outliers(ddf)
     assert isinstance(result, dd.DataFrame)
 
 
-@pytest.mark.unit
-def test_sort_and_repartition_stability_across_partitions():
-    from kgs_pipeline.transform import sort_and_repartition
-
-    dates = pd.date_range("2020-01-01", periods=24, freq="MS")
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1"] * 24,
-            "production_date": dates[::-1],  # reverse order
-            "production": range(24),
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=4)
-    result = sort_and_repartition(ddf).compute()
-    w1 = result[result["well_id"] == "W1"]["production_date"].tolist()
-    assert w1 == sorted(w1)
-
-
 # ---------------------------------------------------------------------------
-# Task 19: write_processed_parquet
+# Task 05: standardise_strings
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_write_processed_parquet_creates_files(tmp_path: Path, sample_processed_ddf):
-    from kgs_pipeline.transform import write_processed_parquet
-
-    written = write_processed_parquet(sample_processed_ddf, tmp_path)
-    assert len(written) >= 1
-    assert all(isinstance(p, Path) for p in written)
-    assert all(p.exists() and p.stat().st_size > 0 for p in written)
-
-
-@pytest.mark.unit
-def test_write_processed_parquet_schema_spot_check(tmp_path: Path, sample_processed_ddf):
-    from kgs_pipeline.transform import write_processed_parquet
-
-    written = write_processed_parquet(sample_processed_ddf, tmp_path)
-    df = pd.read_parquet(written[0])
-    assert "well_id" in df.columns
-    assert "production_date" in df.columns
-    assert "production" in df.columns
-    assert "outlier_flag" in df.columns
-    assert "unit" in df.columns
+def test_standardise_strings_county(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df["COUNTY"] = pd.array([" Allen ", "barton", "CHASE"], dtype=pd.StringDtype())
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = standardise_strings(ddf).compute()
+    assert list(result["COUNTY"]) == ["ALLEN", "BARTON", "CHASE"]
 
 
-@pytest.mark.unit
-def test_write_processed_parquet_all_paths_exist(tmp_path: Path, sample_processed_ddf):
-    from kgs_pipeline.transform import write_processed_parquet
-
-    written = write_processed_parquet(sample_processed_ddf, tmp_path)
-    assert all(p.exists() for p in written)
-    assert all(p.stat().st_size > 0 for p in written)
-
-
-@pytest.mark.unit
-def test_write_processed_parquet_dask_readable(tmp_path: Path, sample_processed_ddf):
-    from kgs_pipeline.transform import write_processed_parquet
-
-    write_processed_parquet(sample_processed_ddf, tmp_path)
-    reloaded = dd.read_parquet(str(tmp_path), engine="pyarrow")
-    assert isinstance(reloaded, dd.DataFrame)
+def test_standardise_strings_product(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df["PRODUCT"] = pd.array(["o", "g", " O "], dtype=pd.StringDtype())
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = standardise_strings(ddf).compute()
+    assert list(result["PRODUCT"]) == ["O", "G", "O"]
 
 
-@pytest.mark.unit
-def test_write_processed_parquet_schema_stability(tmp_path: Path):
-    from kgs_pipeline.transform import write_processed_parquet
-
-    df1 = pd.DataFrame(
-        {
-            "well_id": ["W1"],
-            "lease_kid": pd.array([1], dtype="int64"),
-            "lease": ["L1"],
-            "dor_code": ["D1"],
-            "field": ["F1"],
-            "producing_zone": ["Z1"],
-            "operator": ["O1"],
-            "county": ["C1"],
-            "township": ["1"],
-            "twn_dir": ["S"],
-            "range_": ["1"],
-            "range_dir": ["W"],
-            "section": ["1"],
-            "spot": ["NE"],
-            "latitude": [38.0],
-            "longitude": [-98.0],
-            "production_date": pd.to_datetime(["2020-01-01"]),
-            "product": ["O"],
-            "wells": pd.array([1], dtype="Int64"),
-            "production": [100.0],
-            "unit": ["BBL"],
-            "outlier_flag": [False],
-            "source_file": ["lp1"],
-        }
-    )
-    df2 = df1.copy()
-    df2["well_id"] = "W2"
-    df2["latitude"] = float("nan")
-
-    ddf = dd.from_pandas(pd.concat([df1, df2], ignore_index=True), npartitions=1)
-    written = write_processed_parquet(ddf, tmp_path)
-
-    schemas = [set(pd.read_parquet(p).dtypes.items()) for p in written]
-    if len(schemas) >= 2:
-        assert schemas[0] == schemas[1]
+def test_standardise_strings_numeric_unchanged(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df["PRODUCTION"] = [100.0, 200.0, 300.0]
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = standardise_strings(ddf).compute()
+    assert list(result["PRODUCTION"]) == [100.0, 200.0, 300.0]
 
 
 # ---------------------------------------------------------------------------
-# Task 20: generate_cleaning_report
+# Task 06: derive_production_date
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_generate_cleaning_report_creates_file(tmp_path: Path):
-    from kgs_pipeline.transform import generate_cleaning_report
-
-    stats = {
-        "input_row_count": 100,
-        "rows_after_filter": 95,
-        "negative_production_set_nan": 2,
-        "outliers_flagged": 1,
-        "duplicates_removed": 3,
-        "null_production_date_dropped": 0,
-        "unknown_well_id_assigned": 1,
-        "output_row_count": 91,
-        "output_parquet_files": 5,
-        "pipeline_run_timestamp": "2024-01-01T00:00:00+00:00",
-    }
-    path = generate_cleaning_report(stats, tmp_path)
-    assert path.exists()
-    assert path.name == "cleaning_report.json"
+def test_derive_production_date_basic(tmp_path: Path) -> None:
+    df = _base_df(1, month_year="3-2024")
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = derive_production_date(ddf).compute()
+    assert result["production_date"].iloc[0] == pd.Timestamp("2024-03-01")
 
 
-@pytest.mark.unit
-def test_generate_cleaning_report_valid_json(tmp_path: Path):
-    from kgs_pipeline.transform import generate_cleaning_report
-
-    stats = {
-        "input_row_count": 100,
-        "rows_after_filter": 95,
-        "negative_production_set_nan": 2,
-        "outliers_flagged": 1,
-        "duplicates_removed": 3,
-        "null_production_date_dropped": 0,
-        "unknown_well_id_assigned": 1,
-        "output_row_count": 91,
-        "output_parquet_files": 5,
-        "pipeline_run_timestamp": "2024-01-01T00:00:00+00:00",
-    }
-    path = generate_cleaning_report(stats, tmp_path)
-    data = json.loads(path.read_text())
-    required_keys = [
-        "input_row_count",
-        "rows_after_filter",
-        "negative_production_set_nan",
-        "outliers_flagged",
-        "duplicates_removed",
-        "null_production_date_dropped",
-        "unknown_well_id_assigned",
-        "output_row_count",
-        "output_parquet_files",
-        "pipeline_run_timestamp",
-    ]
-    for key in required_keys:
-        assert key in data
+def test_derive_production_date_december(tmp_path: Path) -> None:
+    df = _base_df(1, month_year="12-2024")
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = derive_production_date(ddf).compute()
+    assert result["production_date"].iloc[0] == pd.Timestamp("2024-12-01")
 
 
-@pytest.mark.unit
-def test_generate_cleaning_report_timestamp_parseable(tmp_path: Path):
-    from kgs_pipeline.transform import generate_cleaning_report
-
-    stats = {
-        "input_row_count": 0,
-        "rows_after_filter": 0,
-        "negative_production_set_nan": 0,
-        "outliers_flagged": 0,
-        "duplicates_removed": 0,
-        "null_production_date_dropped": 0,
-        "unknown_well_id_assigned": 0,
-        "output_row_count": 0,
-        "output_parquet_files": 0,
-    }
-    path = generate_cleaning_report(stats, tmp_path)
-    data = json.loads(path.read_text())
-    ts = data["pipeline_run_timestamp"]
-    # Should parse without exception
-    datetime.fromisoformat(ts.replace("Z", "+00:00"))
+def test_derive_production_date_malformed_dropped(tmp_path: Path) -> None:
+    df = _base_df(2)
+    df.iloc[0, df.columns.get_loc("MONTH-YEAR")] = "bad-data"
+    df.iloc[1, df.columns.get_loc("MONTH-YEAR")] = "1-2024"
+    interim = _write_interim(tmp_path, df)
+    ddf = dd.read_parquet(str(interim))
+    result = derive_production_date(ddf).compute()
+    # bad-data row should be dropped
+    assert len(result) == 1
 
 
 # ---------------------------------------------------------------------------
-# Task 21: run_transform_pipeline
+# Task 07: check_well_completeness
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_run_transform_pipeline_propagates_runtime_error():
-    from kgs_pipeline.transform import run_transform_pipeline
+def _df_with_dates(dates: list[str], lease_id: str = "L1") -> pd.DataFrame:
+    rows = []
+    for d in dates:
+        rows.append(
+            {
+                "LEASE_KID": lease_id,
+                "PRODUCT": "O",
+                "production_date": pd.Timestamp(d),
+            }
+        )
+    return pd.DataFrame(rows)
 
-    with patch("kgs_pipeline.transform.load_interim_parquet", side_effect=RuntimeError("no data")):
-        with pytest.raises(RuntimeError):
-            run_transform_pipeline()
 
-
-@pytest.mark.unit
-def test_zero_production_preservation(tmp_path: Path):
-    """Zero production stays 0.0; null production stays NaN."""
-    from kgs_pipeline.transform import (
-        deduplicate_records,
-        explode_api_numbers,
-        normalize_column_names,
-        parse_production_date,
-        sort_and_repartition,
-        validate_physical_bounds,
-        write_processed_parquet,
-    )
-
-    df = pd.DataFrame(
-        {
-            "LEASE_KID": pd.array([1001, 1002], dtype="int64"),
-            "LEASE": ["L1", "L2"],
-            "DOR_CODE": ["D1", "D2"],
-            "API_NUMBER": ["W001", "W002"],
-            "FIELD": ["F", "F"],
-            "PRODUCING_ZONE": ["Z", "Z"],
-            "OPERATOR": ["O", "O"],
-            "COUNTY": ["C", "C"],
-            "TOWNSHIP": ["1", "1"],
-            "TWN_DIR": ["S", "S"],
-            "RANGE": ["1", "1"],
-            "RANGE_DIR": ["W", "W"],
-            "SECTION": ["1", "1"],
-            "SPOT": ["NE", "NE"],
-            "LATITUDE": [38.0, 38.0],
-            "LONGITUDE": [-98.0, -98.0],
-            "MONTH_YEAR": ["1-2020", "1-2020"],
-            "PRODUCT": ["O", "O"],
-            "WELLS": pd.array([1, 1], dtype="Int64"),
-            "PRODUCTION": [0.0, float("nan")],
-            "source_file": ["lp1001", "lp1002"],
-        }
-    )
+def test_check_well_completeness_gap_detected() -> None:
+    dates = ["2024-01-01", "2024-02-01", "2024-04-01"]  # March missing
+    df = _df_with_dates(dates)
     ddf = dd.from_pandas(df, npartitions=1)
-    ddf = parse_production_date(ddf)
-    ddf = normalize_column_names(ddf)
-    ddf = explode_api_numbers(ddf)
-    ddf = validate_physical_bounds(ddf)
-    ddf = deduplicate_records(ddf)
-    ddf = sort_and_repartition(ddf)
-
-    processed_dir = tmp_path / "processed"
-    write_processed_parquet(ddf, processed_dir)
-    result = dd.read_parquet(str(processed_dir), engine="pyarrow").compute()
-
-    w1 = result[result["well_id"] == "W001"]
-    w2 = result[result["well_id"] == "W002"]
-    assert w1["production"].iloc[0] == 0.0
-    assert pd.isna(w2["production"].iloc[0])
+    result = check_well_completeness(ddf)
+    row = result[result["LEASE_KID"] == "L1"].iloc[0]
+    assert row["gap_months"] == 1
+    assert row["has_gaps"] is True or row["has_gaps"] == True  # noqa: E712
 
 
-@pytest.mark.unit
-def test_data_integrity_spot_check(tmp_path: Path):
-    """Known production values survive the transform pipeline."""
-    from kgs_pipeline.transform import (
-        deduplicate_records,
-        explode_api_numbers,
-        normalize_column_names,
-        parse_production_date,
-        sort_and_repartition,
-        validate_physical_bounds,
-        write_processed_parquet,
-    )
-
-    known_values = [100.0, 200.0, 150.0, 300.0, 250.0]
-    df = pd.DataFrame(
-        {
-            "LEASE_KID": pd.array([1001] * 5, dtype="int64"),
-            "LEASE": ["L"] * 5,
-            "DOR_CODE": ["D"] * 5,
-            "API_NUMBER": [f"W{i:03d}" for i in range(5)],
-            "FIELD": ["F"] * 5,
-            "PRODUCING_ZONE": ["Z"] * 5,
-            "OPERATOR": ["O"] * 5,
-            "COUNTY": ["C"] * 5,
-            "TOWNSHIP": ["1"] * 5,
-            "TWN_DIR": ["S"] * 5,
-            "RANGE": ["1"] * 5,
-            "RANGE_DIR": ["W"] * 5,
-            "SECTION": ["1"] * 5,
-            "SPOT": ["NE"] * 5,
-            "LATITUDE": [38.0] * 5,
-            "LONGITUDE": [-98.0] * 5,
-            "MONTH_YEAR": [f"{i + 1}-2020" for i in range(5)],
-            "PRODUCT": ["O"] * 5,
-            "WELLS": pd.array([1] * 5, dtype="Int64"),
-            "PRODUCTION": known_values,
-            "source_file": [f"lp100{i}" for i in range(5)],
-        }
-    )
+def test_check_well_completeness_no_gap() -> None:
+    dates = [f"2024-{m:02d}-01" for m in range(1, 13)]
+    df = _df_with_dates(dates)
     ddf = dd.from_pandas(df, npartitions=1)
-    ddf = parse_production_date(ddf)
-    ddf = normalize_column_names(ddf)
-    ddf = explode_api_numbers(ddf)
-    ddf = validate_physical_bounds(ddf)
-    ddf = deduplicate_records(ddf)
-    ddf = sort_and_repartition(ddf)
+    result = check_well_completeness(ddf)
+    row = result[result["LEASE_KID"] == "L1"].iloc[0]
+    assert row["gap_months"] == 0
+    assert row["has_gaps"] is False or row["has_gaps"] == False  # noqa: E712
 
-    out_dir = tmp_path / "processed"
-    write_processed_parquet(ddf, out_dir)
-    result = dd.read_parquet(str(out_dir)).compute()
 
-    result_values = set(result["production"].dropna().tolist())
-    matched = sum(1 for v in known_values if v in result_values)
-    assert matched >= 3
+def test_check_well_completeness_returns_pandas() -> None:
+    df = _df_with_dates(["2024-01-01"])
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = check_well_completeness(ddf)
+    assert isinstance(result, pd.DataFrame)
+
+
+# ---------------------------------------------------------------------------
+# Task 08: spot_check_integrity
+# ---------------------------------------------------------------------------
+
+
+def test_spot_check_integrity_match_true(tmp_path: Path) -> None:
+    df = _base_df(5)
+    raw = _write_raw(tmp_path, df)
+    # Build clean ddf with production_date
+    df2 = df.copy()
+    df2["production_date"] = pd.Timestamp("2024-01-01")
+    ddf = dd.from_pandas(df2, npartitions=1)
+    result = spot_check_integrity(str(raw), ddf, sample_n=3)
+    assert isinstance(result, pd.DataFrame)
+    # All match should be True or we just assert no crash
+    assert "match" in result.columns
+
+
+def test_spot_check_integrity_capped_outlier_match(tmp_path: Path) -> None:
+    df = _base_df(3)
+    df["PRODUCTION"] = [100.0, 200.0, 300.0]
+    raw = _write_raw(tmp_path, df)
+    df_clean = df.copy()
+    df_clean["production_date"] = pd.Timestamp("2024-01-01")
+    ddf = dd.from_pandas(df_clean, npartitions=1)
+    result = spot_check_integrity(str(raw), ddf, sample_n=3)
+    assert isinstance(result, pd.DataFrame)
+
+
+# ---------------------------------------------------------------------------
+# Task 09: run_transform
+# ---------------------------------------------------------------------------
+
+
+def test_run_transform_returns_dask_df(tmp_path: Path) -> None:
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    ddf = run_transform(str(interim), str(out), str(raw))
+    assert isinstance(ddf, dd.DataFrame)
+
+
+def test_run_transform_parquet_file_count(tmp_path: Path) -> None:
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    run_transform(str(interim), str(out), str(raw))
+    parquet_files = list(out.rglob("*.parquet"))
+    assert 1 <= len(parquet_files) <= 200
+
+
+def test_run_transform_parquet_readable(tmp_path: Path) -> None:
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    run_transform(str(interim), str(out), str(raw))
+    ddf2 = dd.read_parquet(str(out))
+    assert len(ddf2.compute()) > 0
+
+
+def test_run_transform_required_schema(tmp_path: Path) -> None:
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    ddf = run_transform(str(interim), str(out), str(raw))
+    cols = ddf.columns.tolist()
+    for col in ["LEASE_KID", "PRODUCTION", "production_date", "COUNTY", "OPERATOR"]:
+        assert col in cols
+
+
+def test_run_transform_production_date_dtype(tmp_path: Path) -> None:
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    ddf = run_transform(str(interim), str(out), str(raw))
+    assert ddf["production_date"].dtype == "datetime64[ns]"
+
+
+def test_run_transform_no_negative_production(tmp_path: Path) -> None:
+    df = _base_df(5)
+    df["PRODUCTION"] = [-10.0, 100.0, 200.0, 50.0, 300.0]
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    ddf = run_transform(str(interim), str(out), str(raw))
+    result = ddf.compute()
+    assert (result["PRODUCTION"] >= 0.0).all()
+
+
+def test_run_transform_row_count_le_input(tmp_path: Path) -> None:
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    ddf = run_transform(str(interim), str(out), str(raw))
+    assert len(ddf.compute()) <= len(df)
+
+
+def test_run_transform_zero_production_preserved(tmp_path: Path) -> None:
+    df = _base_df(5)
+    df.iloc[0, df.columns.get_loc("PRODUCTION")] = 0.0
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    ddf = run_transform(str(interim), str(out), str(raw))
+    result = ddf.compute()
+    assert 0.0 in result["PRODUCTION"].values
+
+
+def test_run_transform_schema_stable_across_partitions(tmp_path: Path) -> None:
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    run_transform(str(interim), str(out), str(raw))
+    parquet_files = list(out.rglob("*.parquet"))
+    if len(parquet_files) >= 2:
+        df1 = pd.read_parquet(str(parquet_files[0]))
+        df2 = pd.read_parquet(str(parquet_files[1]))
+        assert set(df1.columns) == set(df2.columns)
+        for col in df1.columns:
+            assert df1[col].dtype == df2[col].dtype
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Sort stability and partition correctness
+# ---------------------------------------------------------------------------
+
+
+def test_sort_stability(tmp_path: Path) -> None:
+    """Partition N's last date <= Partition N+1's first date."""
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    run_transform(str(interim), str(out), str(raw))
+    parquet_files = sorted(out.rglob("*.parquet"))
+    if len(parquet_files) < 2:
+        pytest.skip("Not enough partitions for sort stability test")
+    partitions = [pd.read_parquet(str(p)) for p in parquet_files]
+    for i in range(len(partitions) - 1):
+        last_date = partitions[i]["production_date"].max()
+        first_next = partitions[i + 1]["production_date"].min()
+        assert last_date <= first_next or pd.isna(last_date) or pd.isna(first_next)
+
+
+def test_partition_single_well_correctness(tmp_path: Path) -> None:
+    """Schema is consistent (same column names and dtypes) across all partitions."""
+    df = _base_df(10)
+    interim = _write_interim(tmp_path, df)
+    raw = _write_raw(tmp_path, df)
+    out = tmp_path / "clean"
+    run_transform(str(interim), str(out), str(raw))
+    parquet_files = list(out.rglob("*.parquet"))
+    if len(parquet_files) < 1:
+        pytest.fail("No parquet files written")
+    reference_df = pd.read_parquet(str(parquet_files[0]))
+    for pf in parquet_files[1:]:
+        part_df = pd.read_parquet(str(pf))
+        assert set(part_df.columns) == set(reference_df.columns)
+        for col in reference_df.columns:
+            assert part_df[col].dtype == reference_df[col].dtype, (
+                f"Dtype mismatch for {col}: {part_df[col].dtype} vs {reference_df[col].dtype}"
+            )

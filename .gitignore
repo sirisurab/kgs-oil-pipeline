@@ -1,65 +1,13 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-dist/
-*.egg-info/
-.eggs/
-pip-wheel-metadata/
-
-# Virtual environments
-.venv/
-venv/
-env/
-.env
-
-# Testing & coverage
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# Type checking
-.mypy_cache/
-
-# Linting
-.ruff_cache/
-
-# Data files (large, generated)
 data/
-conversation_history/
-# data/raw/*.txt
-# data/interim/*.parquet
-# data/interim/**/*.parquet
-# data/processed/*.parquet
-# data/processed/**/*.parquet
-# data/processed/features/*.parquet
-# data/processed/features/**/*.parquet
-# data/processed/features/feature_matrix.csv
-# data/processed/cleaning_report.json
-# data/pipeline_metadata.json
-
-# Logs
-logs/*.log
-logs/*.log.*
-
-# Editor / OS
-.DS_Store
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# Playwright
-playwright-report/
-test-results/
-
-
 .venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+*.pyo
+dist/
+build/
+.mypy_cache/
+logs/
+*.log

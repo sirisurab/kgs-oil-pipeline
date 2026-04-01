@@ -2,238 +2,349 @@
 
 ## Overview
 
-The acquire component is responsible for:
-1. Providing shared configuration constants (`kgs_pipeline/config.py`) and utility helpers (`kgs_pipeline/utils.py`) used by all pipeline stages.
-2. Reading the KGS lease index file (`data/external/oil_leases_2020_present.txt`) to extract all unique lease URLs for leases active between 2020 and 2025.
-3. Using Playwright (async API) with a rate-limiting `asyncio.Semaphore(5)` to scrape each lease's monthly data `.txt` file from the KGS web portal.
-4. Saving each downloaded raw file to `data/raw/`.
-5. Providing a synchronous orchestrator entry-point (`run_acquire_pipeline()`) that drives the async scraping workflow via Dask delayed tasks for parallel scheduling, with a single `.compute()` call at the end.
+The acquire component downloads KGS (Kansas Geological Survey) monthly lease-level oil and gas
+production data files for the 2024–present period. It reads a lease index file
+(`data/external/oil_leases_2024_present.txt`) that was pre-filtered from the full
+`oil_leases_2020_present.txt` archive, extracts unique lease download URLs, and for each lease
+fetches the per-lease production data file from the KGS CHASM server. Downloads are executed in
+parallel using Dask (max 5 concurrent workers) with a 0.5 s per-worker sleep to avoid
+overloading the KGS server. All raw files are saved to `data/raw/`. The stage is idempotent:
+files already present on disk are skipped on re-runs.
 
-**Source modules:** `kgs_pipeline/config.py`, `kgs_pipeline/utils.py`, `kgs_pipeline/acquire.py`
+**Module:** `kgs_pipeline/acquire.py`
+**Entry-point CLI:** `python -m kgs_pipeline.acquire` (or invoked by `pipeline.py`)
 **Test file:** `tests/test_acquire.py`
 
 ---
 
-## Design Decisions & Constraints
+## Design decisions and constraints
 
-- Python 3.11+. All functions must carry full type hints. All modules must have module-level docstrings.
-- Playwright async API (`playwright.async_api`). `asyncio.Semaphore(5)` enforces a maximum of 5 concurrent page contexts at any time to avoid overloading the KGS server.
-- A lease URL follows the pattern `https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=<LEASE_KID>`.
-- The "Save Monthly Data to File" button navigates to `https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=<LEASE_KID>`.
-- The download link on the MonthSave page is a relative `.txt` filename (e.g. `lp564.txt`). The resolved download URL is `https://chasm.kgs.ku.edu/ords/<filename>`.
-- All downloaded raw files land in `data/raw/`. The directory must be created if it does not exist.
-- Acquire is **idempotent**: if a file already exists in `data/raw/` and its size is greater than 0 bytes, it must be skipped without re-downloading and without raising an error.
-- A failed download for one lease must be logged and skipped; it must not abort the entire pipeline.
-- Dask delayed tasks wrap the per-lease scraping coroutines so the full set of leases is submitted as a graph; a single `.compute()` call in `run_acquire_pipeline()` executes them all.
-- Use structured Python `logging` (not print). All log records must include timestamps.
-- Use `pydantic` (v2) `BaseSettings` / `BaseModel` for configuration validation in `config.py`.
-- The data dictionary for `oil_leases_2020_present.txt` is at `references/kgs_archives_data_dictionary.csv`. Columns of interest: `LEASE KID`, `URL`.
-- The data dictionary for per-lease monthly `.txt` files is at `references/kgs_monthly_data_dictionary.csv`. Key columns: `LEASE KID`, `LEASE`, `DOR_CODE`, `API_NUMBER`, `FIELD`, `PRODUCING_ZONE`, `OPERATOR`, `COUNTY`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`, `LATITUDE`, `LONGITUDE`, `MONTH-YEAR`, `PRODUCT`, `WELLS`, `PRODUCTION`.
-
----
-
-## Task 01: Implement pipeline configuration module
-
-**Module:** `kgs_pipeline/config.py`
-**Class:** `PipelineConfig` (Pydantic `BaseSettings`)
-
-**Description:**
-Create a Pydantic v2 `BaseSettings` subclass `PipelineConfig` that holds all configurable pipeline constants. All field values must have defaults so the class can be instantiated without any environment variables. The module must also export a module-level singleton `CONFIG = PipelineConfig()` for use by other modules.
-
-Fields to include:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `raw_dir` | `Path` | `Path("data/raw")` | Directory for raw downloaded files |
-| `interim_dir` | `Path` | `Path("data/interim")` | Directory for interim Parquet files |
-| `processed_dir` | `Path` | `Path("data/processed")` | Directory for cleaned processed files |
-| `features_dir` | `Path` | `Path("data/processed/features")` | Directory for ML feature Parquet files |
-| `external_dir` | `Path` | `Path("data/external")` | Directory for external source files |
-| `logs_dir` | `Path` | `Path("logs")` | Directory for log files |
-| `lease_index_file` | `Path` | `Path("data/external/oil_leases_2020_present.txt")` | Lease index CSV/txt file |
-| `year_start` | `int` | `2020` | First year of data to process |
-| `year_end` | `int` | `2025` | Last year of data to process (inclusive) |
-| `kgs_base_url` | `str` | `"https://chasm.kgs.ku.edu/ords"` | Base URL for KGS ORDS portal |
-| `kgs_main_lease_path` | `str` | `"oil.ogl5.MainLease"` | Path segment for main lease pages |
-| `kgs_month_save_path` | `str` | `"oil.ogl5.MonthSave"` | Path segment for monthly data save pages |
-| `max_concurrent_requests` | `int` | `5` | Max concurrent Playwright page contexts |
-| `scrape_timeout_ms` | `int` | `30000` | Playwright navigation timeout in milliseconds |
-| `http_retry_attempts` | `int` | `3` | Number of retry attempts for failed downloads |
-| `http_retry_backoff_s` | `float` | `2.0` | Base backoff in seconds between retries |
-| `oil_unit` | `str` | `"BBL"` | Unit for oil production volumes |
-| `gas_unit` | `str` | `"MCF"` | Unit for gas production volumes |
-| `water_unit` | `str` | `"BBL"` | Unit for water production volumes |
-| `oil_max_bbl_per_month` | `float` | `50000.0` | Upper bound for single-well monthly oil production (outlier threshold) |
-| `rolling_windows` | `list[int]` | `[3, 6, 12]` | Rolling window sizes in months for feature engineering |
-| `decline_rate_clip_min` | `float` | `-1.0` | Lower clip bound for computed decline rate |
-| `decline_rate_clip_max` | `float` | `10.0` | Upper clip bound for computed decline rate |
-| `dask_n_workers` | `int` | `4` | Number of Dask workers for local cluster |
-| `parquet_engine` | `str` | `"pyarrow"` | Parquet read/write engine |
-| `log_level` | `str` | `"INFO"` | Python logging level string |
-
-**Validation:**
-- `year_start` must be >= 2000 and <= `year_end`.
-- `year_end` must be <= 2030.
-- `max_concurrent_requests` must be between 1 and 20.
-- `oil_max_bbl_per_month` must be > 0.
-- Use Pydantic `@field_validator` decorators for these constraints.
-
-**Error handling:** `ValidationError` is raised automatically by Pydantic if constraints are violated. No additional error handling required.
-
-**Dependencies:** pydantic, pathlib
-
-**Test cases (`tests/test_acquire.py`):**
-- `@pytest.mark.unit` — Instantiate `PipelineConfig()` with no arguments and assert all fields have their documented defaults (spot-check at least 8 fields).
-- `@pytest.mark.unit` — Assert `CONFIG` (module-level singleton) is an instance of `PipelineConfig`.
-- `@pytest.mark.unit` — Construct `PipelineConfig(year_start=1990)` and assert a `ValidationError` is raised (year below 2000).
-- `@pytest.mark.unit` — Construct `PipelineConfig(year_start=2025, year_end=2020)` and assert a `ValidationError` is raised (start > end).
-- `@pytest.mark.unit` — Construct `PipelineConfig(max_concurrent_requests=0)` and assert a `ValidationError` is raised.
-- `@pytest.mark.unit` — Assert that `CONFIG.raw_dir`, `CONFIG.interim_dir`, `CONFIG.processed_dir`, `CONFIG.features_dir` are all `Path` instances.
-
-**Definition of done:** Module is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+- Use `requests` for all HTTP operations. Do NOT use Playwright, Selenium, or any browser automation.
+- Use `BeautifulSoup` (html.parser) for parsing MonthSave HTML responses.
+- Use Dask `delayed` + `dask.compute` (scheduler="threads") with `num_workers=5` for parallelism.
+- Add `time.sleep(0.5)` inside each download worker function to rate-limit server requests.
+- A retry decorator with exponential backoff (max 3 retries, base delay 1 s, factor 2) must wrap
+  each HTTP GET call. The decorator is defined in `kgs_pipeline/utils.py` and imported here.
+- The lease index file read at acquire time is `data/external/oil_leases_2024_present.txt` (the
+  filtered version, not the raw 2020-present file). The Makefile `acquire` target must reference
+  this filename.
+- Filter the index to rows where the year component of MONTH-YEAR >= 2024, then deduplicate by URL.
+  MONTH-YEAR format is "M-YYYY"; extract year by splitting on "-" and taking the last element.
+  Drop rows where the year component is not numeric before filtering.
+- Raw output files are saved to `data/raw/` using the filename extracted from the `p_file_name`
+  query parameter of the download URL (e.g., `lp564.txt`).
+- If a file already exists in `data/raw/` (idempotency), skip the download and return the
+  existing path without raising an error or re-downloading.
+- `pyproject.toml` build-backend must be `"setuptools.build_meta"`.
+- `Makefile` must include a `make env` target using `python3 -m venv .venv` and an `install`
+  target that bootstraps pip/setuptools/wheel before `pip install -e ".[dev]"`.
+- `pyproject.toml` dev dependencies must include `pandas-stubs` and `types-requests`.
+- `data/` must be present in `.gitignore`.
+- `requirements.txt` must be updated with every third-party package imported in this module.
 
 ---
 
-## Task 02: Implement shared utility helpers
-
-**Module:** `kgs_pipeline/utils.py`
-
-**Description:**
-Implement a set of shared utility functions and decorators used across all pipeline components.
-
-**Functions and signatures to implement:**
-
-### `setup_logging(name: str, log_dir: Path, level: str = "INFO") -> logging.Logger`
-Configure and return a named logger that writes structured log records (format: `%(asctime)s | %(name)s | %(levelname)s | %(message)s`) to both a rotating file handler (`logs/<name>.log`, max 10 MB, 3 backups) and a `StreamHandler`. Create `log_dir` if it does not exist. Return the configured logger.
-
-### `retry(max_attempts: int = 3, backoff_s: float = 2.0, exceptions: tuple[type[Exception], ...] = (Exception,))`
-A function decorator factory. When the decorated function raises any exception in `exceptions`, it is retried up to `max_attempts` times with exponential backoff: `backoff_s * (2 ** attempt)` seconds between attempts. After exhausting all retries, re-raise the last exception. Log each retry attempt at WARNING level using the module logger.
-
-### `timer(logger: logging.Logger | None = None)`
-A decorator factory. Wraps a function to record its wall-clock execution time. If `logger` is provided, log a message at DEBUG level: `"<function_name> completed in <elapsed:.3f>s"`. Always return the wrapped function's return value unchanged.
-
-### `compute_file_hash(path: Path, algorithm: str = "sha256") -> str`
-Compute and return the hex digest of the file at `path` using `hashlib`. Read the file in 64 KB chunks. Raise `FileNotFoundError` if the file does not exist.
-
-### `ensure_dir(path: Path) -> Path`
-Create `path` (and all parents) if it does not exist. Return `path`. Must be idempotent (no error if already exists).
-
-### `is_valid_raw_file(path: Path) -> bool`
-Return `True` if and only if all three conditions hold: (a) `path.exists()` and `path.stat().st_size > 0`; (b) the file is decodable as UTF-8 text without errors; (c) the file contains at least two lines (header + one data row). Return `False` otherwise. Do not raise exceptions.
-
-**Error handling:**
-- `compute_file_hash` raises `FileNotFoundError` for missing paths.
-- `retry` logs each failure before sleeping; re-raises after last attempt.
-- All other functions must not raise except on genuinely unrecoverable OS errors.
-
-**Dependencies:** logging, logging.handlers, pathlib, hashlib, time, functools
-
-**Test cases (`tests/test_acquire.py`):**
-- `@pytest.mark.unit` — Call `ensure_dir` with a path inside `tmp_path` (pytest fixture); assert the directory is created and calling again does not raise.
-- `@pytest.mark.unit` — Call `compute_file_hash` on a known small text file (written with `tmp_path`) and assert the returned string is a 64-character hex string.
-- `@pytest.mark.unit` — Call `compute_file_hash` on a non-existent path and assert `FileNotFoundError` is raised.
-- `@pytest.mark.unit` — Decorate a function with `@retry(max_attempts=3, backoff_s=0.01, exceptions=(ValueError,))` that raises `ValueError` on every call. Assert it raises `ValueError` after exactly 3 attempts (use a call counter with `nonlocal`).
-- `@pytest.mark.unit` — Decorate a function with `@retry(max_attempts=3, backoff_s=0.01)` that succeeds on the second attempt. Assert it returns the correct result and was called exactly twice.
-- `@pytest.mark.unit` — Call `is_valid_raw_file` on a file with 0 bytes; assert it returns `False`.
-- `@pytest.mark.unit` — Call `is_valid_raw_file` on a file containing only a header line (no data row); assert it returns `False`.
-- `@pytest.mark.unit` — Call `is_valid_raw_file` on a valid two-line UTF-8 text file; assert it returns `True`.
-- `@pytest.mark.unit` — Call `is_valid_raw_file` on a file containing invalid UTF-8 bytes; assert it returns `False` and does not raise.
-- `@pytest.mark.unit` — Decorate a function with `@timer()` and verify it returns the correct value; verify it does not raise.
-
-**Definition of done:** Module is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
-
----
-
-## Task 03: Implement lease URL loader
+## Task 01: Implement lease index loader
 
 **Module:** `kgs_pipeline/acquire.py`
-**Function:** `load_lease_urls(lease_index_path: Path) -> list[str]`
+**Function:** `load_lease_index(index_path: str) -> pd.DataFrame`
 
 **Description:**
-Read the lease index file at `lease_index_path` (a pipe-delimited or comma-delimited `.txt` file in the format described by `references/kgs_archives_data_dictionary.csv`). Extract the `URL` column values, drop nulls and duplicates, and return a deduplicated list of lease URL strings. The function must be robust to both comma and pipe delimiters — attempt comma first, fall back to pipe. Each URL in the returned list must be a non-empty string.
+Read the lease index text file (pipe/comma-delimited CSV with quoted fields) from
+`data/external/oil_leases_2024_present.txt` into a Pandas DataFrame. Apply the following
+transformations before returning:
+1. Parse the MONTH-YEAR column (format "M-YYYY"). Extract the year component by splitting on
+   "-" and taking the **last** element (index -1).
+2. Drop rows where the extracted year component is not numeric (e.g., "-1-1965", "0-1966").
+3. Cast the year component to int.
+4. Retain only rows where year >= 2024.
+5. Deduplicate the DataFrame by the URL column, keeping the first occurrence.
+6. Return the deduplicated DataFrame with only the URL column (other columns may be retained
+   but URL must be present).
 
-**Error handling:**
-- Raise `FileNotFoundError` if `lease_index_path` does not exist.
-- Raise `KeyError` with a descriptive message if the `URL` column is absent from the file.
-- Log the number of unique lease URLs loaded at INFO level.
+The function must accept an arbitrary file path so tests can point it at fixture files.
 
-**Dependencies:** pandas, pathlib, logging
+**Inputs:** `index_path` — absolute or relative path to the lease index CSV/text file.
 
-**Test cases (`tests/test_acquire.py`):**
-- `@pytest.mark.unit` — Write a minimal CSV fixture with a `URL` column to `tmp_path`; call `load_lease_urls` and assert the returned list has the correct length and all entries are non-empty strings.
-- `@pytest.mark.unit` — Write a fixture with duplicate URL values; assert the returned list contains no duplicates.
-- `@pytest.mark.unit` — Write a fixture with some null/empty URL values; assert nulls are not present in the result.
-- `@pytest.mark.unit` — Pass a non-existent path; assert `FileNotFoundError` is raised.
-- `@pytest.mark.unit` — Write a fixture with no `URL` column; assert `KeyError` is raised.
+**Outputs:** `pd.DataFrame` with deduplicated rows filtered to year >= 2024.
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Edge cases:**
+- File does not exist → raise `FileNotFoundError` with a descriptive message.
+- File is empty → raise `ValueError("Lease index file is empty")`.
+- No rows survive the year >= 2024 filter → raise `ValueError("No leases found for year >= 2024")`.
+- Rows where MONTH-YEAR year component is not a digit string after split must be silently dropped
+  before the int cast (do not raise on individual bad rows).
+
+**Test cases:**
+- `@pytest.mark.unit` — Given a minimal CSV fixture with 3 rows: two with MONTH-YEAR "1-2024"
+  and one with "6-2023", assert the returned DataFrame has exactly 2 rows (the 2023 row is
+  excluded).
+- `@pytest.mark.unit` — Given a CSV fixture with duplicate URLs in the 2024 rows, assert the
+  returned DataFrame has no duplicate URL values.
+- `@pytest.mark.unit` — Given a CSV fixture containing a row with MONTH-YEAR "-1-1965" (invalid
+  year component), assert the row is silently dropped and no exception is raised.
+- `@pytest.mark.unit` — Given a path to a non-existent file, assert `FileNotFoundError` is raised.
+- `@pytest.mark.unit` — Given a CSV where all rows are pre-2024, assert `ValueError` is raised.
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 04: Implement single-lease Playwright scraper
+## Task 02: Implement lease ID extractor
 
 **Module:** `kgs_pipeline/acquire.py`
-**Function:** `scrape_lease_page(lease_url: str, output_dir: Path, semaphore: asyncio.Semaphore, playwright_browser) -> Path | None`
+**Function:** `extract_lease_id(url: str) -> str`
 
 **Description:**
-An async function that, given a lease URL, navigates to the lease page, finds the "Save Monthly Data to File" button, clicks it to navigate to the MonthSave page, finds the `.txt` download link, and downloads the file content to `output_dir/<filename>.txt`. Returns the `Path` to the saved file on success, or `None` on failure (after logging the error).
+Parse the lease URL and return the lease ID string. The URL format is:
+`https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=<LEASE_ID>`
+Extract the value of the `f_lc` query parameter. If the parameter is absent or the URL is
+malformed, raise `ValueError` with a message that includes the offending URL.
 
-The semaphore must be acquired before opening a new page context and released after the page is closed, regardless of success or failure — use an `async with semaphore:` block.
+**Inputs:** `url` — a URL string from the lease index URL column.
 
-**Idempotency:** Before scraping, check if the output file already exists and `is_valid_raw_file()` returns `True` for it. If so, log at DEBUG level that the file is being skipped and return the existing path immediately without opening a browser page.
+**Outputs:** `str` — the lease ID (e.g., `"1001135839"`).
 
-**Timeout:** Use `CONFIG.scrape_timeout_ms` for all Playwright navigation calls.
+**Edge cases:**
+- URL with no query string → raise `ValueError`.
+- URL where `f_lc` parameter is present but empty → raise `ValueError`.
+- URL with extra query parameters alongside `f_lc` → correctly return only the `f_lc` value.
 
-**Error handling:**
-- Wrap the entire scrape in a try/except block. On any exception (`PlaywrightError`, `TimeoutError`, or any other), log the error at ERROR level (including `lease_url`) and return `None`.
-- Do not re-raise exceptions — a single failed lease must not stop the overall pipeline.
-- Define a custom exception class `ScrapingError(Exception)` in `acquire.py`. Raise it internally (then catch) when the "Save Monthly Data to File" button is not found on the page, and when the download link is not found on the MonthSave page.
+**Test cases:**
+- `@pytest.mark.unit` — Given `"https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839"`,
+  assert the function returns `"1001135839"`.
+- `@pytest.mark.unit` — Given a URL with no `f_lc` parameter, assert `ValueError` is raised.
+- `@pytest.mark.unit` — Given a URL with an empty `f_lc` value, assert `ValueError` is raised.
 
-**Dependencies:** playwright (async_api), asyncio, pathlib, logging
-
-**Test cases (`tests/test_acquire.py`):**
-- `@pytest.mark.unit` — Using `unittest.mock.AsyncMock`, mock the Playwright browser and page objects so that the button is found and a fake `.txt` URL is returned. Assert the function returns a `Path` pointing to a `.txt` file inside `tmp_path`.
-- `@pytest.mark.unit` — Mock the page so that the "Save Monthly Data to File" button is **not** found. Assert the function returns `None` and does not raise.
-- `@pytest.mark.unit` — Mock the page so that the MonthSave page has no `.txt` download link. Assert the function returns `None` and does not raise.
-- `@pytest.mark.unit` — Create a pre-existing valid file at the expected output path; assert the function returns the existing path without calling any Playwright methods (verify via mock call count).
-- `@pytest.mark.unit` — Mock the navigation to raise a `TimeoutError`. Assert the function returns `None` and does not raise.
-
-**Definition of done:** Function and `ScrapingError` class are implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 05: Implement parallel acquire orchestrator
+## Task 03: Implement MonthSave page scraper
 
 **Module:** `kgs_pipeline/acquire.py`
-**Function:** `run_acquire_pipeline(lease_index_path: Path | None = None, output_dir: Path | None = None, max_workers: int | None = None) -> list[Path]`
+**Function:** `scrape_download_url(lease_id: str, session: requests.Session) -> str`
 
 **Description:**
-The synchronous orchestrator that drives the full acquisition workflow:
+Construct the MonthSave URL for the given lease ID:
+`https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=<lease_id>`
 
-1. Resolve `lease_index_path` (default: `CONFIG.lease_index_file`), `output_dir` (default: `CONFIG.raw_dir`), and `max_workers` (default: `CONFIG.dask_n_workers`). Call `ensure_dir(output_dir)`.
-2. Call `load_lease_urls(lease_index_path)` to obtain the list of lease URLs.
-3. Wrap each per-lease async scrape call inside a `dask.delayed` task. Each delayed task must call an inner sync helper `_run_single_lease(lease_url, output_dir)` that uses `asyncio.run()` to execute the async `scrape_lease_page` function within a fresh Playwright context (`async_playwright()`).
-4. Collect all delayed tasks into a list and call `dask.compute(*tasks, scheduler="threads", num_workers=max_workers)` — this is the **only** `.compute()` call in the acquire component.
-5. Filter the compute results to exclude `None` values (failed leases) and return the list of successfully written `Path` objects.
-6. Log a summary at INFO level: total leases attempted, succeeded, and failed.
+Make an HTTP GET request to that URL using the provided `session`. Parse the HTML response
+with BeautifulSoup (html.parser). Find the first anchor tag whose `href` attribute contains
+the string `"anon_blobber.download"`. Return the full resolved download URL (the href value
+as-is — it is already an absolute URL). If no such anchor tag exists, raise `ScrapingError`
+(a custom exception defined in this module).
 
-**Error handling:**
-- Individual lease failures produce `None` in results (handled inside `scrape_lease_page`). The orchestrator must count and log failures but must not re-raise them.
-- If `load_lease_urls` raises, the orchestrator must propagate the exception (do not catch it here).
+The HTTP GET call must be wrapped with the retry decorator from `kgs_pipeline/utils.py`.
 
-**Dependencies:** dask, asyncio, playwright, pathlib, logging
+**Custom exception:** Define `class ScrapingError(Exception): pass` at module level.
 
-**Test cases (`tests/test_acquire.py`):**
-- `@pytest.mark.unit` — Patch `load_lease_urls` to return 3 fake URLs and patch `_run_single_lease` to return a fake `Path` for each. Assert `run_acquire_pipeline` returns a list of 3 `Path` objects.
-- `@pytest.mark.unit` — Patch `_run_single_lease` to return `None` for all inputs. Assert the return value is an empty list and no exception is raised.
-- `@pytest.mark.unit` — Patch `_run_single_lease` to return a `Path` for 2 out of 3 URLs (the third returns `None`). Assert the returned list has length 2.
-- `@pytest.mark.unit` — Patch `load_lease_urls` to raise `FileNotFoundError`. Assert `run_acquire_pipeline` propagates `FileNotFoundError`.
-- `@pytest.mark.integration` — (Skipped by default unless `--integration` flag is passed to pytest.) Call `run_acquire_pipeline` against 2 real lease URLs. Assert that the files land in `data/raw/`, each has size > 0, and `is_valid_raw_file` returns `True` for each.
+**Inputs:**
+- `lease_id: str` — the lease identifier string.
+- `session: requests.Session` — a shared requests Session for connection pooling.
 
-**Acquire idempotency test (`tests/test_acquire.py`):**
-- `@pytest.mark.unit` — Call `run_acquire_pipeline` (with patched `_run_single_lease` that writes real small fixture files to `tmp_path`) twice on the same `output_dir`. Assert the file count is the same after both runs (not doubled). Assert no exception is raised on the second run. Assert the file contents are unchanged after the second run.
+**Outputs:** `str` — the absolute download URL containing `anon_blobber.download`.
 
-**Acquired file integrity test (`tests/test_acquire.py`):**
-- `@pytest.mark.integration` — After a real or fixture-driven acquire run, iterate all files in `data/raw/`. Assert: (a) every file has `stat().st_size > 0`; (b) every file is decodable as UTF-8; (c) every file has at least 2 lines.
+**Edge cases:**
+- MonthSave page returns HTTP 4xx/5xx → the retry decorator raises after max retries; let it
+  propagate.
+- MonthSave page has no `anon_blobber.download` link → raise `ScrapingError`.
+- MonthSave page HTML is malformed → BeautifulSoup degrades gracefully; if no link found, raise
+  `ScrapingError`.
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Test cases:**
+- `@pytest.mark.unit` — Mock `session.get` to return a response with HTML containing one anchor
+  with `href="https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"`;
+  assert the function returns that exact URL.
+- `@pytest.mark.unit` — Mock `session.get` to return HTML with no `anon_blobber.download` link;
+  assert `ScrapingError` is raised.
+- `@pytest.mark.unit` — Mock `session.get` to return an empty HTML body; assert `ScrapingError`
+  is raised.
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
+
+---
+
+## Task 04: Implement file downloader
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `download_file(download_url: str, output_dir: str, session: requests.Session) -> Path`
+
+**Description:**
+1. Extract the filename from the `p_file_name` query parameter of the download URL
+   (e.g., `"lp564.txt"` from `"…?p_file_name=lp564.txt"`). If the parameter is missing, raise
+   `ValueError`.
+2. Construct the output path: `Path(output_dir) / filename`.
+3. **Idempotency check:** if the file already exists at that path, return the path immediately
+   without making any HTTP request.
+4. Make an HTTP GET request to the download URL using `session`. The retry decorator from
+   `kgs_pipeline/utils.py` must wrap this call.
+5. If the response body is empty (zero bytes), raise `ValueError(f"Downloaded file is empty: {filename}")`.
+6. Write the response content (bytes) to the output path.
+7. Sleep for 0.5 seconds (`time.sleep(0.5)`) after a successful download.
+8. Return the `Path` to the saved file.
+
+**Inputs:**
+- `download_url: str` — the full download URL with `p_file_name` query parameter.
+- `output_dir: str` — directory where raw files are saved (typically `data/raw/`).
+- `session: requests.Session` — shared requests Session.
+
+**Outputs:** `pathlib.Path` pointing to the saved (or pre-existing) raw data file.
+
+**Edge cases:**
+- File already exists → return immediately (no download, no sleep, no error). `[TR-20]`
+- Empty response body → raise `ValueError`. `[TR-21]`
+- `p_file_name` query parameter missing → raise `ValueError`.
+- `output_dir` does not exist → create it with `Path(output_dir).mkdir(parents=True, exist_ok=True)`.
+
+**Test cases:**
+- `@pytest.mark.unit` — Mock `session.get` to return 200 with non-empty byte content;
+  assert the function returns a `Path` ending in the expected filename and the file exists
+  on disk (use `tmp_path` pytest fixture for `output_dir`).
+- `@pytest.mark.unit` — Call the function a second time for a file that already exists;
+  assert `session.get` is NOT called (mock call count == 0) and the same path is returned. `[TR-20]`
+- `@pytest.mark.unit` — Mock `session.get` to return 200 with empty byte content `b""`;
+  assert `ValueError` is raised. `[TR-21]`
+- `@pytest.mark.unit` — Given a download URL with no `p_file_name` parameter, assert
+  `ValueError` is raised.
+- `@pytest.mark.unit` — Given a non-existent `output_dir`, assert the directory is created
+  and the file is written successfully.
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
+
+---
+
+## Task 05: Implement single-lease download worker
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `download_lease(url: str, output_dir: str, session: requests.Session) -> Path | None`
+
+**Description:**
+Orchestrate the full download workflow for a single lease URL:
+1. Call `extract_lease_id(url)` to get the lease ID.
+2. Call `scrape_download_url(lease_id, session)` to get the data file download URL.
+3. Call `download_file(download_url, output_dir, session)` to fetch and save the file.
+4. Return the resulting `Path`.
+
+If any step raises an exception (`ScrapingError`, `ValueError`, or a `requests` exception),
+log a WARNING that includes the URL and the exception message, and return `None`. Do not
+propagate exceptions — the parallel runner must continue with remaining leases even if some fail.
+
+**Inputs:**
+- `url: str` — the lease main-page URL from the index.
+- `output_dir: str` — target directory for raw files.
+- `session: requests.Session` — shared requests Session.
+
+**Outputs:** `pathlib.Path` on success, `None` on failure.
+
+**Test cases:**
+- `@pytest.mark.unit` — Mock `scrape_download_url` and `download_file` to return successfully;
+  assert the function returns a `Path`.
+- `@pytest.mark.unit` — Mock `scrape_download_url` to raise `ScrapingError`; assert the function
+  returns `None` (does not raise) and a WARNING is logged.
+- `@pytest.mark.unit` — Mock `extract_lease_id` to raise `ValueError`; assert `None` is returned
+  and WARNING is logged.
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
+
+---
+
+## Task 06: Implement parallel acquire orchestrator
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `run_acquire(index_path: str, output_dir: str, max_workers: int = 5) -> list[Path]`
+
+**Description:**
+This is the main entry point for the acquire stage. It:
+1. Calls `load_lease_index(index_path)` to obtain the deduplicated list of lease URLs for
+   year >= 2024.
+2. Opens a `requests.Session` (one shared session for all workers).
+3. Builds a list of `dask.delayed` tasks — one per URL — each calling `download_lease(url,
+   output_dir, session)`.
+4. Executes all delayed tasks using `dask.compute(*tasks, scheduler="threads",
+   num_workers=max_workers)`.
+5. Collects results, filters out `None` values, and returns the list of successful `Path` objects.
+6. Logs a summary: total URLs attempted, number of successes, number of failures.
+
+The function must not call `.compute()` on any Dask DataFrame — it uses `dask.delayed` for
+task parallelism only, not the Dask DataFrame API.
+
+**Inputs:**
+- `index_path: str` — path to the lease index file.
+- `output_dir: str` — directory for raw downloaded files.
+- `max_workers: int` — Dask thread concurrency limit (default 5).
+
+**Outputs:** `list[pathlib.Path]` — paths to all successfully downloaded (or pre-existing) files.
+
+**Edge cases:**
+- All lease downloads fail → return empty list (do not raise).
+- `index_path` does not exist → propagate `FileNotFoundError` from `load_lease_index`.
+- `output_dir` does not exist → created by `download_file` internally.
+
+**Test cases:**
+- `@pytest.mark.unit` — Mock `load_lease_index` to return a DataFrame with 3 URLs; mock
+  `download_lease` to return a `Path` for each; assert the returned list has length 3.
+- `@pytest.mark.unit` — Mock `download_lease` to return `None` for all URLs; assert the
+  returned list is empty.
+- `@pytest.mark.unit` — Mock `download_lease` to return `Path` for 2 out of 3 URLs (one
+  returns `None`); assert the returned list has length 2.
+- `@pytest.mark.unit` — Assert that `run_acquire` respects the `max_workers` parameter by
+  verifying it is passed to `dask.compute` (inspect the call via mock).
+- `@pytest.mark.integration` — (Requires network) Run `run_acquire` against a real index
+  fixture containing 1–2 known 2024 lease URLs; assert that at least one `.txt` file is
+  created in `data/raw/` with size > 0 bytes. `[TR-20, TR-21]`
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
+
+---
+
+## Task 07: Implement build environment and project scaffolding
+
+**Module:** `pyproject.toml`, `Makefile`, `.gitignore`, `requirements.txt`
+
+**Description:**
+Create or verify the following project-level artefacts so the pipeline installs and runs
+cleanly on a fresh machine:
+
+**`pyproject.toml`:**
+- `build-backend` must be `"setuptools.build_meta"` (NOT `"setuptools.backends.legacy:build"`).
+- `[project]` section: name, version, `requires-python = ">=3.11"`.
+- Runtime dependencies: `pandas`, `dask[dataframe]`, `requests`, `beautifulsoup4`, `pyarrow`,
+  `pyyaml`, `numpy`.
+- `[project.optional-dependencies]` dev section: `pytest`, `pytest-mock`, `ruff`, `mypy`,
+  `pandas-stubs`, `types-requests`.
+
+**`Makefile`:**
+- `env` target: `python3 -m venv .venv`
+- `install` target: activates venv, runs `pip install --upgrade pip setuptools wheel`, then
+  `pip install -e ".[dev]"`. Must NOT use `pip install -r requirements.txt` as the sole step.
+- `acquire` target: runs `python -m kgs_pipeline.acquire` with the path
+  `data/external/oil_leases_2024_present.txt`. Must NOT reference `oil_leases_2020_present.txt`.
+  Must NOT reference playwright.
+- `test` target: `pytest tests/ -v`
+- `lint` target: `ruff check kgs_pipeline/ tests/`
+- `typecheck` target: `mypy kgs_pipeline/`
+
+**`.gitignore`:**
+- Must contain `data/` to prevent raw and processed data files from being committed.
+- Also include `.venv/`, `__pycache__/`, `*.pyc`, `*.egg-info/`, `.pytest_cache/`, `.ruff_cache/`.
+
+**`requirements.txt`:**
+- Must list all third-party runtime packages with pinned or minimum versions.
+
+**Test cases:**
+- `@pytest.mark.unit` — Assert that `pyproject.toml` contains `"setuptools.build_meta"` as
+  the build-backend (read the file and check the string).
+- `@pytest.mark.unit` — Assert that `Makefile` does NOT contain the string `"playwright"`.
+- `@pytest.mark.unit` — Assert that `Makefile` references `"oil_leases_2024_present.txt"` (not
+  the 2020 version) in the acquire target.
+- `@pytest.mark.unit` — Assert that `.gitignore` contains the line `data/`.
+
+**Definition of done:** All project files created/updated, all test cases pass, ruff and mypy
+report no errors, `requirements.txt` updated with all third-party packages imported in this task.

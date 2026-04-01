@@ -1,170 +1,120 @@
-"""Pipeline orchestrator CLI for the KGS oil production data pipeline.
-
-CLI entry point that runs all four pipeline stages (acquire → ingest →
-transform → features) in sequence with structured logging and metadata tracking.
-"""
+"""Pipeline orchestrator — runs the full KGS pipeline from acquire to features."""
 
 import argparse
-import json
 import logging
-import sys
-from datetime import datetime, timezone
+import time
 from pathlib import Path
 
-from kgs_pipeline.acquire import run_acquire_pipeline
-from kgs_pipeline.config import CONFIG
-from kgs_pipeline.features import run_features_pipeline
-from kgs_pipeline.ingest import run_ingest_pipeline
-from kgs_pipeline.transform import run_transform_pipeline
-from kgs_pipeline.utils import ensure_dir, setup_logging
+from kgs_pipeline.config import (
+    CLEAN_DIR,
+    FEATURES_DIR,
+    INTERIM_DIR,
+    IQR_MULTIPLIER,
+    LEASE_INDEX_FILE,
+    MAX_WORKERS,
+    RAW_DIR,
+)
+from kgs_pipeline.utils import setup_logging
 
-logger = setup_logging("pipeline", CONFIG.logs_dir, CONFIG.log_level)
-
-VALID_STAGES = ["acquire", "ingest", "transform", "features"]
-
-
-def setup_pipeline_logging() -> logging.Logger:
-    """Configure and return the pipeline root logger.
-
-    Returns:
-        Configured pipeline logger.
-    """
-    return setup_logging("pipeline", CONFIG.logs_dir, CONFIG.log_level)
+logger = setup_logging(__name__, level=logging.INFO)
 
 
 def run_pipeline(
-    stages: list[str],
-    years: list[int] | None,
-    workers: int,
-) -> dict:
-    """Execute pipeline stages in sequence.
+    index_path: str | None = None,
+    raw_dir: str | None = None,
+    interim_dir: str | None = None,
+    clean_dir: str | None = None,
+    features_dir: str | None = None,
+    run_acquire: bool = True,
+    run_ingest: bool = True,
+    run_transform: bool = True,
+    run_features_stage: bool = True,
+    max_workers: int = MAX_WORKERS,
+    iqr_multiplier: float = IQR_MULTIPLIER,
+) -> None:
+    """Run the full KGS pipeline or individual stages.
 
     Args:
-        stages: List of stage names to run, or ["all"] to run all.
-        years: Optional list of years to process (informational for acquire).
-        workers: Number of Dask workers.
-
-    Returns:
-        Pipeline run metadata dict.
+        index_path: Path to lease index file.
+        raw_dir: Raw data directory.
+        interim_dir: Interim Parquet directory.
+        clean_dir: Cleaned Parquet directory.
+        features_dir: Features Parquet directory.
+        run_acquire: Whether to run the acquire stage.
+        run_ingest: Whether to run the ingest stage.
+        run_transform: Whether to run the transform stage.
+        run_features_stage: Whether to run the features stage.
+        max_workers: Thread workers for acquire.
+        iqr_multiplier: IQR multiplier for outlier capping.
     """
+    index_path = index_path or str(LEASE_INDEX_FILE)
+    raw_dir = raw_dir or str(RAW_DIR)
+    interim_dir = interim_dir or str(INTERIM_DIR)
+    clean_dir = clean_dir or str(CLEAN_DIR)
+    features_dir = features_dir or str(FEATURES_DIR)
 
-    if stages == ["all"]:
-        stages_to_run = VALID_STAGES
-    else:
-        stages_to_run = [s for s in VALID_STAGES if s in stages]
+    for d in [raw_dir, interim_dir, clean_dir, features_dir]:
+        Path(d).mkdir(parents=True, exist_ok=True)
 
-    start_time = datetime.now(timezone.utc)
-    metadata: dict = {
-        "start_time": start_time.isoformat(),
-        "end_time": None,
-        "stages": {},
-        "pipeline_metadata_path": str(Path("data/pipeline_metadata.json")),
-        "years": years,
-        "workers": workers,
-    }
+    if run_acquire:
+        from kgs_pipeline.acquire import run_acquire as _run_acquire
+        t0 = time.perf_counter()
+        logger.info("=== Stage: ACQUIRE ===")
+        paths = _run_acquire(index_path, raw_dir, max_workers)
+        logger.info("Acquire: %d files in %.2f s", len(paths), time.perf_counter() - t0)
 
-    stage_results: dict[str, list[Path]] = {}
+    if run_ingest:
+        from kgs_pipeline.ingest import run_ingest as _run_ingest
+        t0 = time.perf_counter()
+        logger.info("=== Stage: INGEST ===")
+        _run_ingest(raw_dir, interim_dir)
+        logger.info("Ingest complete in %.2f s", time.perf_counter() - t0)
 
-    for stage in VALID_STAGES:
-        if stage not in stages_to_run:
-            continue
+    if run_transform:
+        from kgs_pipeline.transform import run_transform as _run_transform
+        t0 = time.perf_counter()
+        logger.info("=== Stage: TRANSFORM ===")
+        _run_transform(interim_dir, clean_dir, raw_dir, iqr_multiplier)
+        logger.info("Transform complete in %.2f s", time.perf_counter() - t0)
 
-        stage_start = datetime.now(timezone.utc)
-        logger.info("Starting stage: %s", stage)
+    if run_features_stage:
+        from kgs_pipeline.features import run_features as _run_features
+        t0 = time.perf_counter()
+        logger.info("=== Stage: FEATURES ===")
+        _run_features(clean_dir, features_dir)
+        logger.info("Features complete in %.2f s", time.perf_counter() - t0)
 
-        try:
-            if stage == "acquire":
-                result = run_acquire_pipeline(max_workers=workers)
-                stage_results["acquire"] = result or []
-            elif stage == "ingest":
-                result = run_ingest_pipeline()
-                stage_results["ingest"] = result or []
-            elif stage == "transform":
-                result = run_transform_pipeline()
-                stage_results["transform"] = result or []
-            elif stage == "features":
-                result = run_features_pipeline()
-                stage_results["features"] = result or []
-
-            stage_end = datetime.now(timezone.utc)
-            files = stage_results.get(stage, [])
-            metadata["stages"][stage] = {
-                "status": "success",
-                "start_time": stage_start.isoformat(),
-                "end_time": stage_end.isoformat(),
-                "elapsed_seconds": (stage_end - stage_start).total_seconds(),
-                "files_written": len(files),
-            }
-            logger.info("Stage '%s' completed successfully. Files written: %d", stage, len(files))
-
-        except Exception as exc:
-            stage_end = datetime.now(timezone.utc)
-            logger.error("Stage '%s' failed: %s", stage, exc, exc_info=True)
-            metadata["stages"][stage] = {
-                "status": "failed",
-                "start_time": stage_start.isoformat(),
-                "end_time": stage_end.isoformat(),
-                "elapsed_seconds": (stage_end - stage_start).total_seconds(),
-                "error": str(exc),
-            }
-
-    end_time = datetime.now(timezone.utc)
-    metadata["end_time"] = end_time.isoformat()
-    metadata["total_elapsed_seconds"] = (end_time - start_time).total_seconds()
-
-    return metadata
-
-
-def main() -> None:
-    """CLI entry point for the KGS pipeline."""
-    parser = argparse.ArgumentParser(
-        description="KGS Oil Production Data Pipeline",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--stages",
-        type=str,
-        default="all",
-        help="Comma-separated list of stages to run: acquire,ingest,transform,features,all",
-    )
-    parser.add_argument(
-        "--years",
-        type=str,
-        default=None,
-        help=(
-            f"Comma-separated list of years to process "
-            f"(default: {CONFIG.year_start}–{CONFIG.year_end})"
-        ),
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=CONFIG.dask_n_workers,
-        help="Number of Dask workers",
-    )
-    args = parser.parse_args()
-
-    stages = [s.strip() for s in args.stages.split(",") if s.strip()]
-    years: list[int] | None = None
-    if args.years:
-        try:
-            years = [int(y.strip()) for y in args.years.split(",") if y.strip()]
-        except ValueError:
-            logger.error("Invalid years argument: %s", args.years)
-            sys.exit(1)
-
-    metadata = run_pipeline(stages=stages, years=years, workers=args.workers)
-
-    ensure_dir(Path("data"))
-    metadata_path = Path("data/pipeline_metadata.json")
-    metadata_path.write_text(json.dumps(metadata, indent=2, default=str))
-    logger.info("Pipeline metadata written to %s", metadata_path)
-
-    any_failed = any(
-        s.get("status") == "failed" for s in metadata.get("stages", {}).values()
-    )
-    sys.exit(1 if any_failed else 0)
+    logger.info("Pipeline complete.")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="KGS pipeline orchestrator")
+    parser.add_argument("--index", default=str(LEASE_INDEX_FILE))
+    parser.add_argument("--raw-dir", default=str(RAW_DIR))
+    parser.add_argument("--interim-dir", default=str(INTERIM_DIR))
+    parser.add_argument("--clean-dir", default=str(CLEAN_DIR))
+    parser.add_argument("--features-dir", default=str(FEATURES_DIR))
+    parser.add_argument("--acquire", action="store_true")
+    parser.add_argument("--ingest", action="store_true")
+    parser.add_argument("--transform", action="store_true")
+    parser.add_argument("--features", action="store_true")
+    parser.add_argument("--all", action="store_true", help="Run all stages")
+    parser.add_argument("--max-workers", type=int, default=MAX_WORKERS)
+    parser.add_argument("--iqr-multiplier", type=float, default=IQR_MULTIPLIER)
+    args = parser.parse_args()
+
+    run_all = args.all or not any([args.acquire, args.ingest, args.transform, args.features])
+
+    run_pipeline(
+        index_path=args.index,
+        raw_dir=args.raw_dir,
+        interim_dir=args.interim_dir,
+        clean_dir=args.clean_dir,
+        features_dir=args.features_dir,
+        run_acquire=args.acquire or run_all,
+        run_ingest=args.ingest or run_all,
+        run_transform=args.transform or run_all,
+        run_features_stage=args.features or run_all,
+        max_workers=args.max_workers,
+        iqr_multiplier=args.iqr_multiplier,
+    )

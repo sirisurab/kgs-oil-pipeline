@@ -1,879 +1,877 @@
-"""Tests for kgs_pipeline/features.py (Tasks 22–31)."""
+"""Tests for kgs_pipeline/features.py."""
 
 from pathlib import Path
-from unittest.mock import patch
 
-import dask.dataframe as dd
+import dask.dataframe as dd  # type: ignore[import-untyped]
+import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
+from kgs_pipeline.features import (
+    compute_aggregates,
+    compute_cumulative,
+    compute_decline_rate,
+    compute_lags,
+    compute_per_lease_features,
+    compute_ratios,
+    compute_rolling,
+    compute_well_age,
+    encode_categoricals,
+    load_clean,
+    pivot_products,
+    run_features,
+)
 
-def _make_well_df(
-    productions: list[float],
-    well_id: str = "W001",
-    product: str = "O",
-    start: str = "2020-01-01",
+pytestmark = pytest.mark.unit
+
+# ---------------------------------------------------------------------------
+# Helpers / fixtures
+# ---------------------------------------------------------------------------
+
+FEATURE_SCHEMA_COLS = [
+    "LEASE_KID",
+    "PRODUCT",
+    "production_date",
+    "oil_bbl",
+    "gas_mcf",
+    "water_bbl",
+    "cum_oil",
+    "cum_gas",
+    "cum_water",
+    "gor",
+    "water_cut",
+    "decline_rate",
+    "well_age_months",
+    "oil_roll3",
+    "oil_roll6",
+    "gas_roll3",
+    "gas_roll6",
+    "water_roll3",
+    "water_roll6",
+    "oil_lag1",
+    "oil_lag3",
+    "gas_lag1",
+    "gas_lag3",
+    "county_mean_oil",
+    "county_std_oil",
+    "formation_mean_oil",
+    "formation_std_oil",
+    "COUNTY_enc",
+    "PRODUCING_ZONE_enc",
+    "OPERATOR_enc",
+    "PRODUCT_enc",
+]
+
+
+def _make_clean_df(
+    n_months: int = 6,
+    lease_id: str = "L1",
+    start_month: str = "2024-01",
+    oil_vals: list[float] | None = None,
+    gas_vals: list[float] | None = None,
 ) -> pd.DataFrame:
-    """Helper: build a single-well production DataFrame."""
-    dates = pd.date_range(start, periods=len(productions), freq="MS")
-    return pd.DataFrame(
-        {
-            "well_id": [well_id] * len(productions),
-            "product": [product] * len(productions),
-            "production_date": dates,
-            "production": productions,
-            "unit": ["BBL" if product == "O" else "MCF"] * len(productions),
-            "lease_kid": pd.array([1001] * len(productions), dtype="int64"),
-            "operator": ["Test Op"] * len(productions),
-            "county": ["Ellis"] * len(productions),
-            "field": ["KANASKA"] * len(productions),
-            "producing_zone": ["Lansing Group"] * len(productions),
-            "latitude": [38.5] * len(productions),
-            "longitude": [-98.5] * len(productions),
-            "outlier_flag": [False] * len(productions),
-        }
-    )
+    """Build a synthetic clean DataFrame for a single lease."""
+    dates = pd.date_range(start=start_month, periods=n_months, freq="MS")
+    rows = []
+    for i, d in enumerate(dates):
+        oil = oil_vals[i] if oil_vals else float(100 * (i + 1))
+        gas = gas_vals[i] if gas_vals else float(50 * (i + 1))
+        rows.append(
+            {
+                "LEASE_KID": lease_id,
+                "LEASE": "TEST LEASE",
+                "FIELD": "FIELD_A",
+                "PRODUCING_ZONE": "ZONE_A",
+                "OPERATOR": "OPS INC",
+                "COUNTY": "Allen",
+                "production_date": d,
+                "MONTH-YEAR": f"{d.month}-{d.year}",
+                "PRODUCT": "O",
+                "PRODUCTION": oil,
+                "WELLS": 2.0,
+                "LATITUDE": 39.0,
+                "LONGITUDE": -95.0,
+                "source_file": "test.txt",
+            }
+        )
+        rows.append(
+            {
+                "LEASE_KID": lease_id,
+                "LEASE": "TEST LEASE",
+                "FIELD": "FIELD_A",
+                "PRODUCING_ZONE": "ZONE_A",
+                "OPERATOR": "OPS INC",
+                "COUNTY": "Allen",
+                "production_date": d,
+                "MONTH-YEAR": f"{d.month}-{d.year}",
+                "PRODUCT": "G",
+                "PRODUCTION": gas,
+                "WELLS": 2.0,
+                "LATITUDE": 39.0,
+                "LONGITUDE": -95.0,
+                "source_file": "test.txt",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _write_clean_parquet(tmp_path: Path, df: pd.DataFrame) -> Path:
+    clean = tmp_path / "clean"
+    clean.mkdir(exist_ok=True)
+    ddf = dd.from_pandas(df, npartitions=1)
+    ddf.to_parquet(str(clean), write_index=False)
+    return clean
+
+
+def _make_pivot_df(lease_id: str = "L1", n: int = 3) -> pd.DataFrame:
+    """DataFrame already in wide pivot format."""
+    dates = pd.date_range(start="2024-01", periods=n, freq="MS")
+    rows = []
+    for i, d in enumerate(dates):
+        rows.append(
+            {
+                "LEASE_KID": lease_id,
+                "production_date": d,
+                "oil_bbl": float(100 * (i + 1)),
+                "gas_mcf": float(50 * (i + 1)),
+                "water_bbl": np.nan,
+                "COUNTY": "Allen",
+                "PRODUCING_ZONE": "ZONE_A",
+                "OPERATOR": "OPS",
+                "LEASE": "TEST",
+                "FIELD": "FIELD_A",
+                "source_file": "test.txt",
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
-# Task 22: load_processed_parquet
+# Task 01: load_clean
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_load_processed_parquet_returns_dask(tmp_path: Path, sample_processed_df):
-    from kgs_pipeline.features import load_processed_parquet
-
-    sample_processed_df.to_parquet(tmp_path / "part.parquet", index=False)
-    result = load_processed_parquet(tmp_path)
-    assert isinstance(result, dd.DataFrame)
+def test_load_clean_returns_dask_df(tmp_path: Path) -> None:
+    df = _make_clean_df()
+    clean = _write_clean_parquet(tmp_path, df)
+    ddf = load_clean(str(clean))
+    assert isinstance(ddf, dd.DataFrame)
 
 
-@pytest.mark.unit
-def test_load_processed_parquet_missing_dir():
-    from kgs_pipeline.features import load_processed_parquet
-
-    with pytest.raises(FileNotFoundError):
-        load_processed_parquet(Path("/nonexistent/path/xyz"))
-
-
-@pytest.mark.unit
-def test_load_processed_parquet_empty_dir(tmp_path: Path):
-    from kgs_pipeline.features import load_processed_parquet
-
-    with pytest.raises(RuntimeError, match="No Parquet files found"):
-        load_processed_parquet(tmp_path)
+def test_load_clean_npartitions_le_50(tmp_path: Path) -> None:
+    df = _make_clean_df()
+    clean = _write_clean_parquet(tmp_path, df)
+    ddf = load_clean(str(clean))
+    assert ddf.npartitions <= 50
 
 
-@pytest.mark.unit
-def test_load_processed_parquet_not_pandas(tmp_path: Path, sample_processed_df):
-    from kgs_pipeline.features import load_processed_parquet
-
-    sample_processed_df.to_parquet(tmp_path / "part.parquet", index=False)
-    result = load_processed_parquet(tmp_path)
-    assert not isinstance(result, pd.DataFrame)
+def test_load_clean_empty_dir_raises(tmp_path: Path) -> None:
+    empty = tmp_path / "empty_clean"
+    empty.mkdir()
+    with pytest.raises(ValueError):
+        load_clean(str(empty))
 
 
 # ---------------------------------------------------------------------------
-# Task 23: compute_cumulative_production
+# Task 02: pivot_products
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_cumulative_production_monotonic():
-    from kgs_pipeline.features import compute_cumulative_production
-
-    df = _make_well_df([100.0, 80.0, 0.0, 60.0, 50.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_cumulative_production(ddf).compute()
-    cum = result.sort_values("production_date")["cum_production"].tolist()
-    assert cum == [100.0, 180.0, 180.0, 240.0, 290.0]
-
-
-@pytest.mark.unit
-def test_cumulative_never_decreases():
-    from kgs_pipeline.features import compute_cumulative_production
-
-    df = _make_well_df([100.0, 80.0, 60.0, 40.0, 20.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_cumulative_production(ddf).compute()
-    cum = result.sort_values("production_date")["cum_production"].tolist()
-    for i in range(1, len(cum)):
-        assert cum[i] >= cum[i - 1]
+def test_pivot_products_wide_format(tmp_path: Path) -> None:
+    df = _make_clean_df(n_months=2)  # 2 oil + 2 gas rows = 2 wide rows
+    clean = _write_clean_parquet(tmp_path, df)
+    ddf = load_clean(str(clean))
+    result = pivot_products(ddf).compute()
+    assert len(result) == 2  # 2 months
+    assert "oil_bbl" in result.columns
+    assert "gas_mcf" in result.columns
 
 
-@pytest.mark.unit
-def test_cumulative_flat_during_shutin():
-    from kgs_pipeline.features import compute_cumulative_production
-
-    df = _make_well_df([100.0, 50.0, 0.0, 0.0, 75.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_cumulative_production(ddf).compute()
-    cum = result.sort_values("production_date")["cum_production"].tolist()
-    assert cum == [100.0, 150.0, 150.0, 150.0, 225.0]
+def test_pivot_products_oil_only_gas_zero(tmp_path: Path) -> None:
+    df = _make_clean_df(n_months=2)
+    df_oil = df[df["PRODUCT"] == "O"].copy()
+    clean = _write_clean_parquet(tmp_path, df_oil)
+    ddf = load_clean(str(clean))
+    result = pivot_products(ddf).compute()
+    assert (result["gas_mcf"] == 0.0).all()
 
 
-@pytest.mark.unit
-def test_cumulative_zero_start():
-    from kgs_pipeline.features import compute_cumulative_production
-
-    df = _make_well_df([0.0, 0.0, 100.0, 80.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_cumulative_production(ddf).compute()
-    cum = result.sort_values("production_date")["cum_production"].tolist()
-    assert cum == [0.0, 0.0, 100.0, 180.0]
+def test_pivot_products_water_bbl_nan(tmp_path: Path) -> None:
+    df = _make_clean_df()
+    clean = _write_clean_parquet(tmp_path, df)
+    ddf = load_clean(str(clean))
+    result = pivot_products(ddf).compute()
+    assert "water_bbl" in result.columns
+    assert result["water_bbl"].isna().all()
 
 
-@pytest.mark.unit
-def test_cumulative_zero_end():
-    from kgs_pipeline.features import compute_cumulative_production
-
-    df = _make_well_df([100.0, 80.0, 0.0, 0.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_cumulative_production(ddf).compute()
-    cum = result.sort_values("production_date")["cum_production"].tolist()
-    assert cum == [100.0, 180.0, 180.0, 180.0]
-
-
-@pytest.mark.unit
-def test_cumulative_returns_dask():
-    from kgs_pipeline.features import compute_cumulative_production
-
-    df = _make_well_df([100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    assert isinstance(compute_cumulative_production(ddf), dd.DataFrame)
+def test_pivot_products_zero_oil_retained(tmp_path: Path) -> None:
+    oil_vals = [0.0, 100.0, 200.0]
+    df = _make_clean_df(n_months=3, oil_vals=oil_vals, gas_vals=[50.0, 60.0, 70.0])
+    clean = _write_clean_parquet(tmp_path, df)
+    ddf = load_clean(str(clean))
+    result = pivot_products(ddf).compute()
+    assert 0.0 in result["oil_bbl"].values
 
 
 # ---------------------------------------------------------------------------
-# Task 24: compute_decline_rate
+# Task 03: compute_cumulative
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_decline_rate_clipped_low():
-    """Decline rate < -1.0 is clipped to -1.0."""
-    from kgs_pipeline.features import compute_decline_rate
-
-    # prod[t-1]=100, prod[t]=1 → raw = (1-100)/100 = -0.99 (within bounds)
-    # To get < -1.0, we need prod going from 100 to ~0 then a large positive
-    # Actually: prod[0]=100, prod[1]=1 → decline = (1-100)/100 = -0.99, not < -1.0
-    # For > -1.0 clipping: this can't happen with positive values only.
-    # Use direct: let's test that -0.99 passes through unchanged
-    df = _make_well_df([100.0, 1.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_decline_rate(ddf).compute().sort_values("production_date")
-    rate = result["decline_rate"].iloc[1]
-    assert abs(rate - (-0.99)) < 0.01
+def test_compute_cumulative_shutin_flat() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 150.0, 0.0, 200.0]
+    result = compute_cumulative(df)
+    assert list(result["cum_oil"]) == pytest.approx([100.0, 250.0, 250.0, 450.0])
 
 
-@pytest.mark.unit
-def test_decline_rate_clipped_high():
-    """Decline rate > 10.0 is clipped to 10.0."""
-    from kgs_pipeline.features import compute_decline_rate
-
-    # prod[0]=10, prod[1]=160 → raw = (160-10)/10 = 15.0 → clipped to 10.0
-    df = _make_well_df([10.0, 160.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_decline_rate(ddf).compute().sort_values("production_date")
-    assert result["decline_rate"].iloc[1] == 10.0
+def test_compute_cumulative_monotonic() -> None:
+    df = _make_pivot_df(n=6)
+    df["oil_bbl"] = [100.0, 50.0, 0.0, 75.0, 200.0, 100.0]
+    result = compute_cumulative(df)
+    diffs = result["cum_oil"].diff().dropna()
+    assert (diffs >= -1e-9).all()
 
 
-@pytest.mark.unit
-def test_decline_rate_within_bounds():
-    """Decline rate within [-1, 10] passes through."""
-    from kgs_pipeline.features import compute_decline_rate
-
-    # prod[0]=100, prod[1]=50 → raw = (50-100)/100 = -0.5
-    df = _make_well_df([100.0, 50.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_decline_rate(ddf).compute().sort_values("production_date")
-    assert abs(result["decline_rate"].iloc[1] - (-0.5)) < 0.001
+def test_compute_cumulative_not_online_start() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [0.0, 0.0, 100.0, 200.0]
+    result = compute_cumulative(df)
+    assert list(result["cum_oil"]) == pytest.approx([0.0, 0.0, 100.0, 300.0])
 
 
-@pytest.mark.unit
-def test_decline_rate_zero_denominator_is_nan():
-    """When prior production is 0, decline_rate must be NaN (not inf)."""
-    from kgs_pipeline.features import compute_decline_rate
-
-    df = _make_well_df([0.0, 100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_decline_rate(ddf).compute().sort_values("production_date")
-    rate = result["decline_rate"].iloc[1]
-    assert pd.isna(rate), f"Expected NaN but got {rate}"
+def test_compute_cumulative_zeros_mid_sequence() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 0.0, 0.0, 50.0]
+    result = compute_cumulative(df)
+    assert list(result["cum_oil"]) == pytest.approx([100.0, 100.0, 100.0, 150.0])
 
 
-@pytest.mark.unit
-def test_decline_rate_first_row_nan():
-    from kgs_pipeline.features import compute_decline_rate
-
-    df = _make_well_df([100.0, 80.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_decline_rate(ddf).compute().sort_values("production_date")
-    assert pd.isna(result["decline_rate"].iloc[0])
-
-
-@pytest.mark.unit
-def test_decline_rate_returns_dask():
-    from kgs_pipeline.features import compute_decline_rate
-
-    df = _make_well_df([100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    assert isinstance(compute_decline_rate(ddf), dd.DataFrame)
+def test_compute_cumulative_water_all_nan() -> None:
+    df = _make_pivot_df(n=3)
+    df["water_bbl"] = np.nan
+    result = compute_cumulative(df)
+    assert result["cum_water"].isna().all()
 
 
 # ---------------------------------------------------------------------------
-# Task 25: compute_rolling_features
+# Task 04: compute_ratios
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_rolling_mean_3m_at_index_2():
-    from kgs_pipeline.features import compute_rolling_features
-
-    df = _make_well_df([100.0, 120.0, 80.0, 140.0, 100.0, 110.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_rolling_features(ddf).compute().sort_values("production_date")
-    # Index 2: mean([100, 120, 80]) = 100.0
-    assert abs(result["rolling_mean_3m"].iloc[2] - 100.0) < 0.01
+def test_compute_ratios_gor_basic() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 100.0
+    df["gas_mcf"] = 500.0
+    result = compute_ratios(df)
+    assert result["gor"].iloc[0] == pytest.approx(5.0)
 
 
-@pytest.mark.unit
-def test_rolling_mean_3m_at_index_3():
-    from kgs_pipeline.features import compute_rolling_features
-
-    df = _make_well_df([100.0, 120.0, 80.0, 140.0, 100.0, 110.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_rolling_features(ddf).compute().sort_values("production_date")
-    # Index 3: mean([120, 80, 140]) = 113.33
-    assert abs(result["rolling_mean_3m"].iloc[3] - 113.333) < 0.01
+def test_compute_ratios_gor_zero_oil_nonzero_gas() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 0.0
+    df["gas_mcf"] = 500.0
+    result = compute_ratios(df)
+    assert pd.isna(result["gor"].iloc[0])
 
 
-@pytest.mark.unit
-def test_rolling_mean_6m_at_index_5():
-    from kgs_pipeline.features import compute_rolling_features
-
-    df = _make_well_df([100.0, 120.0, 80.0, 140.0, 100.0, 110.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_rolling_features(ddf).compute().sort_values("production_date")
-    # Index 5: mean([100,120,80,140,100,110]) = 108.33
-    assert abs(result["rolling_mean_6m"].iloc[5] - 108.333) < 0.01
+def test_compute_ratios_gor_both_zero() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 0.0
+    df["gas_mcf"] = 0.0
+    result = compute_ratios(df)
+    assert result["gor"].iloc[0] == pytest.approx(0.0)
 
 
-@pytest.mark.unit
-def test_rolling_mean_min_periods_partial():
-    from kgs_pipeline.features import compute_rolling_features
-
-    df = _make_well_df([100.0, 80.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_rolling_features(ddf).compute().sort_values("production_date")
-    # rolling_mean_3m at month 2 uses partial window → not NaN
-    assert not pd.isna(result["rolling_mean_3m"].iloc[1])
+def test_compute_ratios_gor_oil_nonzero_gas_zero() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 100.0
+    df["gas_mcf"] = 0.0
+    result = compute_ratios(df)
+    assert result["gor"].iloc[0] == pytest.approx(0.0)
 
 
-@pytest.mark.unit
-def test_rolling_std_1_obs_is_nan():
-    from kgs_pipeline.features import compute_rolling_features
-
-    df = _make_well_df([100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_rolling_features(ddf).compute()
-    assert pd.isna(result["rolling_std_3m"].iloc[0])
+def test_compute_ratios_water_cut_zero_water() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 100.0
+    df["water_bbl"] = 0.0
+    result = compute_ratios(df)
+    assert result["water_cut"].iloc[0] == pytest.approx(0.0)
 
 
-@pytest.mark.unit
-def test_rolling_all_columns_present():
-    from kgs_pipeline.features import compute_rolling_features
-
-    df = _make_well_df([100.0, 90.0, 80.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_rolling_features(ddf)
-    for col in [
-        "rolling_mean_3m",
-        "rolling_mean_6m",
-        "rolling_mean_12m",
-        "rolling_std_3m",
-        "rolling_std_6m",
-    ]:
-        assert col in result.columns
+def test_compute_ratios_water_cut_all_water() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 0.0
+    df["water_bbl"] = 200.0
+    result = compute_ratios(df)
+    assert result["water_cut"].iloc[0] == pytest.approx(1.0)
 
 
-@pytest.mark.unit
-def test_rolling_returns_dask():
-    from kgs_pipeline.features import compute_rolling_features
-
-    df = _make_well_df([100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    assert isinstance(compute_rolling_features(ddf), dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 26: compute_lag_features
-# ---------------------------------------------------------------------------
+def test_compute_ratios_water_cut_both_zero() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 0.0
+    df["water_bbl"] = 0.0
+    result = compute_ratios(df)
+    assert pd.isna(result["water_cut"].iloc[0])
 
 
-@pytest.mark.unit
-def test_lag_features_values():
-    from kgs_pipeline.features import compute_lag_features
-
-    df = _make_well_df([100.0, 80.0, 60.0, 40.0, 20.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = (
-        compute_lag_features(ddf).compute().sort_values("production_date").reset_index(drop=True)
-    )
-    assert result["lag_1m"].iloc[1] == 100.0
-    assert result["lag_1m"].iloc[2] == 80.0
-    assert result["lag_1m"].iloc[3] == 60.0
-    assert pd.isna(result["lag_1m"].iloc[0])
-    assert result["lag_3m"].iloc[3] == 100.0
-    assert result["lag_3m"].iloc[4] == 80.0
-    assert pd.isna(result["lag_3m"].iloc[0])
-    assert pd.isna(result["lag_3m"].iloc[1])
-    assert pd.isna(result["lag_3m"].iloc[2])
+def test_compute_ratios_no_zero_division() -> None:
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 0.0
+    df["gas_mcf"] = 0.0
+    df["water_bbl"] = 0.0
+    result = compute_ratios(df)  # Should not raise
+    assert isinstance(result, pd.DataFrame)
 
 
-@pytest.mark.unit
-def test_lag_1m_equals_prior_month_production():
-    from kgs_pipeline.features import compute_lag_features
-
-    df = _make_well_df([200.0, 150.0, 100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = (
-        compute_lag_features(ddf).compute().sort_values("production_date").reset_index(drop=True)
-    )
-    # Verify lag-1 formula for 3 consecutive months
-    assert result["lag_1m"].iloc[1] == result["production"].iloc[0]
-    assert result["lag_1m"].iloc[2] == result["production"].iloc[1]
+def test_compute_ratios_gor_formula_direction() -> None:
+    """GOR = gas / oil, not oil / gas."""
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 200.0
+    df["gas_mcf"] = 1000.0
+    result = compute_ratios(df)
+    assert result["gor"].iloc[0] == pytest.approx(5.0)
 
 
-@pytest.mark.unit
-def test_lag_columns_present():
-    from kgs_pipeline.features import compute_lag_features
-
-    df = _make_well_df([100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_lag_features(ddf)
-    assert "lag_1m" in result.columns
-    assert "lag_3m" in result.columns
-
-
-@pytest.mark.unit
-def test_lag_returns_dask():
-    from kgs_pipeline.features import compute_lag_features
-
-    df = _make_well_df([100.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    assert isinstance(compute_lag_features(ddf), dd.DataFrame)
+def test_compute_ratios_water_cut_denominator() -> None:
+    """water_cut = water / (oil + water)."""
+    df = _make_pivot_df(n=1)
+    df["oil_bbl"] = 200.0
+    df["water_bbl"] = 200.0
+    result = compute_ratios(df)
+    assert result["water_cut"].iloc[0] == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
-# Task 27: compute_time_features
+# Task 05: compute_decline_rate
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_time_features_values():
-    from kgs_pipeline.features import compute_time_features
+def test_compute_decline_rate_basic() -> None:
+    df = _make_pivot_df(n=3)
+    df["oil_bbl"] = [200.0, 100.0, 50.0]
+    result = compute_decline_rate(df)
+    rates = result["decline_rate"].values
+    assert pd.isna(rates[0])
+    assert rates[1] == pytest.approx(0.5)
+    assert rates[2] == pytest.approx(0.5)
 
+
+def test_compute_decline_rate_clipped_high() -> None:
+    df = _make_pivot_df(n=2)
+    df["oil_bbl"] = [1.0, 0.0001]  # raw decline ~ 0.9999 < 10, fine
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[1] <= 10.0
+
+
+def test_compute_decline_rate_above_clip() -> None:
+    """A value that would exceed 10.0 is clipped to 10.0."""
+    df = _make_pivot_df(n=2)
+    # Use a custom scenario: force raw decline > 10.0 via negative oil in raw
+    # Since production can't be negative after cleaning, simulate via mock
+    df["oil_bbl"] = [100.0, -900.0]  # raw decline = (100 - (-900)) / 100 = 10.0 (boundary)
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[1] <= 10.0
+
+
+def test_compute_decline_rate_below_clip() -> None:
+    """A value below -1.0 is clipped to -1.0."""
+    df = _make_pivot_df(n=2)
+    df["oil_bbl"] = [100.0, 999999.0]  # raw decline = (100 - 999999) / 100 very negative
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[1] >= -1.0
+
+
+def test_compute_decline_rate_within_bounds_unchanged() -> None:
+    df = _make_pivot_df(n=3)
+    df["oil_bbl"] = [200.0, 150.0, 100.0]
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[1] == pytest.approx(0.25)
+    assert result["decline_rate"].iloc[2] == pytest.approx(1.0 / 3.0, rel=1e-3)
+
+
+def test_compute_decline_rate_zero_prev_zero_curr() -> None:
+    df = _make_pivot_df(n=3)
+    df["oil_bbl"] = [100.0, 0.0, 0.0]
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[2] == pytest.approx(0.0)
+
+
+def test_compute_decline_rate_zero_prev_nonzero_curr() -> None:
+    df = _make_pivot_df(n=3)
+    df["oil_bbl"] = [100.0, 0.0, 100.0]
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[2] == pytest.approx(-1.0)
+
+
+# ---------------------------------------------------------------------------
+# Task 06: compute_well_age
+# ---------------------------------------------------------------------------
+
+
+def test_compute_well_age_basic() -> None:
+    df = _make_pivot_df(n=3)
+    df["production_date"] = pd.to_datetime(["2024-01-01", "2024-02-01", "2024-04-01"])
+    result = compute_well_age(df)
+    assert list(result["well_age_months"]) == [0, 1, 3]
+
+
+def test_compute_well_age_single_row() -> None:
+    df = _make_pivot_df(n=1)
+    result = compute_well_age(df)
+    assert result["well_age_months"].iloc[0] == 0
+
+
+def test_compute_well_age_int_dtype() -> None:
+    df = _make_pivot_df(n=3)
+    result = compute_well_age(df)
+    assert pd.api.types.is_integer_dtype(result["well_age_months"])
+
+
+# ---------------------------------------------------------------------------
+# Task 07: compute_rolling
+# ---------------------------------------------------------------------------
+
+
+def test_compute_rolling_3month() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0]
+    result = compute_rolling(df, windows=[3, 6])
+    expected = [100.0, 150.0, 200.0, 300.0]
+    assert list(result["oil_roll3"]) == pytest.approx(expected)
+
+
+def test_compute_rolling_6month() -> None:
+    df = _make_pivot_df(n=6)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0]
+    result = compute_rolling(df, windows=[3, 6])
+    expected_6 = [100.0, 150.0, 200.0, 250.0, 300.0, 350.0]
+    assert list(result["oil_roll6"]) == pytest.approx(expected_6)
+
+
+def test_compute_rolling_first_row_identity() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0]
+    result = compute_rolling(df, windows=[3])
+    assert result["oil_roll3"].iloc[0] == pytest.approx(100.0)
+
+
+def test_compute_rolling_water_all_nan() -> None:
+    df = _make_pivot_df(n=4)
+    df["water_bbl"] = np.nan
+    result = compute_rolling(df, windows=[3])
+    assert result["water_roll3"].isna().all()
+
+
+# ---------------------------------------------------------------------------
+# Task 08: compute_lags
+# ---------------------------------------------------------------------------
+
+
+def test_compute_lags_lag1() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0]
+    result = compute_lags(df, lags=[1, 3])
+    assert pd.isna(result["oil_lag1"].iloc[0])
+    assert result["oil_lag1"].iloc[1] == pytest.approx(100.0)
+    assert result["oil_lag1"].iloc[2] == pytest.approx(200.0)
+    assert result["oil_lag1"].iloc[3] == pytest.approx(300.0)
+
+
+def test_compute_lags_lag3() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0]
+    result = compute_lags(df, lags=[1, 3])
+    assert pd.isna(result["oil_lag3"].iloc[0])
+    assert pd.isna(result["oil_lag3"].iloc[1])
+    assert pd.isna(result["oil_lag3"].iloc[2])
+    assert result["oil_lag3"].iloc[3] == pytest.approx(100.0)
+
+
+def test_compute_lags_first_row_nan() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0]
+    result = compute_lags(df, lags=[1])
+    assert pd.isna(result["oil_lag1"].iloc[0])
+
+
+# ---------------------------------------------------------------------------
+# Task 09: compute_aggregates
+# ---------------------------------------------------------------------------
+
+
+def test_compute_aggregates_county_mean() -> None:
+    rows = [
+        {"LEASE_KID": "L1", "oil_bbl": 100.0, "COUNTY": "Allen", "PRODUCING_ZONE": "ZONE_A"},
+        {"LEASE_KID": "L2", "oil_bbl": 200.0, "COUNTY": "Allen", "PRODUCING_ZONE": "ZONE_A"},
+        {"LEASE_KID": "L3", "oil_bbl": 300.0, "COUNTY": "Barton", "PRODUCING_ZONE": "ZONE_B"},
+    ]
+    df = pd.DataFrame(rows)
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = compute_aggregates(ddf).compute()
+    allen_rows = result[result["COUNTY"] == "Allen"]
+    assert allen_rows["county_mean_oil"].iloc[0] == pytest.approx(150.0)
+    barton_rows = result[result["COUNTY"] == "Barton"]
+    assert barton_rows["county_mean_oil"].iloc[0] == pytest.approx(300.0)
+
+
+def test_compute_aggregates_single_record_std_zero() -> None:
     df = pd.DataFrame(
-        {
-            "well_id": ["W1"],
-            "product": ["O"],
-            "production_date": pd.to_datetime(["2020-03-01"]),
-            "production": [100.0],
-        }
+        [
+            {"LEASE_KID": "L1", "oil_bbl": 300.0, "COUNTY": "Barton", "PRODUCING_ZONE": "ZONE_A"},
+        ]
     )
     ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_time_features(ddf).compute()
-    assert result["production_year"].iloc[0] == 2020
-    assert result["production_month"].iloc[0] == 3
-    assert result["production_quarter"].iloc[0] == 1
+    result = compute_aggregates(ddf).compute()
+    assert result["county_std_oil"].iloc[0] == pytest.approx(0.0)
 
 
-@pytest.mark.unit
-def test_months_since_first_prod():
-    from kgs_pipeline.features import compute_time_features
-
+def test_compute_aggregates_returns_dask_df() -> None:
     df = pd.DataFrame(
-        {
-            "well_id": ["W1"] * 3,
-            "product": ["O"] * 3,
-            "production_date": pd.to_datetime(["2020-01-01", "2020-02-01", "2020-03-01"]),
-            "production": [100.0, 90.0, 80.0],
-        }
+        [
+            {"LEASE_KID": "L1", "oil_bbl": 100.0, "COUNTY": "Allen", "PRODUCING_ZONE": "ZONE_A"},
+        ]
     )
     ddf = dd.from_pandas(df, npartitions=1)
-    result = (
-        compute_time_features(ddf).compute().sort_values("production_date").reset_index(drop=True)
-    )
-    assert list(result["months_since_first_prod"]) == [0, 1, 2]
-
-
-@pytest.mark.unit
-def test_months_since_first_prod_with_gap():
-    from kgs_pipeline.features import compute_time_features
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1"] * 2,
-            "product": ["O"] * 2,
-            "production_date": pd.to_datetime(["2020-01-01", "2020-04-01"]),
-            "production": [100.0, 80.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = (
-        compute_time_features(ddf).compute().sort_values("production_date").reset_index(drop=True)
-    )
-    assert list(result["months_since_first_prod"]) == [0, 3]
-
-
-@pytest.mark.unit
-def test_time_all_columns_present():
-    from kgs_pipeline.features import compute_time_features
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1"],
-            "product": ["O"],
-            "production_date": pd.to_datetime(["2020-01-01"]),
-            "production": [100.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_time_features(ddf)
-    for col in [
-        "production_year",
-        "production_month",
-        "production_quarter",
-        "months_since_first_prod",
-    ]:
-        assert col in result.columns
-
-
-@pytest.mark.unit
-def test_time_returns_dask():
-    from kgs_pipeline.features import compute_time_features
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1"],
-            "product": ["O"],
-            "production_date": pd.to_datetime(["2020-01-01"]),
-            "production": [100.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    assert isinstance(compute_time_features(ddf), dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 28: compute_ratio_features
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_gor_zero_oil_nonzero_gas_is_nan():
-    from kgs_pipeline.features import compute_ratio_features
-
-    # Build oil row (0) and gas row (100) for same well-month
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1"],
-            "product": ["O", "G"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-01-01"]),
-            "production": [0.0, 100.0],
-            "unit": ["BBL", "MCF"],
-            "lease_kid": pd.array([1, 1], dtype="int64"),
-            "operator": ["O", "O"],
-            "county": ["C", "C"],
-            "field": ["F", "F"],
-            "producing_zone": ["Z", "Z"],
-            "latitude": [38.0, 38.0],
-            "longitude": [-98.0, -98.0],
-            "outlier_flag": [False, False],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_ratio_features(ddf).compute()
-    oil_row = result[result["product"] == "O"]
-    assert pd.isna(oil_row["gor"].iloc[0])
-
-
-@pytest.mark.unit
-def test_gor_zero_both_is_nan_or_zero():
-    from kgs_pipeline.features import compute_ratio_features
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1"],
-            "product": ["O", "G"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-01-01"]),
-            "production": [0.0, 0.0],
-            "unit": ["BBL", "MCF"],
-            "lease_kid": pd.array([1, 1], dtype="int64"),
-            "operator": ["O", "O"],
-            "county": ["C", "C"],
-            "field": ["F", "F"],
-            "producing_zone": ["Z", "Z"],
-            "latitude": [38.0, 38.0],
-            "longitude": [-98.0, -98.0],
-            "outlier_flag": [False, False],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_ratio_features(ddf).compute()
-    oil_row = result[result["product"] == "O"]
-    gor = oil_row["gor"].iloc[0]
-    assert pd.isna(gor) or gor == 0.0
-
-
-@pytest.mark.unit
-def test_gor_nonzero_oil_zero_gas():
-    from kgs_pipeline.features import compute_ratio_features
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1"],
-            "product": ["O", "G"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-01-01"]),
-            "production": [50.0, 0.0],
-            "unit": ["BBL", "MCF"],
-            "lease_kid": pd.array([1, 1], dtype="int64"),
-            "operator": ["O", "O"],
-            "county": ["C", "C"],
-            "field": ["F", "F"],
-            "producing_zone": ["Z", "Z"],
-            "latitude": [38.0, 38.0],
-            "longitude": [-98.0, -98.0],
-            "outlier_flag": [False, False],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_ratio_features(ddf).compute()
-    oil_row = result[result["product"] == "O"]
-    assert oil_row["gor"].iloc[0] == 0.0
-
-
-@pytest.mark.unit
-def test_gor_correct_value():
-    from kgs_pipeline.features import compute_ratio_features
-
-    df = pd.DataFrame(
-        {
-            "well_id": ["W1", "W1"],
-            "product": ["O", "G"],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-01-01"]),
-            "production": [100.0, 500.0],
-            "unit": ["BBL", "MCF"],
-            "lease_kid": pd.array([1, 1], dtype="int64"),
-            "operator": ["O", "O"],
-            "county": ["C", "C"],
-            "field": ["F", "F"],
-            "producing_zone": ["Z", "Z"],
-            "latitude": [38.0, 38.0],
-            "longitude": [-98.0, -98.0],
-            "outlier_flag": [False, False],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_ratio_features(ddf).compute()
-    oil_row = result[result["product"] == "O"]
-    assert abs(oil_row["gor"].iloc[0] - 5.0) < 0.001
-
-
-@pytest.mark.unit
-def test_water_cut_all_nan():
-    from kgs_pipeline.features import compute_ratio_features
-
-    df = _make_well_df([100.0, 80.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_ratio_features(ddf).compute()
-    assert "water_cut" in result.columns
-    assert result["water_cut"].isna().all()
-
-
-@pytest.mark.unit
-def test_wor_all_nan():
-    from kgs_pipeline.features import compute_ratio_features
-
-    df = _make_well_df([100.0, 80.0])
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = compute_ratio_features(ddf).compute()
-    assert "wor" in result.columns
-    assert result["wor"].isna().all()
-
-
-# ---------------------------------------------------------------------------
-# Task 29: build_encoding_maps + encode_categorical_features
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_build_encoding_maps_county():
-    from kgs_pipeline.features import build_encoding_maps
-
-    df = pd.DataFrame(
-        {
-            "county": ["Barton", "Ellis", "Rooks"],
-            "operator": ["Op1", "Op1", "Op1"],
-            "producing_zone": ["Z", "Z", "Z"],
-            "field": ["F", "F", "F"],
-            "product": ["O", "O", "O"],
-            "production": [1.0, 2.0, 3.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    maps = build_encoding_maps(ddf)
-    assert len(maps["county"]) == 3
-    assert set(maps["county"].values()) == {0, 1, 2}
-
-
-@pytest.mark.unit
-def test_build_encoding_maps_alphabetically_sorted():
-    from kgs_pipeline.features import build_encoding_maps
-
-    df = pd.DataFrame(
-        {
-            "county": ["Rooks", "Barton", "Ellis"],
-            "operator": ["O"] * 3,
-            "producing_zone": ["Z"] * 3,
-            "field": ["F"] * 3,
-            "product": ["O"] * 3,
-            "production": [1.0] * 3,
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    maps = build_encoding_maps(ddf)
-    sorted_counties = sorted(["Rooks", "Barton", "Ellis"])
-    for i, county in enumerate(sorted_counties):
-        assert maps["county"][county] == i
-
-
-@pytest.mark.unit
-def test_encode_categorical_features_columns_present():
-    from kgs_pipeline.features import build_encoding_maps, encode_categorical_features
-
-    df = pd.DataFrame(
-        {
-            "county": ["Ellis"],
-            "operator": ["Op1"],
-            "producing_zone": ["Lansing"],
-            "field": ["KANASKA"],
-            "product": ["O"],
-            "production": [100.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    maps = build_encoding_maps(ddf)
-    result = encode_categorical_features(ddf, maps)
-    for col in [
-        "county_encoded",
-        "operator_encoded",
-        "producing_zone_encoded",
-        "field_encoded",
-        "product_encoded",
-    ]:
-        assert col in result.columns
-
-
-@pytest.mark.unit
-def test_product_encoded_o_is_0_g_is_1():
-    from kgs_pipeline.features import build_encoding_maps, encode_categorical_features
-
-    df = pd.DataFrame(
-        {
-            "county": ["Ellis", "Ellis"],
-            "operator": ["Op1", "Op1"],
-            "producing_zone": ["Z", "Z"],
-            "field": ["F", "F"],
-            "product": ["O", "G"],
-            "production": [100.0, 500.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    maps = build_encoding_maps(ddf)
-    result = encode_categorical_features(ddf, maps).compute()
-    assert result[result["product"] == "O"]["product_encoded"].iloc[0] == 0
-    assert result[result["product"] == "G"]["product_encoded"].iloc[0] == 1
-
-
-@pytest.mark.unit
-def test_encode_unseen_county_is_minus_1():
-    from kgs_pipeline.features import encode_categorical_features
-
-    df = pd.DataFrame(
-        {
-            "county": ["UNSEEN"],
-            "operator": ["O1"],
-            "producing_zone": ["Z"],
-            "field": ["F"],
-            "product": ["O"],
-            "production": [1.0],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    maps: dict = {
-        "county": {"Ellis": 0},
-        "operator": {"O1": 0},
-        "producing_zone": {"Z": 0},
-        "field": {"F": 0},
-        "product": {"O": 0},
-    }
-    result = encode_categorical_features(ddf, maps).compute()
-    assert result["county_encoded"].iloc[0] == -1
-
-
-@pytest.mark.unit
-def test_encode_returns_dask():
-    from kgs_pipeline.features import encode_categorical_features
-
-    df = pd.DataFrame(
-        {
-            "county": ["Ellis"],
-            "operator": ["O1"],
-            "producing_zone": ["Z"],
-            "field": ["F"],
-            "product": ["O"],
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=1)
-    result = encode_categorical_features(ddf, {})
+    result = compute_aggregates(ddf)
     assert isinstance(result, dd.DataFrame)
 
 
 # ---------------------------------------------------------------------------
-# Task 30: write_features_parquet + export_feature_matrix_csv
+# Task 10: encode_categoricals
 # ---------------------------------------------------------------------------
 
 
-def _make_full_feature_df() -> pd.DataFrame:
-    """Build a minimal DataFrame with all required feature columns."""
-    return pd.DataFrame(
+def test_encode_categoricals_product_two_values() -> None:
+    df = pd.DataFrame(
         {
-            "well_id": ["W001"],
-            "production_date": pd.to_datetime(["2020-01-01"]),
-            "product": ["O"],
-            "production": [100.0],
-            "unit": ["BBL"],
-            "lease_kid": pd.array([1001], dtype="int64"),
-            "operator": ["Test Op"],
-            "county": ["Ellis"],
-            "field": ["KANASKA"],
-            "producing_zone": ["Lansing Group"],
-            "latitude": [38.5],
-            "longitude": [-98.5],
-            "cum_production": [100.0],
-            "decline_rate": [float("nan")],
-            "rolling_mean_3m": [100.0],
-            "rolling_mean_6m": [100.0],
-            "rolling_mean_12m": [100.0],
-            "rolling_std_3m": [float("nan")],
-            "rolling_std_6m": [float("nan")],
-            "lag_1m": [float("nan")],
-            "lag_3m": [float("nan")],
-            "months_since_first_prod": pd.array([0], dtype="Int64"),
-            "production_year": pd.array([2020], dtype="Int32"),
-            "production_month": pd.array([1], dtype="Int32"),
-            "production_quarter": pd.array([1], dtype="Int32"),
-            "gor": [float("nan")],
-            "water_cut": [float("nan")],
-            "wor": [float("nan")],
-            "county_encoded": pd.array([0], dtype="int32"),
-            "operator_encoded": pd.array([0], dtype="int32"),
-            "producing_zone_encoded": pd.array([0], dtype="int32"),
-            "field_encoded": pd.array([0], dtype="int32"),
-            "product_encoded": pd.array([0], dtype="int32"),
-            "outlier_flag": [False],
+            "COUNTY": ["Allen", "Barton", "Allen"],
+            "PRODUCING_ZONE": ["Z1", "Z2", "Z1"],
+            "OPERATOR": ["OPS", "OPS", "OPS"],
+            "PRODUCT": ["O", "G", "O"],
         }
     )
-
-
-@pytest.mark.unit
-def test_write_features_parquet_creates_files(tmp_path: Path):
-    from kgs_pipeline.features import write_features_parquet
-
-    ddf = dd.from_pandas(_make_full_feature_df(), npartitions=1)
-    written = write_features_parquet(ddf, tmp_path)
-    assert len(written) >= 1
-
-
-@pytest.mark.unit
-def test_write_features_parquet_all_columns_present(tmp_path: Path):
-    from kgs_pipeline.features import FEATURES_SCHEMA, write_features_parquet
-
-    ddf = dd.from_pandas(_make_full_feature_df(), npartitions=1)
-    written = write_features_parquet(ddf, tmp_path)
-    df = pd.read_parquet(written[0])
-    expected_cols = [f.name for f in FEATURES_SCHEMA]
-    for col in expected_cols:
-        assert col in df.columns, f"Missing column: {col}"
-
-
-@pytest.mark.unit
-def test_write_features_parquet_dask_readable(tmp_path: Path):
-    from kgs_pipeline.features import write_features_parquet
-
-    ddf = dd.from_pandas(_make_full_feature_df(), npartitions=1)
-    write_features_parquet(ddf, tmp_path)
-    reloaded = dd.read_parquet(str(tmp_path), engine="pyarrow")
-    assert isinstance(reloaded, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_export_feature_matrix_csv(tmp_path: Path):
-    from kgs_pipeline.features import export_feature_matrix_csv
-
-    ddf = dd.from_pandas(_make_full_feature_df(), npartitions=1)
-    csv_path = export_feature_matrix_csv(ddf, tmp_path)
-    assert csv_path.exists()
-    df = pd.read_csv(csv_path)
-    assert len(df) >= 1
-
-
-# ---------------------------------------------------------------------------
-# Task 31: run_features_pipeline + lazy evaluation tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_run_features_pipeline_propagates_runtime_error():
-    from kgs_pipeline.features import run_features_pipeline
-
-    with patch("kgs_pipeline.features.load_processed_parquet", side_effect=RuntimeError("no data")):
-        with pytest.raises(RuntimeError):
-            run_features_pipeline()
-
-
-@pytest.mark.unit
-def test_lazy_evaluation_all_feature_functions():
-    """All feature computation functions return dask.dataframe.DataFrame (not pandas)."""
-    from kgs_pipeline.features import (
-        compute_cumulative_production,
-        compute_decline_rate,
-        compute_lag_features,
-        compute_rolling_features,
-        compute_time_features,
-        compute_ratio_features,
-    )
-
-    df = _make_well_df([100.0, 80.0, 60.0])
-    df["production_date"] = pd.date_range("2020-01-01", periods=3, freq="MS")
     ddf = dd.from_pandas(df, npartitions=1)
+    result = encode_categoricals(ddf).compute()
+    assert result["PRODUCT_enc"].nunique() == 2
 
-    for fn in [
-        compute_cumulative_production,
-        compute_decline_rate,
-        compute_rolling_features,
-        compute_lag_features,
+
+def test_encode_categoricals_county_int_dtype() -> None:
+    df = pd.DataFrame(
+        {
+            "COUNTY": ["Allen", "Barton"],
+            "PRODUCING_ZONE": ["Z1", "Z2"],
+            "OPERATOR": ["OPS", "OPS"],
+            "PRODUCT": ["O", "G"],
+        }
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = encode_categoricals(ddf).compute()
+    assert pd.api.types.is_integer_dtype(result["COUNTY_enc"])
+
+
+def test_encode_categoricals_original_col_retained() -> None:
+    df = pd.DataFrame(
+        {
+            "COUNTY": ["Allen"],
+            "PRODUCING_ZONE": ["Z1"],
+            "OPERATOR": ["OPS"],
+            "PRODUCT": ["O"],
+        }
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    result = encode_categoricals(ddf).compute()
+    assert "COUNTY" in result.columns
+
+
+def test_encode_categoricals_unseen_value() -> None:
+    df = pd.DataFrame(
+        {
+            "COUNTY": ["Allen", "Barton"],
+            "PRODUCING_ZONE": ["Z1", "Z2"],
+            "OPERATOR": ["OPS", "OPS"],
+            "PRODUCT": ["O", "G"],
+        }
+    )
+    ddf = dd.from_pandas(df, npartitions=1)
+    encode_categoricals(ddf)
+
+    # Introduce unseen value in a new partition
+    new_df = pd.DataFrame(
+        {
+            "COUNTY": ["UNKNOWN_PLACE"],
+            "PRODUCING_ZONE": ["UNKNOWN_ZONE"],
+            "OPERATOR": ["UNKNOWN_OP"],
+            "PRODUCT": ["X"],
+        }
+    )
+    new_ddf = dd.from_pandas(new_df, npartitions=1)
+    # Just test that encode_categoricals doesn't crash on unseen values
+    result = encode_categoricals(new_ddf).compute()
+    assert "COUNTY_enc" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# Task 11: compute_per_lease_features
+# ---------------------------------------------------------------------------
+
+
+def test_per_lease_all_feature_columns() -> None:
+    df = _make_pivot_df(n=6)
+    df["oil_bbl"] = [100.0, 150.0, 200.0, 250.0, 300.0, 350.0]
+    df["gas_mcf"] = [50.0, 75.0, 100.0, 125.0, 150.0, 175.0]
+    result = compute_per_lease_features(df)
+    for col in [
+        "cum_oil",
+        "cum_gas",
+        "cum_water",
+        "gor",
+        "water_cut",
+        "decline_rate",
+        "well_age_months",
+        "oil_roll3",
+        "oil_roll6",
+        "gas_roll3",
+        "gas_roll6",
+        "water_roll3",
+        "water_roll6",
+        "oil_lag1",
+        "oil_lag3",
+        "gas_lag1",
+        "gas_lag3",
     ]:
-        result = fn(ddf)
-        assert isinstance(result, dd.DataFrame), f"{fn.__name__} returned non-Dask type"
-        assert not isinstance(result, pd.DataFrame)
+        assert col in result.columns, f"Missing column: {col}"
 
-    # time features needs production_date
-    result_time = compute_time_features(ddf)
-    assert isinstance(result_time, dd.DataFrame)
 
-    # ratio features
-    result_ratio = compute_ratio_features(ddf)
-    assert isinstance(result_ratio, dd.DataFrame)
+def test_per_lease_cum_oil_monotonic() -> None:
+    df = _make_pivot_df(n=6)
+    df["oil_bbl"] = [100.0, 50.0, 0.0, 75.0, 200.0, 100.0]
+    result = compute_per_lease_features(df)
+    diffs = result["cum_oil"].diff().dropna()
+    assert (diffs >= -1e-9).all()
+
+
+def test_per_lease_oil_bbl_non_negative() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [0.0, 100.0, 200.0, 50.0]
+    result = compute_per_lease_features(df)
+    assert (result["oil_bbl"] >= 0.0).all()
+
+
+def test_per_lease_gor_non_negative() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 0.0, 50.0]
+    df["gas_mcf"] = [500.0, 300.0, 0.0, 200.0]
+    result = compute_per_lease_features(df)
+    gor_vals = result["gor"].dropna()
+    assert (gor_vals >= 0.0).all()
+
+
+def test_per_lease_water_cut_range() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 0.0, 50.0]
+    df["water_bbl"] = [50.0, 100.0, 0.0, 25.0]
+    result = compute_per_lease_features(df)
+    wc = result["water_cut"].dropna()
+    assert (wc >= 0.0).all() and (wc <= 1.0).all()
+
+
+def test_per_lease_decline_rate_bounds() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [200.0, 100.0, 50.0, 200.0]
+    result = compute_per_lease_features(df)
+    dr = result["decline_rate"].dropna()
+    assert (dr >= -1.0).all() and (dr <= 10.0).all()
+
+
+def test_per_lease_corrupt_input_no_crash() -> None:
+    """If computation raises for some reason, returns input unchanged."""
+    # Pass a DF missing required columns
+    df = pd.DataFrame({"LEASE_KID": ["L1"], "bad_col": [1]})
+    result = compute_per_lease_features(df)
+    assert isinstance(result, pd.DataFrame)
+
+
+# ---------------------------------------------------------------------------
+# Task 12: run_features
+# ---------------------------------------------------------------------------
+
+
+def _make_3_lease_fixture(tmp_path: Path) -> Path:
+    frames = []
+    for lease_id in ["L1", "L2", "L3"]:
+        df = _make_clean_df(n_months=6, lease_id=lease_id)
+        frames.append(df)
+    combined = pd.concat(frames, ignore_index=True)
+    return _write_clean_parquet(tmp_path, combined)
+
+
+def test_run_features_returns_dask_df(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features"
+    ddf = run_features(str(clean), str(out))
+    assert isinstance(ddf, dd.DataFrame)
+
+
+def test_run_features_all_schema_columns(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features"
+    ddf = run_features(str(clean), str(out))
+    cols = ddf.columns.tolist()
+    for col in FEATURE_SCHEMA_COLS:
+        assert col in cols, f"Missing schema column: {col}"
+
+
+def test_run_features_no_negative_oil_bbl(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features"
+    ddf = run_features(str(clean), str(out))
+    result = ddf.compute()
+    assert (result["oil_bbl"] >= 0.0).all()
+
+
+def test_run_features_cum_oil_monotonic(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features"
+    ddf = run_features(str(clean), str(out))
+    result = ddf.compute()
+    for lease_id in result["LEASE_KID"].unique():
+        lease_df = result[result["LEASE_KID"] == lease_id].sort_values("production_date")
+        diffs = lease_df["cum_oil"].diff().dropna()
+        assert (diffs >= -1e-9).all(), f"cum_oil not monotonic for {lease_id}"
+
+
+def test_run_features_parquet_readable(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features"
+    run_features(str(clean), str(out))
+    ddf2 = dd.read_parquet(str(out))
+    assert len(ddf2.compute()) > 0
+
+
+def test_run_features_schema_stability_across_partitions(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features"
+    run_features(str(clean), str(out))
+    parquet_files = list(out.rglob("*.parquet"))
+    if len(parquet_files) >= 2:
+        df1 = pd.read_parquet(str(parquet_files[0]))
+        df2 = pd.read_parquet(str(parquet_files[1]))
+        assert set(df1.columns) == set(df2.columns)
+
+
+def test_run_features_output_file_count(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features"
+    run_features(str(clean), str(out))
+    files = list(out.rglob("*.parquet"))
+    assert 1 <= len(files) <= 200
+
+
+# ---------------------------------------------------------------------------
+# Task 13: Dedicated correctness and completeness tests
+# ---------------------------------------------------------------------------
+
+
+def test_feature_column_presence(tmp_path: Path) -> None:
+    """All schema columns must be present in run_features output."""
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features_presence"
+    ddf = run_features(str(clean), str(out))
+    cols = ddf.columns.tolist()
+    for col in FEATURE_SCHEMA_COLS:
+        assert col in cols, f"[TR-19] Missing column: {col}"
+
+
+def test_cumulative_monotonicity(tmp_path: Path) -> None:
+    """cum_oil and cum_gas must be non-decreasing per lease."""
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features_mono"
+    ddf = run_features(str(clean), str(out))
+    result = ddf.compute()
+    for lid in result["LEASE_KID"].unique():
+        sub = result[result["LEASE_KID"] == lid].sort_values("production_date")
+        assert (sub["cum_oil"].diff().dropna() >= -1e-9).all()
+        assert (sub["cum_gas"].diff().dropna() >= -1e-9).all()
+
+
+def test_gor_formula_correctness() -> None:
+    df = _make_pivot_df(n=3)
+    df["oil_bbl"] = [200.0, 0.0, 100.0]
+    df["gas_mcf"] = [1000.0, 500.0, 0.0]
+    result = compute_ratios(df)
+    assert result["gor"].iloc[0] == pytest.approx(5.0)
+    assert pd.isna(result["gor"].iloc[1])
+    assert result["gor"].iloc[2] == pytest.approx(0.0)
+
+
+def test_water_cut_formula_correctness() -> None:
+    df = _make_pivot_df(n=3)
+    df["oil_bbl"] = [200.0, 100.0, 0.0]
+    df["water_bbl"] = [200.0, 0.0, 100.0]
+    result = compute_ratios(df)
+    assert result["water_cut"].iloc[0] == pytest.approx(0.5)
+    assert result["water_cut"].iloc[1] == pytest.approx(0.0)
+    assert result["water_cut"].iloc[2] == pytest.approx(1.0)
+
+
+def test_decline_rate_bounds_high() -> None:
+    df = _make_pivot_df(n=2)
+    df["oil_bbl"] = [1.0, -99999.0]  # would produce raw > 10
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[1] <= 10.0
+
+
+def test_decline_rate_bounds_low() -> None:
+    df = _make_pivot_df(n=2)
+    df["oil_bbl"] = [100.0, 99999.0]  # raw decline very negative
+    result = compute_decline_rate(df)
+    assert result["decline_rate"].iloc[1] >= -1.0
+
+
+def test_decline_rate_shutin_no_extreme() -> None:
+    df = _make_pivot_df(n=3)
+    df["oil_bbl"] = [100.0, 0.0, 0.0]
+    result = compute_decline_rate(df)
+    dr = result["decline_rate"].dropna()
+    assert (dr >= -1.0).all() and (dr <= 10.0).all()
+
+
+def test_rolling_correctness() -> None:
+    df = _make_pivot_df(n=6)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0]
+    result = compute_rolling(df, windows=[3, 6])
+    expected_3 = [100.0, 150.0, 200.0, 300.0, 400.0, 500.0]
+    expected_6 = [100.0, 150.0, 200.0, 250.0, 300.0, 350.0]
+    assert list(result["oil_roll3"]) == pytest.approx(expected_3)
+    assert list(result["oil_roll6"]) == pytest.approx(expected_6)
+
+
+def test_lag_correctness() -> None:
+    df = _make_pivot_df(n=4)
+    df["oil_bbl"] = [100.0, 200.0, 300.0, 400.0]
+    result = compute_lags(df, lags=[1, 3])
+    assert result["oil_lag1"].iloc[1] == pytest.approx(100.0)
+    assert result["oil_lag1"].iloc[2] == pytest.approx(200.0)
+    assert result["oil_lag1"].iloc[3] == pytest.approx(300.0)
+
+
+def test_schema_stability_across_partitions(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features_schema"
+    run_features(str(clean), str(out))
+    files = list(out.rglob("*.parquet"))
+    if len(files) >= 2:
+        df1 = pd.read_parquet(str(files[0]))
+        df2 = pd.read_parquet(str(files[1]))
+        assert set(df1.columns) == set(df2.columns)
+        for col in df1.columns:
+            assert df1[col].dtype == df2[col].dtype
+
+
+def test_lazy_evaluation(tmp_path: Path) -> None:
+    clean = _make_3_lease_fixture(tmp_path)
+    out = tmp_path / "features_lazy"
+    ddf = run_features(str(clean), str(out))
+    assert isinstance(ddf, dd.DataFrame)

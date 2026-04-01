@@ -1,538 +1,537 @@
-"""Features component for the KGS oil production data pipeline.
+"""KGS feature engineering module.
 
-Responsibilities:
-- Load processed Parquet from data/processed/.
-- Engineer ML-ready features per well: cumulative production (Np/Gp),
-  decline rate, rolling statistics, lag features, time features,
-  GOR/water-cut/WOR ratios, and categorical encoding.
-- Write feature Parquet to data/processed/features/ with fixed pyarrow schema.
-- Export a sampled feature matrix CSV.
-
-Note: water_bbl not available in KGS dataset; water_cut and wor are NaN
-placeholders reserved for future enrichment.
-
-Two permitted .compute() calls:
-  1. build_encoding_maps() — to compute global unique categorical values.
-  2. write_features_parquet() — triggered via to_parquet().
+Loads cleaned Parquet data, computes production features, encodes categoricals,
+and writes the ML-ready dataset to data/processed/features/.
 """
 
 from pathlib import Path
 
-import dask.dataframe as dd
+import dask.dataframe as dd  # type: ignore[import-untyped]
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
-import pyarrow as pa  # type: ignore[import-untyped]
 
-from kgs_pipeline.config import CONFIG
-from kgs_pipeline.utils import ensure_dir, setup_logging
+try:
+    from sklearn.preprocessing import LabelEncoder  # type: ignore[import-not-found]
+except ImportError:
+    LabelEncoder = None  # type: ignore[assignment,misc]
 
-logger = setup_logging("features", CONFIG.logs_dir, CONFIG.log_level)
+from kgs_pipeline.config import MAX_READ_PARTITIONS
+from kgs_pipeline.utils import setup_logging
 
-# Fixed features Parquet schema
-FEATURES_SCHEMA = pa.schema(
-    [
-        pa.field("well_id", pa.string()),
-        pa.field("production_date", pa.timestamp("ns")),
-        pa.field("product", pa.string()),
-        pa.field("production", pa.float64()),
-        pa.field("unit", pa.string()),
-        pa.field("lease_kid", pa.int64()),
-        pa.field("operator", pa.string()),
-        pa.field("county", pa.string()),
-        pa.field("field", pa.string()),
-        pa.field("producing_zone", pa.string()),
-        pa.field("latitude", pa.float64()),
-        pa.field("longitude", pa.float64()),
-        pa.field("cum_production", pa.float64()),
-        pa.field("decline_rate", pa.float64()),
-        pa.field("rolling_mean_3m", pa.float64()),
-        pa.field("rolling_mean_6m", pa.float64()),
-        pa.field("rolling_mean_12m", pa.float64()),
-        pa.field("rolling_std_3m", pa.float64()),
-        pa.field("rolling_std_6m", pa.float64()),
-        pa.field("lag_1m", pa.float64()),
-        pa.field("lag_3m", pa.float64()),
-        pa.field("months_since_first_prod", pa.int64()),
-        pa.field("production_year", pa.int32()),
-        pa.field("production_month", pa.int32()),
-        pa.field("production_quarter", pa.int32()),
-        pa.field("gor", pa.float64()),
-        pa.field("water_cut", pa.float64()),
-        pa.field("wor", pa.float64()),
-        pa.field("county_encoded", pa.int32()),
-        pa.field("operator_encoded", pa.int32()),
-        pa.field("producing_zone_encoded", pa.int32()),
-        pa.field("field_encoded", pa.int32()),
-        pa.field("product_encoded", pa.int32()),
-        pa.field("outlier_flag", pa.bool_()),
-    ]
-)
-
-CATEGORICAL_COLS = ["county", "operator", "producing_zone", "field", "product"]
+logger = setup_logging(__name__)
 
 
-def load_processed_parquet(processed_dir: Path | None = None) -> dd.DataFrame:
-    """Load all processed Parquet files as a lazy Dask DataFrame.
+# ---------------------------------------------------------------------------
+# Task 01: Cleaned data loader
+# ---------------------------------------------------------------------------
+
+
+def load_clean(clean_dir: str) -> dd.DataFrame:
+    """Read all Parquet files from clean_dir into a Dask DataFrame.
 
     Args:
-        processed_dir: Directory with processed Parquet (default: CONFIG.processed_dir).
+        clean_dir: Path to data/processed/clean/.
 
     Returns:
-        Lazy Dask DataFrame.
+        Repartitioned Dask DataFrame (npartitions <= 50).
 
     Raises:
-        FileNotFoundError: If processed_dir does not exist.
-        RuntimeError: If no Parquet files are found.
+        FileNotFoundError: If the directory does not exist.
+        ValueError: If no Parquet files are found.
     """
-    processed_dir = processed_dir or CONFIG.processed_dir
-    if not processed_dir.exists():
-        raise FileNotFoundError(f"Processed directory not found: {processed_dir}")
-
-    parquet_files = list(processed_dir.glob("**/*.parquet"))
+    path = Path(clean_dir)
+    if not path.exists():
+        raise FileNotFoundError(f"Clean directory not found: {clean_dir}")
+    parquet_files = list(path.glob("*.parquet")) + list(path.glob("**/*.parquet"))
     if not parquet_files:
-        raise RuntimeError("No Parquet files found in processed_dir; run transform pipeline first.")
+        raise ValueError(f"No Parquet files found in: {clean_dir}")
 
-    logger.info("Loading %d Parquet files from %s", len(parquet_files), processed_dir)
-    ddf = dd.read_parquet(str(processed_dir), engine="pyarrow")
-    logger.info("Loaded processed Parquet with %d partitions.", ddf.npartitions)
-    return ddf
-
-
-def compute_cumulative_production(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Add cum_production column: cumulative production per [well_id, product].
-
-    cum_production is monotonically non-decreasing (flat during shut-in months).
-
-    Args:
-        ddf: Lazy Dask DataFrame with production, well_id, product columns.
-
-    Returns:
-        Lazy Dask DataFrame with cum_production column added.
-
-    Raises:
-        KeyError: If required columns are absent.
-    """
-    for col in ["production", "well_id", "product"]:
-        if col not in ddf.columns:
-            raise KeyError(f"Required column '{col}' not found in DataFrame")
-
-    def _cum_prod_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.sort_values(["well_id", "product", "production_date"]).copy()
-        df["cum_production"] = df.groupby(["well_id", "product"])["production"].cumsum()
-        return df
-
-    meta = ddf._meta.copy()
-    meta["cum_production"] = pd.Series(dtype="float64")
-    return ddf.map_partitions(_cum_prod_partition, meta=meta)
+    ddf = dd.read_parquet(clean_dir)
+    n = ddf.npartitions
+    return ddf.repartition(npartitions=min(n, MAX_READ_PARTITIONS))
 
 
-def compute_decline_rate(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Add decline_rate column: month-over-month decline per [well_id, product].
+# ---------------------------------------------------------------------------
+# Task 02: Oil/gas/water column pivot
+# ---------------------------------------------------------------------------
 
-    Decline = (prod[t] - prod[t-1]) / prod[t-1], clipped to [-1.0, 10.0].
-    When prod[t-1] == 0: decline_rate = NaN (avoid division by zero).
-    First row per group: NaN.
+
+def pivot_products(ddf: dd.DataFrame) -> dd.DataFrame:
+    """Pivot from long format (one row per PRODUCT) to wide format.
+
+    Creates separate oil_bbl and gas_mcf columns, plus water_bbl (NaN).
 
     Args:
-        ddf: Lazy Dask DataFrame.
+        ddf: Cleaned Dask DataFrame with PRODUCT column.
 
     Returns:
-        Lazy Dask DataFrame with decline_rate column.
-
-    Raises:
-        KeyError: If required columns are absent.
+        Wide-format Dask DataFrame with oil_bbl, gas_mcf, water_bbl columns.
     """
-    for col in ["production", "well_id", "product"]:
-        if col not in ddf.columns:
-            raise KeyError(f"Required column '{col}' not found in DataFrame")
+    df = ddf.compute()
 
-    def _decline_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.sort_values(["well_id", "product", "production_date"]).copy()
+    # Metadata columns from oil rows (preferred) or gas rows
+    meta_cols = [
+        "LEASE_KID",
+        "production_date",
+        "COUNTY",
+        "PRODUCING_ZONE",
+        "OPERATOR",
+        "LEASE",
+        "FIELD",
+        "source_file",
+        "MONTH-YEAR",
+        "PRODUCT",
+    ]
+    available_meta = [c for c in meta_cols if c in df.columns]
 
-        def _group_decline(g: pd.Series) -> pd.Series:
-            lag = g.shift(1)
-            # Zero denominator → NaN before any division
-            safe_lag = lag.where(lag != 0.0, other=np.nan)
-            raw = (g - lag) / safe_lag
-            return raw.clip(
-                lower=CONFIG.decline_rate_clip_min,
-                upper=CONFIG.decline_rate_clip_max,
-            )
+    oil_df = df[df["PRODUCT"] == "O"].copy()
+    gas_df = df[df["PRODUCT"] == "G"].copy()
 
-        df["decline_rate"] = df.groupby(["well_id", "product"])["production"].transform(
-            _group_decline
-        )
-        return df
+    merge_keys = ["LEASE_KID", "production_date"]
 
-    meta = ddf._meta.copy()
-    meta["decline_rate"] = pd.Series(dtype="float64")
-    return ddf.map_partitions(_decline_partition, meta=meta)
+    if len(oil_df) > 0:
+        oil_pivot = oil_df[
+            merge_keys + ["PRODUCTION"] + [c for c in available_meta if c not in merge_keys]
+        ].copy()
+        oil_pivot = oil_pivot.rename(columns={"PRODUCTION": "oil_bbl"})
+    else:
+        oil_pivot = pd.DataFrame(columns=merge_keys + ["oil_bbl"])
+
+    if len(gas_df) > 0:
+        gas_pivot = gas_df[merge_keys + ["PRODUCTION"]].copy()
+        gas_pivot = gas_pivot.rename(columns={"PRODUCTION": "gas_mcf"})
+    else:
+        gas_pivot = pd.DataFrame(columns=merge_keys + ["gas_mcf"])
+
+    # Outer merge
+    if len(oil_pivot) > 0 and len(gas_pivot) > 0:
+        merged = oil_pivot.merge(gas_pivot, on=merge_keys, how="outer")
+    elif len(oil_pivot) > 0:
+        merged = oil_pivot.copy()
+        merged["gas_mcf"] = 0.0
+    elif len(gas_pivot) > 0:
+        # Gas-only lease: add metadata from gas rows
+        gas_with_meta = gas_df[
+            merge_keys + ["PRODUCTION"] + [c for c in available_meta if c not in merge_keys]
+        ].copy()
+        gas_with_meta = gas_with_meta.rename(columns={"PRODUCTION": "gas_mcf"})
+        merged = gas_with_meta
+        merged["oil_bbl"] = 0.0
+    else:
+        merged = pd.DataFrame(columns=merge_keys + ["oil_bbl", "gas_mcf"])
+
+    merged["oil_bbl"] = merged["oil_bbl"].fillna(0.0)
+    merged["gas_mcf"] = merged["gas_mcf"].fillna(0.0)
+    merged["water_bbl"] = np.nan
+
+    result = dd.from_pandas(merged.reset_index(drop=True), npartitions=1)
+    n = result.npartitions
+    return result.repartition(npartitions=min(n, MAX_READ_PARTITIONS))
 
 
-def compute_rolling_features(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Add rolling mean and std columns per [well_id, product].
+# ---------------------------------------------------------------------------
+# Task 03: Cumulative production features
+# ---------------------------------------------------------------------------
 
-    Windows from CONFIG.rolling_windows (default: [3, 6, 12]).
-    rolling_mean_{w}m: min_periods=1
-    rolling_std_{w}m: min_periods=2
+
+def compute_cumulative(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute cumulative production for a single-lease sorted DataFrame.
 
     Args:
-        ddf: Lazy Dask DataFrame.
+        df: Single-lease sorted time-series DataFrame.
 
     Returns:
-        Lazy Dask DataFrame with rolling feature columns added.
-
-    Raises:
-        KeyError: If required columns are absent.
+        DataFrame with cum_oil, cum_gas, cum_water columns added.
     """
-    for col in ["production", "well_id", "product"]:
-        if col not in ddf.columns:
-            raise KeyError(f"Required column '{col}' not found in DataFrame")
+    df = df.sort_values("production_date").copy()
+    df["cum_oil"] = df["oil_bbl"].cumsum()
+    df["cum_gas"] = df["gas_mcf"].cumsum()
 
-    windows = CONFIG.rolling_windows
+    if "water_bbl" in df.columns and df["water_bbl"].notna().any():
+        df["cum_water"] = df["water_bbl"].cumsum(skipna=True)
+    else:
+        df["cum_water"] = np.nan
 
-    def _rolling_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.sort_values(["well_id", "product", "production_date"]).copy()
-        for w in windows:
-            mean_col = f"rolling_mean_{w}m"
-            std_col = f"rolling_std_{w}m"
-            df[mean_col] = df.groupby(["well_id", "product"])["production"].transform(
-                lambda s, _w=w: s.rolling(window=_w, min_periods=1).mean()
-            )
-            df[std_col] = df.groupby(["well_id", "product"])["production"].transform(
-                lambda s, _w=w: s.rolling(window=_w, min_periods=2).std()
-            )
-        return df
-
-    meta = ddf._meta.copy()
-    for w in windows:
-        meta[f"rolling_mean_{w}m"] = pd.Series(dtype="float64")
-        meta[f"rolling_std_{w}m"] = pd.Series(dtype="float64")
-    return ddf.map_partitions(_rolling_partition, meta=meta)
+    cum_oil_diff = df["cum_oil"].diff().dropna()
+    assert (cum_oil_diff >= -1e-9).all(), "cum_oil is not monotonically non-decreasing"
+    return df
 
 
-def compute_lag_features(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Add lag_1m and lag_3m production features per [well_id, product].
+# ---------------------------------------------------------------------------
+# Task 04: GOR and water cut
+# ---------------------------------------------------------------------------
+
+
+def compute_ratios(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute GOR and water cut for a single-lease DataFrame.
+
+    GOR = gas_mcf / oil_bbl (NaN when oil_bbl=0 and gas_mcf>0, 0.0 when both=0).
+    water_cut = water_bbl / (oil_bbl + water_bbl) (NaN when denominator=0).
 
     Args:
-        ddf: Lazy Dask DataFrame.
+        df: Single-lease DataFrame with oil_bbl, gas_mcf, water_bbl.
 
     Returns:
-        Lazy Dask DataFrame with lag_1m and lag_3m columns.
-
-    Raises:
-        KeyError: If required columns are absent.
+        DataFrame with gor and water_cut columns added.
     """
-    for col in ["production", "well_id", "product"]:
-        if col not in ddf.columns:
-            raise KeyError(f"Required column '{col}' not found in DataFrame")
+    df = df.copy()
 
-    def _lag_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.sort_values(["well_id", "product", "production_date"]).copy()
-        df["lag_1m"] = df.groupby(["well_id", "product"])["production"].transform(
-            lambda s: s.shift(1)
-        )
-        df["lag_3m"] = df.groupby(["well_id", "product"])["production"].transform(
-            lambda s: s.shift(3)
-        )
-        return df
+    oil = df["oil_bbl"].astype(float)
+    gas = df["gas_mcf"].astype(float)
 
-    meta = ddf._meta.copy()
-    meta["lag_1m"] = pd.Series(dtype="float64")
-    meta["lag_3m"] = pd.Series(dtype="float64")
-    return ddf.map_partitions(_lag_partition, meta=meta)
+    gor = np.where(
+        oil > 0,
+        gas / oil,
+        np.where(gas > 0, np.nan, 0.0),
+    )
+    df["gor"] = gor
 
-
-def compute_time_features(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Add time-based features from production_date.
-
-    Adds: production_year, production_month, production_quarter,
-    months_since_first_prod.
-
-    Args:
-        ddf: Lazy Dask DataFrame with production_date and well_id columns.
-
-    Returns:
-        Lazy Dask DataFrame with time feature columns.
-
-    Raises:
-        KeyError: If production_date or well_id columns are absent.
-    """
-    if "production_date" not in ddf.columns:
-        raise KeyError("production_date column not found in DataFrame")
-    if "well_id" not in ddf.columns:
-        raise KeyError("well_id column not found in DataFrame")
-
-    def _time_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        dt = pd.to_datetime(df["production_date"])
-        df["production_year"] = dt.dt.year.astype("Int32")
-        df["production_month"] = dt.dt.month.astype("Int32")
-        df["production_quarter"] = dt.dt.quarter.astype("Int32")
-
-        def _months_since(g: pd.Series) -> pd.Series:
-            first = g.dropna().min()
-            if pd.isna(first):
-                return pd.Series(np.nan, index=g.index)
-            result = g.map(
-                lambda d: (
-                    int((d.year - first.year) * 12 + (d.month - first.month))
-                    if pd.notna(d)
-                    else np.nan
-                )
-            )
-            return result
-
-        df["months_since_first_prod"] = (
-            df.groupby(["well_id", "product"])["production_date"]
-            .transform(_months_since)
-            .astype("Int64")
-        )
-        return df
-
-    meta = ddf._meta.copy()
-    meta["production_year"] = pd.Series(dtype="Int32")
-    meta["production_month"] = pd.Series(dtype="Int32")
-    meta["production_quarter"] = pd.Series(dtype="Int32")
-    meta["months_since_first_prod"] = pd.Series(dtype="Int64")
-    return ddf.map_partitions(_time_partition, meta=meta)
-
-
-def compute_ratio_features(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Add GOR, water_cut, and WOR ratio features.
-
-    GOR = gas_mcf / oil_bbl per well per month (NaN when oil==0 and gas>0).
-    water_cut and wor are NaN placeholders (no water data in KGS dataset).
-
-    # water_bbl not available in KGS dataset; reserved for future enrichment
-
-    Args:
-        ddf: Lazy Dask DataFrame with product, production, well_id, production_date.
-
-    Returns:
-        Lazy Dask DataFrame with gor, water_cut, wor columns.
-    """
-
-    def _ratio_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-
-        # Separate oil and gas rows
-        oil = df[df["product"] == "O"][["well_id", "production_date", "production"]].rename(
-            columns={"production": "oil_bbl"}
-        )
-        gas = df[df["product"] == "G"][["well_id", "production_date", "production"]].rename(
-            columns={"production": "gas_mcf"}
-        )
-
-        gor_df = oil.merge(gas, on=["well_id", "production_date"], how="left")
-
-        # GOR rules:
-        # oil > 0, gas >= 0 → gas/oil
-        # oil == 0, gas > 0 → NaN
-        # oil == 0, gas == 0 → NaN
-        # oil > 0, gas == 0 → 0.0
-        conditions = [
-            (gor_df["oil_bbl"] > 0),
-            (gor_df["oil_bbl"] == 0),
-        ]
-        choices_num = [
-            gor_df["gas_mcf"].fillna(0.0) / gor_df["oil_bbl"],
-            np.nan,
-        ]
-        gor_df["gor"] = np.select(conditions, choices_num, default=np.nan)
-        # When oil > 0 and gas == 0 → GOR = 0.0 (already handled by 0/oil = 0)
-        # When oil == 0 → NaN (already set)
-
-        # Merge gor back onto full df
-        df = df.merge(
-            gor_df[["well_id", "production_date", "gor"]],
-            on=["well_id", "production_date"],
-            how="left",
-        )
-
-        # Gas rows get NaN gor
-        df.loc[df["product"] == "G", "gor"] = np.nan
-
-        # water_bbl not available in KGS dataset; reserved for future enrichment
+    if "water_bbl" in df.columns:
+        water = df["water_bbl"].astype(float)
+        denom = oil + water
+        water_cut = np.where(denom > 0, water / denom, np.nan)
+        # Clip to [0, 1] — values outside indicate data error
+        water_cut = np.where((water_cut >= 0) & (water_cut <= 1), water_cut, np.nan)
+        df["water_cut"] = water_cut
+    else:
         df["water_cut"] = np.nan
-        df["wor"] = np.nan
-        return df
 
-    meta = ddf._meta.copy()
-    meta["gor"] = pd.Series(dtype="float64")
-    meta["water_cut"] = pd.Series(dtype="float64")
-    meta["wor"] = pd.Series(dtype="float64")
-    return ddf.map_partitions(_ratio_partition, meta=meta)
+    return df
 
 
-def build_encoding_maps(ddf: dd.DataFrame) -> dict[str, dict[str, int]]:
-    """Build globally consistent integer encoding maps for categorical columns.
-
-    Calls .compute() once to materialise unique values from the full dataset.
-
-    Args:
-        ddf: Lazy Dask DataFrame.
-
-    Returns:
-        Dict mapping column name → {value: int_code} (alphabetically sorted).
-    """
-    encoding_maps: dict[str, dict[str, int]] = {}
-    for col in CATEGORICAL_COLS:
-        if col not in ddf.columns:
-            logger.warning("Categorical column '%s' not found; skipping encoding.", col)
-            continue
-        unique_vals = sorted(str(v) for v in ddf[col].dropna().unique().compute() if pd.notna(v))
-        encoding_maps[col] = {v: i for i, v in enumerate(unique_vals)}
-    return encoding_maps
+# ---------------------------------------------------------------------------
+# Task 05: Decline rate feature
+# ---------------------------------------------------------------------------
 
 
-def encode_categorical_features(
-    ddf: dd.DataFrame,
-    encoding_maps: dict[str, dict[str, int]],
-) -> dd.DataFrame:
-    """Apply integer encoding to categorical columns using precomputed maps.
+def compute_decline_rate(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute period-over-period oil decline rate.
 
-    - county_encoded, operator_encoded, producing_zone_encoded, field_encoded: from maps.
-    - product_encoded: O→0, G→1 (fixed, not from map).
-    - Unseen values map to -1.
+    Formula: (oil_bbl[t-1] - oil_bbl[t]) / oil_bbl[t-1], clipped to [-1, 10].
 
     Args:
-        ddf: Lazy Dask DataFrame.
-        encoding_maps: Dict of {col: {value: int_code}}.
+        df: Single-lease sorted DataFrame with oil_bbl.
 
     Returns:
-        Lazy Dask DataFrame with *_encoded columns added.
+        DataFrame with decline_rate column added.
     """
+    df = df.copy()
+    oil = df["oil_bbl"].astype(float).values
+    n = len(oil)
+    decline = np.full(n, np.nan)
 
-    def _encode_partition(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        for col in ["county", "operator", "producing_zone", "field"]:
-            enc_col = f"{col}_encoded"
-            if col not in df.columns:
-                logger.warning("Column '%s' absent; skipping encoding.", col)
-                df[enc_col] = -1
-                continue
-            col_map = encoding_maps.get(col, {})
-            df[enc_col] = df[col].map(col_map).fillna(-1).astype("int32")
-
-        # Fixed product encoding
-        if "product" in df.columns:
-            df["product_encoded"] = df["product"].map({"O": 0, "G": 1}).fillna(-1).astype("int32")
+    for t in range(1, n):
+        prev = oil[t - 1]
+        curr = oil[t]
+        if prev == 0:
+            if curr == 0:
+                decline[t] = 0.0
+            else:
+                decline[t] = -1.0
         else:
-            df["product_encoded"] = -1
-        return df
+            raw = (prev - curr) / prev
+            decline[t] = np.clip(raw, -1.0, 10.0)
+
+    df["decline_rate"] = decline
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Task 06: Well age feature
+# ---------------------------------------------------------------------------
+
+
+def compute_well_age(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute well_age_months since first production date for the lease.
+
+    Args:
+        df: Single-lease sorted DataFrame with production_date.
+
+    Returns:
+        DataFrame with well_age_months (int) column added.
+    """
+    df = df.copy()
+    first_date = df["production_date"].min()
+    df["well_age_months"] = (
+        df["production_date"]
+        .apply(
+            lambda d: (
+                (d.year - first_date.year) * 12 + (d.month - first_date.month)
+                if pd.notna(d) and pd.notna(first_date)
+                else pd.NA
+            )
+        )
+        .astype("Int64")
+    )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Task 07: Rolling average features
+# ---------------------------------------------------------------------------
+
+
+def compute_rolling(df: pd.DataFrame, windows: list[int] | None = None) -> pd.DataFrame:
+    """Compute rolling averages for oil_bbl, gas_mcf, water_bbl.
+
+    Args:
+        df: Single-lease sorted DataFrame.
+        windows: Rolling window sizes. Defaults to [3, 6].
+
+    Returns:
+        DataFrame with rolling columns added.
+    """
+    if windows is None:
+        windows = [3, 6]
+    df = df.copy()
+    for col, prefix in [("oil_bbl", "oil"), ("gas_mcf", "gas"), ("water_bbl", "water")]:
+        if col in df.columns:
+            series = df[col].astype(float)
+            for w in windows:
+                df[f"{prefix}_roll{w}"] = series.rolling(window=w, min_periods=1).mean()
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Task 08: Lag features
+# ---------------------------------------------------------------------------
+
+
+def compute_lags(df: pd.DataFrame, lags: list[int] | None = None) -> pd.DataFrame:
+    """Compute lag features for oil_bbl and gas_mcf.
+
+    Args:
+        df: Single-lease sorted DataFrame.
+        lags: Lag periods. Defaults to [1, 3].
+
+    Returns:
+        DataFrame with lag columns added.
+    """
+    if lags is None:
+        lags = [1, 3]
+    df = df.copy()
+    for col, prefix in [("oil_bbl", "oil"), ("gas_mcf", "gas")]:
+        if col in df.columns:
+            series = df[col].astype(float)
+            for lag in lags:
+                df[f"{prefix}_lag{lag}"] = series.shift(lag)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Task 09: Aggregate features
+# ---------------------------------------------------------------------------
+
+
+def compute_aggregates(ddf: dd.DataFrame) -> dd.DataFrame:
+    """Compute county and formation aggregate oil statistics.
+
+    Args:
+        ddf: Input Dask DataFrame with COUNTY, PRODUCING_ZONE, oil_bbl.
+
+    Returns:
+        Dask DataFrame with county_mean_oil, county_std_oil,
+        formation_mean_oil, formation_std_oil columns added.
+    """
+    df = ddf[["COUNTY", "PRODUCING_ZONE", "oil_bbl"]].compute()
+
+    county_agg = df.groupby("COUNTY")["oil_bbl"].agg(["mean", "std"]).reset_index()
+    county_agg.columns = ["COUNTY", "county_mean_oil", "county_std_oil"]
+    county_agg["county_std_oil"] = county_agg["county_std_oil"].fillna(0.0)
+
+    formation_agg = df.groupby("PRODUCING_ZONE")["oil_bbl"].agg(["mean", "std"]).reset_index()
+    formation_agg.columns = ["PRODUCING_ZONE", "formation_mean_oil", "formation_std_oil"]
+    formation_agg["formation_std_oil"] = formation_agg["formation_std_oil"].fillna(0.0)
+
+    global_oil_mean = df["oil_bbl"].mean()
+
+    def _merge_aggs(part: pd.DataFrame) -> pd.DataFrame:
+        part = part.merge(county_agg, on="COUNTY", how="left")
+        part = part.merge(formation_agg, on="PRODUCING_ZONE", how="left")
+        part["county_mean_oil"] = part["county_mean_oil"].fillna(global_oil_mean)
+        part["county_std_oil"] = part["county_std_oil"].fillna(0.0)
+        part["formation_mean_oil"] = part["formation_mean_oil"].fillna(global_oil_mean)
+        part["formation_std_oil"] = part["formation_std_oil"].fillna(0.0)
+        return part
 
     meta = ddf._meta.copy()
-    for col in ["county", "operator", "producing_zone", "field"]:
-        meta[f"{col}_encoded"] = pd.Series(dtype="int32")
-    meta["product_encoded"] = pd.Series(dtype="int32")
+    for col in ["county_mean_oil", "county_std_oil", "formation_mean_oil", "formation_std_oil"]:
+        meta[col] = pd.Series(dtype="float64")
+
+    return ddf.map_partitions(_merge_aggs, meta=meta)
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Categorical encoding
+# ---------------------------------------------------------------------------
+
+
+def encode_categoricals(ddf: dd.DataFrame) -> dd.DataFrame:
+    """Label-encode COUNTY, PRODUCING_ZONE, OPERATOR, PRODUCT columns.
+
+    Args:
+        ddf: Input Dask DataFrame.
+
+    Returns:
+        Dask DataFrame with _enc columns appended (original columns retained).
+    """
+    encode_cols = ["COUNTY", "PRODUCING_ZONE", "OPERATOR", "PRODUCT"]
+    available = [c for c in encode_cols if c in ddf.columns]
+
+    df = ddf[available].compute()
+    # Build mapping from categorical values to codes for each column
+    mappings: dict[str, dict[str, int]] = {}
+    for col in available:
+        # Use pandas category codes to create a mapping
+        cat_series = pd.Categorical(df[col].astype(str).fillna("UNKNOWN"))
+        # Create a mapping from category values to codes
+        code_map = {cat: code for code, cat in enumerate(cat_series.categories)}
+        mappings[col] = code_map
+
+    def _encode_partition(part: pd.DataFrame) -> pd.DataFrame:
+        for col, code_map in mappings.items():
+            if col not in part.columns:
+                continue
+            vals = part[col].astype(str).fillna("UNKNOWN")
+            # Use map with default -1 for unseen values
+            part[f"{col}_enc"] = vals.map(code_map).fillna(-1).astype("int64")
+        return part
+
+    meta = ddf._meta.copy()
+    for col in available:
+        meta[f"{col}_enc"] = pd.Series(dtype="int64")
+
     return ddf.map_partitions(_encode_partition, meta=meta)
 
 
-def write_features_parquet(
-    ddf: dd.DataFrame,
-    output_dir: Path | None = None,
-) -> list[Path]:
-    """Write ML-ready feature Dask DataFrame to Parquet partitioned by well_id.
+# ---------------------------------------------------------------------------
+# Task 11: Per-lease feature pipeline dispatcher
+# ---------------------------------------------------------------------------
 
-    This is one of the two permitted .compute() calls.
+
+def compute_per_lease_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply all per-lease time-series feature functions.
+
+    Chains: sort → cumulative → ratios → decline_rate → well_age → rolling → lags.
 
     Args:
-        ddf: Typed lazy Dask DataFrame with all feature columns.
-        output_dir: Output directory (default: CONFIG.features_dir).
+        df: Rows for one LEASE_KID, sorted by production_date.
 
     Returns:
-        Sorted list of written .parquet file paths.
+        DataFrame with all feature columns added.
     """
-    output_dir = output_dir or CONFIG.features_dir
-    ensure_dir(output_dir)
-
-    # Add missing schema columns with default values
-    for field in FEATURES_SCHEMA:
-        if field.name not in ddf.columns:
-            if field.type == pa.bool_():
-                ddf = ddf.assign(**{field.name: False})
-            elif field.type in (pa.int32(), pa.int64()):
-                ddf = ddf.assign(**{field.name: pd.NA})
-            elif field.type == pa.string():
-                ddf = ddf.assign(**{field.name: None})
-            else:
-                ddf = ddf.assign(**{field.name: float("nan")})
-
+    lease_id = df["LEASE_KID"].iloc[0] if (len(df) > 0 and "LEASE_KID" in df.columns) else "unknown"
     try:
-        ddf.to_parquet(
-            str(output_dir),
-            engine="pyarrow",
-            write_index=False,
-            schema=FEATURES_SCHEMA,
-            overwrite=True,
-        )
-    except Exception as exc:
-        logger.error("Failed to write features Parquet: %s", exc)
-        raise
-
-    written = sorted(output_dir.glob("**/*.parquet"))
-    logger.info("Wrote %d feature Parquet files to %s", len(written), output_dir)
-    return written
+        df = df.sort_values("production_date").reset_index(drop=True)
+        df = compute_cumulative(df)
+        df = compute_ratios(df)
+        df = compute_decline_rate(df)
+        df = compute_well_age(df)
+        df = compute_rolling(df)
+        df = compute_lags(df)
+        return df
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Per-lease feature computation failed for LEASE_KID=%s: %s", lease_id, exc)
+        return df
 
 
-def export_feature_matrix_csv(
-    ddf: dd.DataFrame,
-    output_dir: Path | None = None,
-) -> Path:
-    """Export up to 100,000 rows of the feature DataFrame as CSV.
+# ---------------------------------------------------------------------------
+# Task 12: Features orchestrator
+# ---------------------------------------------------------------------------
+
+
+def _build_per_lease_meta(sample_df: pd.DataFrame) -> pd.DataFrame:
+    """Build meta DataFrame for groupby.apply result."""
+    meta = sample_df.copy()
+    feature_cols = {
+        "cum_oil": "float64",
+        "cum_gas": "float64",
+        "cum_water": "float64",
+        "gor": "float64",
+        "water_cut": "float64",
+        "decline_rate": "float64",
+        "well_age_months": "Int64",
+        "oil_roll3": "float64",
+        "oil_roll6": "float64",
+        "gas_roll3": "float64",
+        "gas_roll6": "float64",
+        "water_roll3": "float64",
+        "water_roll6": "float64",
+        "oil_lag1": "float64",
+        "oil_lag3": "float64",
+        "gas_lag1": "float64",
+        "gas_lag3": "float64",
+    }
+    for col, dtype in feature_cols.items():
+        if col not in meta.columns:
+            meta[col] = pd.Series(dtype=dtype)
+    return meta.iloc[:0]
+
+
+def run_features(clean_dir: str, output_dir: str) -> dd.DataFrame:
+    """Main entry point for the features stage.
 
     Args:
-        ddf: Lazy Dask DataFrame.
-        output_dir: Output directory (default: CONFIG.features_dir).
+        clean_dir: Path to data/processed/clean/.
+        output_dir: Path to data/processed/features/.
 
     Returns:
-        Path to the written CSV file.
+        ML-ready Dask DataFrame (not yet computed).
     """
-    output_dir = output_dir or CONFIG.features_dir
-    ensure_dir(output_dir)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    csv_path = output_dir / "feature_matrix.csv"
-    sample = ddf.head(100000, compute=True, npartitions=-1)
-    sample.to_csv(csv_path, index=False)
-    logger.info("Feature matrix CSV written to %s (%d rows)", csv_path, len(sample))
-    return csv_path
+    ddf = load_clean(clean_dir)
+    ddf = pivot_products(ddf)
 
+    # Apply per-lease features: compute fully then reconvert.
+    # We iterate over groups manually to ensure LEASE_KID column is preserved
+    # across all pandas versions (groupby.apply may drop group key columns).
+    df_computed = ddf.compute()
+    if "LEASE_KID" in df_computed.columns:
+        groups = []
+        for lease_id, group_df in df_computed.groupby("LEASE_KID", sort=False):
+            # Ensure LEASE_KID column is present inside the group
+            if "LEASE_KID" not in group_df.columns:
+                group_df = group_df.copy()
+                group_df["LEASE_KID"] = lease_id
+            groups.append(compute_per_lease_features(group_df))
+        df_featured = pd.concat(groups, ignore_index=True) if groups else df_computed
+    else:
+        df_featured = compute_per_lease_features(df_computed)
 
-def run_features_pipeline(
-    processed_dir: Path | None = None,
-    output_dir: Path | None = None,
-) -> list[Path]:
-    """Orchestrate the full features engineering workflow.
+    ddf = dd.from_pandas(df_featured, npartitions=max(1, len(df_featured) // 500_000))
+    n = ddf.npartitions
+    ddf = ddf.repartition(npartitions=min(n, 50))
 
-    Args:
-        processed_dir: Processed Parquet input (default: CONFIG.processed_dir).
-        output_dir: Features Parquet output (default: CONFIG.features_dir).
+    ddf = compute_aggregates(ddf)
+    ddf = encode_categoricals(ddf)
 
-    Returns:
-        List of written feature Parquet file paths.
+    # Estimate partitions without full compute
+    try:
+        estimated_rows = ddf.npartitions * 500_000
+    except Exception:  # noqa: BLE001
+        estimated_rows = 500_000
 
-    Raises:
-        RuntimeError: If no processed Parquet files are found (propagated).
-    """
-    ddf = load_processed_parquet(processed_dir)
-    ddf = compute_cumulative_production(ddf)
-    ddf = compute_decline_rate(ddf)
-    ddf = compute_rolling_features(ddf)
-    ddf = compute_lag_features(ddf)
-    ddf = compute_time_features(ddf)
-    ddf = compute_ratio_features(ddf)
+    n_partitions = max(1, min(estimated_rows // 500_000, 200))
+    ddf = ddf.repartition(npartitions=n_partitions)
+    ddf.to_parquet(output_dir, write_index=False)
 
-    encoding_maps = build_encoding_maps(ddf)
-    ddf = encode_categorical_features(ddf, encoding_maps)
+    ddf_features = dd.read_parquet(output_dir)
+    n_out = ddf_features.npartitions
+    ddf_features = ddf_features.repartition(npartitions=min(n_out, 50))
 
-    written = write_features_parquet(ddf, output_dir)
-    export_feature_matrix_csv(ddf, output_dir)
-
-    logger.info("Features pipeline complete. %d files written.", len(written))
-    return written
+    logger.info("Features stage complete. Output: %s", output_dir)
+    return ddf_features
 
 
 if __name__ == "__main__":
-    paths = run_features_pipeline()
-    print(f"Features pipeline wrote {len(paths)} files.")
+    import argparse
+
+    from kgs_pipeline.config import CLEAN_DIR, FEATURES_DIR
+
+    parser = argparse.ArgumentParser(description="KGS features stage")
+    parser.add_argument("--clean-dir", default=str(CLEAN_DIR))
+    parser.add_argument("--output-dir", default=str(FEATURES_DIR))
+    args = parser.parse_args()
+
+    run_features(args.clean_dir, args.output_dir)

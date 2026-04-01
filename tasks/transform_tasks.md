@@ -2,389 +2,438 @@
 
 ## Overview
 
-The transform component is responsible for:
-1. Loading the interim Parquet dataset from `data/interim/` via Dask.
-2. Parsing `MONTH_YEAR` strings (`M-YYYY` format) into proper `datetime64[ns]` values in a `production_date` column.
-3. Renaming all columns to `snake_case` and casting to their correct final dtypes.
-4. Exploding the comma-separated `api_number` column into one row per well, creating a `well_id` column.
-5. Validating physical production bounds: negative production is coerced to `NaN`; single-well monthly oil volumes above `CONFIG.oil_max_bbl_per_month` are flagged in an `outlier_flag` boolean column (not dropped).
-6. Deduplicating records on `[well_id, production_date, product]`.
-7. Preserving the zero-vs-null distinction: zeros in raw data remain `0.0`; missing data remains `NaN`.
-8. Adding a `unit` column (`BBL` for oil, `MCF` for gas).
-9. Sorting each well's records chronologically; repartitioning by `well_id`.
-10. Writing cleaned Parquet to `data/processed/`, partitioned by `well_id`, with a fixed `pyarrow.schema()` to prevent drift.
-11. Generating a cleaning report (JSON) summarising rows dropped, nulls filled, outliers flagged, and duplicates removed.
+The transform component loads interim Parquet files produced by the ingest stage from
+`data/interim/`, performs data cleaning (null handling, outlier capping, deduplication,
+string standardisation, date validation, physical-bound enforcement), and writes the cleaned
+result to `data/processed/clean/` as Parquet files. The output is per-lease production data
+in tidy, ML-ready format with correct dtypes, no duplicates, physically valid values, and a
+continuous monthly date index per lease. All heavy operations use Dask with `map_partitions`
+for partition-level parallelism.
 
-**Source module:** `kgs_pipeline/transform.py`
+**Module:** `kgs_pipeline/transform.py`
+**Entry-point CLI:** invoked by `pipeline.py --transform`
 **Test file:** `tests/test_transform.py`
 
 ---
 
-## Design Decisions & Constraints
+## Canonical column schema after transform
 
-- Python 3.11+. All functions must carry full type hints. Module must have a module-level docstring.
-- Use `dask.dataframe` throughout. Functions must return `dask.dataframe.DataFrame` unless otherwise stated. Never call `.compute()` in helper functions — only in `write_processed_parquet()`.
-- `PRODUCT` column distinguishes oil (`O`) and gas (`G`). After exploding by `well_id`, each row represents a single product type for a single well for a single month.
-- `api_number` (from `API_NUMBER`) is a comma-separated string like `"1500112345, 1500167890"`. Each entry becomes its own row. After explosion, `well_id` holds a single trimmed API number string. Rows where `api_number` is null or empty are assigned `well_id = "UNKNOWN_<LEASE_KID>"` to preserve the record rather than dropping it.
-- Physical bounds: a `PRODUCTION` value of `-5.0` is almost certainly a data entry error; set it to `NaN`. A value of `0.0` is a valid shut-in measurement; leave it as `0.0`.
-- The `outlier_flag` column is `True` when a single-well monthly oil production exceeds `CONFIG.oil_max_bbl_per_month` (50,000 BBL). It is always written; it does not drop the row.
-- Deduplication key: `[well_id, production_date, product]`. On duplicate, retain the row with the larger `PRODUCTION` value (prefer non-null data over null).
-- Partitioning by `well_id` ensures all records for a well are co-located, which is necessary for the correct per-well cumulative and rolling calculations in the features stage.
-- Use `CONFIG` from `kgs_pipeline/config.py` and `setup_logging("transform", CONFIG.logs_dir)` from `kgs_pipeline/utils.py`.
-- Enforce a fixed Parquet output schema using `pyarrow.schema()` at write time.
+After the transform stage completes, the processed Parquet files must contain at minimum
+the following columns with these types:
 
-### Expected processed Parquet schema
-
-| Column | dtype | Notes |
-|--------|-------|-------|
-| `well_id` | `string` | Single trimmed API number, or `UNKNOWN_<LEASE_KID>` |
-| `lease_kid` | `int64` | KGS lease unique ID |
-| `lease` | `string` | Lease name |
-| `dor_code` | `string` | KS DOR ID |
-| `field` | `string` | Field name |
-| `producing_zone` | `string` | Producing formation |
-| `operator` | `string` | Operator name |
-| `county` | `string` | County name |
-| `township` | `string` | PLSS township |
-| `twn_dir` | `string` | Township direction |
-| `range_` | `string` | PLSS range (renamed to avoid Python keyword) |
-| `range_dir` | `string` | Range direction |
-| `section` | `string` | PLSS section |
-| `spot` | `string` | Legal quarter description |
-| `latitude` | `float64` | NAD 1927 latitude |
-| `longitude` | `float64` | NAD 1927 longitude |
-| `production_date` | `datetime64[ns]` | First day of the production month |
-| `product` | `string` | `O` (oil) or `G` (gas) |
-| `wells` | `Int64` | Number of contributing wells (nullable int) |
-| `production` | `float64` | Production volume |
-| `unit` | `string` | `BBL` (oil) or `MCF` (gas) |
-| `outlier_flag` | `bool` | True if production > `oil_max_bbl_per_month` for oil rows |
-| `source_file` | `string` | Source filename stem |
+| Column name       | Dtype               | Notes                                             |
+|-------------------|---------------------|---------------------------------------------------|
+| LEASE_KID         | pd.StringDtype()    | Lease identifier                                  |
+| LEASE             | pd.StringDtype()    | Lease name (uppercased, stripped)                 |
+| API_NUMBER        | pd.StringDtype()    | Well API numbers (uppercased, stripped)           |
+| FIELD             | pd.StringDtype()    | Field name (uppercased, stripped)                 |
+| PRODUCING_ZONE    | pd.StringDtype()    | Formation (uppercased, stripped)                  |
+| OPERATOR          | pd.StringDtype()    | Operator name (uppercased, stripped)              |
+| COUNTY            | pd.StringDtype()    | County (uppercased, stripped)                     |
+| PRODUCT           | pd.StringDtype()    | "O" or "G" (uppercased, stripped)                 |
+| MONTH-YEAR        | pd.StringDtype()    | Original "M-YYYY" string retained                 |
+| production_date   | datetime64[ns]      | First day of the production month                 |
+| PRODUCTION        | float64             | Oil BBL or gas MCF; zero is valid, negatives capped|
+| WELLS             | float64             | Number of wells; may be NaN                       |
+| LATITUDE          | float64             | May be NaN                                        |
+| LONGITUDE         | float64             | May be NaN                                        |
+| source_file       | pd.StringDtype()    | Raw source filename                               |
 
 ---
 
-## Task 12: Implement interim Parquet reader
+## Design decisions and constraints
 
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `load_interim_parquet(interim_dir: Path | None = None) -> dask.dataframe.DataFrame`
-
-**Description:**
-Load all Parquet files from `interim_dir` (default: `CONFIG.interim_dir`) using `dask.dataframe.read_parquet()`. Use the `pyarrow` engine. Return the lazy Dask DataFrame without calling `.compute()`. Log the number of Parquet files found and the inferred partition count at INFO level.
-
-**Error handling:**
-- Raise `FileNotFoundError` if `interim_dir` does not exist.
-- Raise `RuntimeError("No Parquet files found in interim_dir; run ingest pipeline first.")` if the directory is empty of Parquet files.
-
-**Dependencies:** dask.dataframe, pathlib, logging, kgs_pipeline.config
-
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Write a small fixture Parquet file to `tmp_path`; call `load_interim_parquet(tmp_path)` and assert the return type is `dask.dataframe.DataFrame`.
-- `@pytest.mark.unit` — Call with a non-existent directory; assert `FileNotFoundError` is raised.
-- `@pytest.mark.unit` — Call with an empty directory (no Parquet files); assert `RuntimeError` is raised.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`, not `pandas.DataFrame` (lazy evaluation — no `.compute()` in this test).
-- `@pytest.mark.integration` — Call with `CONFIG.interim_dir` populated by the ingest stage; assert return type and that `ddf.npartitions >= 1`.
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+- All Parquet reads and writes use Dask. No `.compute()` calls inside module functions — all
+  functions return `dask.dataframe.DataFrame`. `[TR-17]`
+- After reading interim Parquet, immediately repartition to `min(npartitions, 50)`.
+- String filtering and row-level operations must be implemented inside `map_partitions`
+  functions. Do not apply `.str` accessor directly on Dask Series. All `meta=` arguments use
+  `pd.StringDtype()` for string columns, never `"object"`.
+- Output file count: repartition to `max(1, total_rows // 500_000)` before writing. Never
+  more than 200 output files.
+- Zero PRODUCTION values are valid measurements and must be preserved as-is throughout. `[TR-05]`
+- Negative PRODUCTION values are physically impossible and must be capped to 0.0 during
+  cleaning. `[TR-01]`
+- Physical-bound violations for PRODUCTION values above the unit-error threshold
+  (> 50,000 BBL/month for a single lease record) must be logged as WARNING but are not removed —
+  they are capped via the IQR outlier method. `[TR-02]`
+- Deduplication is on the composite key `(LEASE_KID, MONTH-YEAR, PRODUCT)`. `[TR-15]`
+- String standardisation: uppercase + strip all string-typed columns.
+- `requirements.txt` must be updated with all third-party packages imported in this module.
 
 ---
 
-## Task 13: Implement production date parser
+## Task 01: Implement interim Parquet reader
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `parse_production_date(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `load_interim(interim_dir: str) -> dask.dataframe.DataFrame`
 
 **Description:**
-Convert the `MONTH_YEAR` column (format `M-YYYY` or `MM-YYYY`, e.g., `1-2020`, `12-2021`) into a `production_date` column of dtype `datetime64[ns]` representing the first day of that production month (day = 1).
+Read all Parquet files from `interim_dir` into a Dask DataFrame. Immediately repartition to
+`min(npartitions, 50)` partitions before returning. Raise `ValueError` if `interim_dir` is
+empty or contains no Parquet files.
 
-Implementation:
-- Use `dask.dataframe.to_datetime` or `map_partitions` with `pandas.to_datetime` on a constructed `"YYYY-MM-01"` string.
-- Split `MONTH_YEAR` on `"-"` to extract month and year components.
-- Construct the ISO date string `"<year>-<month_zero_padded>-01"`.
-- Rows where the parse fails become `NaT` (log count at WARNING). Do not drop them here — nulls are handled in the validation step.
-- Drop the original `MONTH_YEAR` column after creating `production_date`.
-- Return the lazy Dask DataFrame.
+**Inputs:** `interim_dir: str` — path to `data/interim/`.
 
-**Error handling:**
-- Raise `KeyError("MONTH_YEAR column not found")` if the column is absent.
-- Must not call `.compute()`.
+**Outputs:** `dask.dataframe.DataFrame` — repartitioned, not yet computed.
 
-**Dependencies:** dask.dataframe, pandas, logging
+**Edge cases:**
+- Directory does not exist → raise `FileNotFoundError`.
+- Directory exists but has no Parquet files → raise `ValueError`.
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture with `MONTH_YEAR = "1-2020"`; after `parse_production_date` and `.compute()`, assert `production_date` is `Timestamp("2020-01-01")`.
-- `@pytest.mark.unit` — Build a fixture with `MONTH_YEAR = "12-2021"`; assert `production_date` is `Timestamp("2021-12-01")`.
-- `@pytest.mark.unit` — Build a fixture with an invalid `MONTH_YEAR` value; assert the corresponding row has `production_date = NaT` (not an exception).
-- `@pytest.mark.unit` — Assert `MONTH_YEAR` column is absent from the output (it must be dropped).
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
+**Test cases:**
+- `@pytest.mark.unit` — Write a minimal Parquet file to `tmp_path`, call `load_interim`; assert
+  the return type is `dask.dataframe.DataFrame`. `[TR-17]`
+- `@pytest.mark.unit` — Assert the returned DataFrame has `npartitions <= 50`.
+- `@pytest.mark.unit` — Given an empty directory, assert `ValueError` is raised.
+- `@pytest.mark.integration` — Load from actual `data/interim/`; assert return type and
+  partition count. `[TR-18]`
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 14: Implement column renaming and snake_case normalization
+## Task 02: Implement null handling
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `normalize_column_names(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `handle_nulls(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Rename all DataFrame columns to `snake_case` following the mapping in the processed schema table above. Specifically:
-- Replace spaces with underscores.
-- Convert to lowercase.
-- Rename `RANGE` to `range_` (to avoid collision with the Python built-in).
-- Apply the full column renaming map via `ddf.rename(columns=COLUMN_RENAME_MAP)` where `COLUMN_RENAME_MAP` is a module-level constant dict in `transform.py`.
-- Return the renamed lazy Dask DataFrame.
+Handle missing values using `map_partitions` to apply per-partition Pandas logic:
+1. Numeric columns (`PRODUCTION`, `WELLS`, `LATITUDE`, `LONGITUDE`): impute NaN with the
+   **partition-level median**. If the entire column in a partition is NaN, leave as NaN
+   (do not impute with 0 or a cross-partition median — this avoids computing a global stat
+   inside Dask).
+2. Categorical/string columns (`LEASE`, `OPERATOR`, `COUNTY`, `PRODUCT`, `PRODUCING_ZONE`,
+   `FIELD`): impute NaN/NA with the partition-level **mode** (most frequent value). If the
+   column is entirely null in a partition, fill with the sentinel string `"UNKNOWN"`.
+3. `LEASE_KID`, `API_NUMBER`, `MONTH-YEAR`, `source_file`: do not impute — these are identity
+   columns; rows where these are null should be DROPPED.
+4. After dropping identity-null rows, return the modified Dask DataFrame.
 
-**Error handling:**
-- Log a WARNING for any expected column that is absent from the DataFrame (do not raise — partial rename is acceptable).
-- Must not call `.compute()`.
+All operations must be inside `map_partitions` with correct `meta=` typed with
+`pd.StringDtype()` for string columns.
 
-**Dependencies:** dask.dataframe, logging
+**Inputs:** `ddf: dask.dataframe.DataFrame`
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture with columns `["LEASE_KID", "MONTH_YEAR", "PRODUCT", "PRODUCTION", "API_NUMBER"]`; after `normalize_column_names`, assert `ddf.columns` contains `["lease_kid", "month_year", "product", "production", "api_number"]` (no uppercase letters).
-- `@pytest.mark.unit` — Assert `range_` is present if `RANGE` was in the input (Python keyword avoidance).
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
-- `@pytest.mark.unit` — Call with a DataFrame that has an unexpected extra column; assert no exception is raised and the extra column is preserved with its original name.
+**Outputs:** `dask.dataframe.DataFrame`
 
-**Definition of done:** Function is implemented, `COLUMN_RENAME_MAP` constant is defined at module level, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Test cases:**
+- `@pytest.mark.unit` — Given a partition with 3 rows where PRODUCTION is [100.0, NaN, 200.0],
+  assert the NaN is imputed to 150.0 (median).
+- `@pytest.mark.unit` — Given a partition where COUNTY is ["Allen", NaN, "Allen"], assert the
+  NaN is imputed to "Allen" (mode).
+- `@pytest.mark.unit` — Given a partition where LEASE_KID is null for one row, assert that row
+  is dropped. `[TR-12]`
+- `@pytest.mark.unit` — Assert that a row with PRODUCTION=0.0 (explicit zero) is NOT imputed.
+  `[TR-05]`
+- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame`. `[TR-17]`
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 15: Implement API number explosion to well_id rows
+## Task 03: Implement duplicate removal
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `explode_api_numbers(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `remove_duplicates(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-The `api_number` column contains comma-separated API number strings (e.g., `"1500112345, 1500167890"`). Transform the DataFrame so that each row corresponds to exactly one well:
+Remove duplicate records based on the composite key `(LEASE_KID, MONTH-YEAR, PRODUCT)`.
+Implementation steps:
+1. Use `map_partitions` to apply `pd.DataFrame.drop_duplicates(subset=[...], keep="first")`
+   within each partition.
+2. After partition-level deduplication, apply a cross-partition deduplication by computing the
+   full DataFrame, deduplicating globally, and converting back to Dask. This is required because
+   duplicates may span partition boundaries after the repartition step. Call `.compute()`
+   **only for this cross-partition dedup step**, then immediately convert back to Dask via
+   `dask.dataframe.from_pandas`.
+3. Repartition the result to `min(npartitions, 50)` before returning.
+4. Return `dask.dataframe.DataFrame`.
 
-1. Split `api_number` on `","` to produce a list of trimmed strings per row.
-2. Explode the list column so each trimmed API number becomes its own row (use `map_partitions` with pandas `.explode()`).
-3. Strip whitespace from each resulting `api_number` value.
-4. Rename the exploded column to `well_id`.
-5. For rows where the original `api_number` was null, empty, or contained only whitespace, assign `well_id = f"UNKNOWN_{lease_kid}"` where `lease_kid` is the value in the row's `lease_kid` column.
-6. Return the expanded lazy Dask DataFrame.
+The post-dedup row count must be <= the pre-dedup row count (never greater). `[TR-15]`
+Running this function twice must produce the same row count as running it once (idempotent).
+`[TR-15]`
 
-**Constraint:** After explosion, every row must have a non-null, non-empty `well_id`. The original `api_number` column must be dropped from the output.
+**Inputs:** `ddf: dask.dataframe.DataFrame`
 
-**Dependencies:** dask.dataframe, pandas, logging
+**Outputs:** `dask.dataframe.DataFrame`
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture with one row where `api_number = "1500112345, 1500167890"` and `lease_kid = 999`; after `explode_api_numbers` and `.compute()`, assert the result has 2 rows with `well_id` values `"1500112345"` and `"1500167890"`.
-- `@pytest.mark.unit` — Build a fixture with one row where `api_number = "1500112345"` (single value); assert the result has exactly 1 row.
-- `@pytest.mark.unit` — Build a fixture with one row where `api_number` is null and `lease_kid = 42`; assert `well_id = "UNKNOWN_42"`.
-- `@pytest.mark.unit` — Assert `api_number` column is absent from the output.
-- `@pytest.mark.unit` — Assert all `well_id` values in the output are non-null and non-empty strings.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
+**Test cases:**
+- `@pytest.mark.unit` — Given a DataFrame with 5 rows where 2 rows share the same
+  `(LEASE_KID, MONTH-YEAR, PRODUCT)`, assert output has 4 rows (one duplicate removed).
+  `[TR-15]`
+- `@pytest.mark.unit` — Apply `remove_duplicates` twice to the same input; assert the row
+  count after the second call equals the row count after the first call (idempotency). `[TR-15]`
+- `@pytest.mark.unit` — Assert that row count after deduplication is <= row count before. `[TR-15]`
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 16: Implement physical bounds validation
+## Task 04: Implement physical-bound enforcement and outlier capping
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `validate_physical_bounds(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `cap_outliers(ddf: dask.dataframe.DataFrame, iqr_multiplier: float = 1.5) -> dask.dataframe.DataFrame`
 
 **Description:**
-Apply domain-specific physical constraints to the production data:
+Apply outlier detection and capping to the `PRODUCTION` column using the IQR method:
+1. **Physical lower bound:** any PRODUCTION value < 0.0 is capped to 0.0 first. Negative
+   production is physically impossible regardless of statistical distribution. `[TR-01]`
+2. **IQR upper bound:** compute Q1 and Q3 across all data (this requires `.compute()` once to
+   get global quantiles — call `.compute()` only on the quantile calculation, not the full
+   DataFrame). Upper fence = Q3 + `iqr_multiplier` × (Q3 − Q1). Any value above the upper
+   fence is capped to the upper fence value.
+3. **Unit-error warning:** after capping, if any PRODUCTION value > 50,000.0 remains for a
+   single monthly record (O product, oil in BBL), log a WARNING listing the LEASE_KID and
+   MONTH-YEAR. These records are suspicious but are not removed. `[TR-02]`
+4. Apply the capping via `map_partitions` so the actual transformation is lazy.
+5. Return `dask.dataframe.DataFrame`.
 
-1. **Negative production:** Set any `production` value < 0 to `NaN`. These are data entry errors (production cannot be negative — a physical law). Log the count of rows affected at WARNING level.
-2. **Zero production:** Leave `production == 0.0` values unchanged. Zero is a valid measurement (shut-in well). Do not coerce to NaN.
-3. **Oil outlier flagging:** Add an `outlier_flag` boolean column. Set `outlier_flag = True` for rows where `product == "O"` and `production > CONFIG.oil_max_bbl_per_month`. For all other rows, `outlier_flag = False`. Do NOT drop these rows.
-4. **Unit assignment:** Add a `unit` column: `"BBL"` where `product == "O"`, `"MCF"` where `product == "G"`, and `NaN` for any other product value.
+**Inputs:**
+- `ddf: dask.dataframe.DataFrame`
+- `iqr_multiplier: float` — IQR fence multiplier (default 1.5, configurable via pipeline config).
 
-**Physical law notes (from domain expert):**
-- Production volumes (oil, gas, water) cannot be negative — any negative value is a sensor or data entry error.
-- A well reporting zero production for a month is a shut-in or idle well — this is a valid operational state, not missing data.
-- Oil rates above 50,000 BBL/month for a single lease/well are physically plausible only for very high-volume wells; for Kansas (a low-to-moderate production state), this threshold flags likely unit conversion errors (e.g., annual production mistakenly entered as monthly).
+**Outputs:** `dask.dataframe.DataFrame`
 
-**Error handling:**
-- Raise `KeyError` if `production` or `product` column is absent.
-- Must not call `.compute()`.
+**Test cases:**
+- `@pytest.mark.unit` — Given a PRODUCTION column with values [100, 200, 150, -50, 99999],
+  assert the -50 is capped to 0.0 and the 99999 is capped to the IQR upper fence value. `[TR-01]`
+- `@pytest.mark.unit` — Assert no PRODUCTION value in the output is < 0.0. `[TR-01]`
+- `@pytest.mark.unit` — Assert no PRODUCTION value exceeds the computed upper fence after capping.
+- `@pytest.mark.unit` — Given a PRODUCTION value of exactly 0.0, assert it is NOT changed
+  (physical zero is valid). `[TR-05]`
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`. `[TR-17]`
 
-**Dependencies:** dask.dataframe, logging, kgs_pipeline.config
-
-**Test cases (`tests/test_transform.py`):**
-
-*Physical bound validation (domain):*
-- `@pytest.mark.unit` — Build a fixture with `production = -5.0`; assert after `validate_physical_bounds` and `.compute()` the value is `NaN`.
-- `@pytest.mark.unit` — Build a fixture with `production = 0.0`; assert the value remains `0.0` after `.compute()` (zero-production preservation test).
-- `@pytest.mark.unit` — Build a fixture with `product = "O"` and `production = 60000.0`; assert `outlier_flag = True` in the output and the row is **not** dropped.
-- `@pytest.mark.unit` — Build a fixture with `product = "O"` and `production = 100.0`; assert `outlier_flag = False`.
-- `@pytest.mark.unit` — Build a fixture with `product = "G"` and `production = 999999.0`; assert `outlier_flag = False` (gas has no outlier threshold in this implementation).
-- `@pytest.mark.unit` — Assert `unit = "BBL"` for oil rows and `unit = "MCF"` for gas rows.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 17: Implement deduplication
+## Task 05: Implement string standardisation
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `deduplicate_records(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `standardise_strings(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Remove duplicate records based on the key `[well_id, production_date, product]`. Where duplicates exist, retain the row with the higher `production` value (preferring actual data over null). Implementation:
+Standardise all string-typed columns to uppercase with no leading/trailing whitespace.
+String columns to standardise: `LEASE`, `OPERATOR`, `COUNTY`, `PRODUCT`, `PRODUCING_ZONE`,
+`FIELD`, `API_NUMBER`, `LEASE_KID`, `SPOT`, `TWN_DIR`, `RANGE_DIR`.
 
-1. Sort each partition by `production` descending (so the highest value comes first).
-2. Drop duplicates on `[well_id, production_date, product]`, keeping the first (highest production) row per group.
-3. Log the count of removed duplicate rows at INFO level.
-4. Return the deduplicated lazy Dask DataFrame.
+Implement using `map_partitions`. For each string column, apply `.str.upper().str.strip()`.
+Do not modify numeric or datetime columns.
 
-**Note:** Since Dask operates partition-by-partition, full cross-partition deduplication requires a shuffle. Use `ddf.drop_duplicates(subset=["well_id", "production_date", "product"], split_out=...)` with an appropriate `split_out` argument. Alternatively, use `map_partitions` with intra-partition dedup and document the limitation.
+**Inputs:** `ddf: dask.dataframe.DataFrame`
 
-**Error handling:**
-- Raise `KeyError` if any of `well_id`, `production_date`, or `product` columns are absent.
-- Must not call `.compute()`.
+**Outputs:** `dask.dataframe.DataFrame` with standardised string columns.
 
-**Dependencies:** dask.dataframe, logging
+**Test cases:**
+- `@pytest.mark.unit` — Given COUNTY values [" Allen ", "barton", "CHASE"], assert output is
+  ["ALLEN", "BARTON", "CHASE"].
+- `@pytest.mark.unit` — Given PRODUCT values ["o", "g", " O "], assert output is ["O", "G", "O"].
+- `@pytest.mark.unit` — Assert numeric column PRODUCTION is unchanged by this function.
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture with 3 rows: two duplicates on `[well_id, production_date, product]` (one with `production=100.0`, one with `production=50.0`) and one unique row. After `deduplicate_records` and `.compute()`, assert 2 rows remain, and the retained duplicate has `production=100.0`.
-- `@pytest.mark.unit` — Build a fixture with no duplicates; assert the row count is unchanged.
-- `@pytest.mark.unit` — Build a fixture where a duplicate pair has one null `production`; assert the non-null row is retained.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
-
-**Row count reconciliation test (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Run `deduplicate_records` twice on the same fixture (idempotency test); assert both runs produce the same row count and identical data.
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 18: Implement per-well chronological sort and well_id repartition
+## Task 06: Implement production_date derivation
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `sort_and_repartition(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `derive_production_date(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
 **Description:**
-Sort the Dask DataFrame by `[well_id, production_date]` ascending and repartition by `well_id` so that all records for each well land in a single partition (or minimal partition set). Implementation:
+Create a `production_date` column of type `datetime64[ns]` from the `MONTH-YEAR` string column.
+Steps:
+1. Inside a `map_partitions` function, parse "M-YYYY" by splitting on "-" and constructing a
+   date string "YYYY-MM-01" (zero-pad the month to 2 digits).
+2. Use `pd.to_datetime` with `format="%Y-%m-%d"` to convert. Non-parseable values become NaT.
+3. Drop rows where `production_date` is NaT.
+4. The `MONTH-YEAR` string column is retained alongside `production_date`.
 
-1. Use `ddf.sort_values(["well_id", "production_date"])` to produce a sorted lazy DataFrame.
-2. Repartition using `ddf.repartition(partition_size="64MB")` or an explicit partition count to produce balanced partitions. The resulting partition structure must group records by `well_id` as closely as possible.
-3. Return the sorted, repartitioned lazy Dask DataFrame.
+**Inputs:** `ddf: dask.dataframe.DataFrame`
 
-**Sort stability constraint:** The last row of one partition for a given `well_id` must have a `production_date` earlier than the first row of the same `well_id` in the next partition. This is the sort stability requirement.
+**Outputs:** `dask.dataframe.DataFrame` with an additional `production_date` column.
 
-**Error handling:**
-- Raise `KeyError` if `well_id` or `production_date` columns are absent.
-- Must not call `.compute()`.
+**Edge cases:**
+- MONTH-YEAR "1-2024" → production_date `2024-01-01`.
+- MONTH-YEAR "12-2024" → production_date `2024-12-01`.
+- Malformed MONTH-YEAR → NaT → row is dropped.
+- MONTH-YEAR "0-2024" (yearly summary) → should have been filtered in ingest; if present here,
+  it will produce an invalid month → NaT → dropped.
 
-**Dependencies:** dask.dataframe, logging
+**Test cases:**
+- `@pytest.mark.unit` — Given MONTH-YEAR "3-2024", assert production_date is `pd.Timestamp("2024-03-01")`.
+- `@pytest.mark.unit` — Given MONTH-YEAR "12-2024", assert production_date is `pd.Timestamp("2024-12-01")`.
+- `@pytest.mark.unit` — Given a malformed MONTH-YEAR value "bad-data", assert the row is
+  dropped (NaT → drop).
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture with 3 rows for the same `well_id` in random date order; after `sort_and_repartition` and `.compute()`, assert dates are in ascending order.
-- `@pytest.mark.unit` — Build a fixture with 2 different `well_id` values; assert each `well_id`'s dates are internally ascending.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`.
-
-**Sort stability test (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture that spans multiple Dask partitions; after `.compute()` reconstruct per-well sequences and assert dates are globally monotonically increasing per `well_id` (no cross-partition date inversions).
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 19: Implement processed Parquet writer
+## Task 07: Implement well completeness check
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `write_processed_parquet(ddf: dask.dataframe.DataFrame, output_dir: Path | None = None) -> list[Path]`
+**Function:** `check_well_completeness(ddf: dask.dataframe.DataFrame) -> pd.DataFrame`
 
 **Description:**
-Write the cleaned, typed, sorted Dask DataFrame to Parquet in `output_dir` (default: `CONFIG.processed_dir`), partitioned by `well_id`. Use `pyarrow` engine. Enforce the expected schema by constructing a `pyarrow.schema()` object and passing it to `ddf.to_parquet(schema=...)`. This is the **only** `.compute()` call in the transform component. Call `ensure_dir(output_dir)` before writing. Return a sorted list of all `.parquet` file paths written.
+Produce a diagnostic summary DataFrame that, for each `(LEASE_KID, PRODUCT)` group, reports:
+- `first_date`: earliest `production_date`
+- `last_date`: latest `production_date`
+- `expected_months`: number of calendar months between first and last date (inclusive)
+- `actual_months`: count of distinct `production_date` values
+- `gap_months`: `expected_months - actual_months` (number of missing monthly records)
+- `has_gaps`: boolean, True if `gap_months > 0`
 
-**Schema enforcement:** Build the `pyarrow.schema()` from the column dtypes in the processed schema table. This prevents schema drift when one well's partition has all-null values in a column (where type inference would guess wrong).
+This function calls `.compute()` to materialise the result as a Pandas DataFrame (it is a
+diagnostic/reporting function, not a transformation function). Log a WARNING for each
+LEASE_KID/PRODUCT pair that has `has_gaps == True`, listing the gap count.
 
-**Dependencies:** dask.dataframe, pyarrow, pathlib, logging, kgs_pipeline.config, kgs_pipeline.utils
+This function is called by `run_transform` after writing the cleaned output, for logging
+purposes only — its return value is not written to Parquet. `[TR-04]`
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a small typed Dask DataFrame conforming to the processed schema; call `write_processed_parquet(ddf, tmp_path)`; assert at least one `.parquet` file is written and the function returns a non-empty list of `Path` objects.
-- `@pytest.mark.unit` — Read back one written Parquet file with `pandas.read_parquet`; spot-check 5 columns and their dtypes match the processed schema.
-- `@pytest.mark.unit` — Assert every returned path exists on disk and has size > 0.
-- `@pytest.mark.unit` — Assert every written Parquet file is readable by `dask.dataframe.read_parquet` without raising.
+**Inputs:** `ddf: dask.dataframe.DataFrame` — cleaned Dask DataFrame with `production_date`.
 
-**Partition correctness test (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture with rows for 3 different `well_id` values, partitioned by `well_id`; after writing and reading back, read each Parquet file individually and assert each contains data for exactly one `well_id`.
+**Outputs:** `pd.DataFrame` — one row per `(LEASE_KID, PRODUCT)` with completeness stats.
 
-**Schema stability test (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Write two fixture DataFrames representing two wells (one where `latitude` is all-null, one where it is populated); read back each Parquet file and assert both have identical column names and dtypes.
+**Test cases:**
+- `@pytest.mark.unit` — Given a lease with production months Jan-2024, Feb-2024, Apr-2024
+  (March missing), assert `gap_months == 1` and `has_gaps == True`. `[TR-04]`
+- `@pytest.mark.unit` — Given a lease with a continuous Jan-2024 to Dec-2024 (12 months),
+  assert `gap_months == 0` and `has_gaps == False`. `[TR-04]`
+- `@pytest.mark.unit` — Assert the output is a `pd.DataFrame` (this function is allowed to
+  call `.compute()`).
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 20: Implement cleaning report generator
+## Task 08: Implement data integrity spot-check
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `generate_cleaning_report(stats: dict, output_dir: Path | None = None) -> Path`
+**Function:** `spot_check_integrity(raw_dir: str, clean_ddf: dask.dataframe.DataFrame, sample_n: int = 20) -> pd.DataFrame`
 
 **Description:**
-Write a JSON cleaning report file to `output_dir / "cleaning_report.json"` (default: `CONFIG.processed_dir`). The `stats` dict is built incrementally by the transform orchestrator and must include:
+Randomly sample `sample_n` `(LEASE_KID, MONTH-YEAR, PRODUCT)` combinations from the cleaned
+Dask DataFrame. For each sampled combination, read the corresponding raw file (using
+`source_file` to identify it), look up the matching raw row(s), and compare the PRODUCTION
+value to the cleaned value. Return a Pandas DataFrame with columns:
+`LEASE_KID`, `MONTH-YEAR`, `PRODUCT`, `raw_production`, `clean_production`, `match`.
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `input_row_count` | `int` | Rows loaded from interim Parquet |
-| `rows_after_filter` | `int` | After monthly filter (already applied in ingest) |
-| `negative_production_set_nan` | `int` | Count of negative production values coerced to NaN |
-| `outliers_flagged` | `int` | Count of rows with `outlier_flag = True` |
-| `duplicates_removed` | `int` | Count of rows removed by deduplication |
-| `null_production_date_dropped` | `int` | Count of rows dropped due to NaT `production_date` |
-| `unknown_well_id_assigned` | `int` | Count of rows assigned `UNKNOWN_*` well_id |
-| `output_row_count` | `int` | Rows written to processed Parquet |
-| `output_parquet_files` | `int` | Count of Parquet files written |
-| `pipeline_run_timestamp` | `str` | ISO 8601 timestamp of the transform run |
+`match` is True if `abs(raw_production - clean_production) < 1e-6` (no transformation applied)
+or if the cleaned value equals the IQR upper fence (capped outlier — expected difference).
 
-Call `ensure_dir(output_dir)` before writing. Return the `Path` to the written JSON file.
+This function calls `.compute()` (it is a diagnostic function). `[TR-11]`
 
-**Dependencies:** json, pathlib, datetime, kgs_pipeline.utils
+**Inputs:**
+- `raw_dir: str` — directory containing original raw `.txt` files.
+- `clean_ddf: dask.dataframe.DataFrame`
+- `sample_n: int` — number of records to spot-check.
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Call `generate_cleaning_report` with a complete `stats` dict and `tmp_path`; assert the returned path exists, ends with `cleaning_report.json`, and can be parsed as valid JSON.
-- `@pytest.mark.unit` — Read the written JSON and assert all 10 required keys are present.
-- `@pytest.mark.unit` — Assert the `pipeline_run_timestamp` value parses as a valid ISO 8601 datetime string.
+**Outputs:** `pd.DataFrame` — spot-check results with `match` column.
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Test cases:**
+- `@pytest.mark.unit` — Given a synthetic raw file and a clean Dask DataFrame built from it
+  (with no outlier capping applied), assert all `match` values are True. `[TR-11]`
+- `@pytest.mark.unit` — Given a row with a capped outlier in the clean data, assert the
+  `match` column for that row is True (capped value is an accepted difference). `[TR-11]`
+
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 21: Implement transform orchestrator
+## Task 09: Implement transform orchestrator
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `run_transform_pipeline(interim_dir: Path | None = None, output_dir: Path | None = None) -> list[Path]`
+**Function:** `run_transform(interim_dir: str, output_dir: str, raw_dir: str, iqr_multiplier: float = 1.5) -> dask.dataframe.DataFrame`
 
 **Description:**
-Orchestrate the full transform workflow in sequence:
-1. `load_interim_parquet(interim_dir)` → lazy Dask DataFrame.
-2. `parse_production_date(ddf)` → date-parsed lazy Dask DataFrame.
-3. `normalize_column_names(ddf)` → renamed lazy Dask DataFrame.
-4. `explode_api_numbers(ddf)` → exploded lazy Dask DataFrame.
-5. `validate_physical_bounds(ddf)` → validated lazy Dask DataFrame.
-6. `deduplicate_records(ddf)` → deduplicated lazy Dask DataFrame.
-7. `sort_and_repartition(ddf)` → sorted lazy Dask DataFrame.
-8. `write_processed_parquet(ddf, output_dir)` → written Parquet paths (triggers `.compute()`).
-9. `generate_cleaning_report(stats, output_dir)` → cleaning report JSON path.
+Main entry point for the transform stage. Chains all cleaning steps and writes output:
+1. `load_interim(interim_dir)` → `ddf`
+2. `handle_nulls(ddf)` → `ddf`
+3. `remove_duplicates(ddf)` → `ddf`
+4. `cap_outliers(ddf, iqr_multiplier)` → `ddf`
+5. `standardise_strings(ddf)` → `ddf`
+6. `derive_production_date(ddf)` → `ddf`
+7. Repartition to `max(1, estimated_rows // 500_000)` — estimate rows from metadata without
+   calling `.compute()` on the full DataFrame.
+8. Write to `output_dir` via `ddf.to_parquet(output_dir, write_index=False)`.
+9. Re-read from `output_dir`: `ddf_clean = dask.dataframe.read_parquet(output_dir)`.
+10. Repartition to `min(npartitions, 50)`.
+11. Call `check_well_completeness(ddf_clean)` (diagnostic logging only).
+12. Call `spot_check_integrity(raw_dir, ddf_clean)` (diagnostic logging only).
+13. Return `ddf_clean`.
 
-The orchestrator must accumulate statistics into the `stats` dict throughout the pipeline (e.g., count rows at key checkpoints by reading Parquet metadata after writing — do not call `.compute()` on the Dask DataFrame itself mid-pipeline to count rows). Return the list of written Parquet paths.
+The returned Dask DataFrame must NOT have been computed. `[TR-17]`
 
-**Error handling:**
-- If `load_interim_parquet` raises `RuntimeError`, propagate it.
-- Log the start and end of each stage at INFO level with elapsed time (use the `timer` decorator from `utils.py`).
+**Inputs:**
+- `interim_dir: str` — path to interim Parquet files.
+- `output_dir: str` — path to `data/processed/clean/`.
+- `raw_dir: str` — path to `data/raw/` (used by spot-check only).
+- `iqr_multiplier: float` — passed to `cap_outliers`.
 
-**Dependencies:** dask.dataframe, pathlib, logging, kgs_pipeline.config, kgs_pipeline.utils
+**Outputs:** `dask.dataframe.DataFrame`
 
-**Test cases (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Run `run_transform_pipeline` with all stage functions patched to return small fixture DataFrames; assert the function returns a non-empty list and `generate_cleaning_report` is called exactly once.
-- `@pytest.mark.unit` — Patch `load_interim_parquet` to raise `RuntimeError`; assert `run_transform_pipeline` propagates the error.
-- `@pytest.mark.integration` — Run `run_transform_pipeline` against real `CONFIG.interim_dir` data; assert output Parquet files are written to `CONFIG.processed_dir` and `cleaning_report.json` exists.
+**Test cases:**
+- `@pytest.mark.unit` — Run `run_transform` on a `tmp_path`-based fixture with 10 synthetic
+  rows; assert return type is `dask.dataframe.DataFrame`. `[TR-17]`
+- `@pytest.mark.unit` — Assert the output Parquet directory contains between 1 and 200 files.
+- `@pytest.mark.unit` — Read back the written Parquet with a fresh `dask.dataframe.read_parquet`
+  call; assert it succeeds without error. `[TR-18]`
+- `@pytest.mark.unit` — Assert all required schema columns are present in the output. `[TR-14]`
+- `@pytest.mark.unit` — Assert `production_date` column has dtype `datetime64[ns]`. `[TR-12]`
+- `@pytest.mark.unit` — Assert no PRODUCTION value < 0.0 in the output. `[TR-01]`
+- `@pytest.mark.unit` — Assert row count after transform <= row count in interim input. `[TR-15]`
+- `@pytest.mark.unit` — Assert zero PRODUCTION values are preserved (not nulled or dropped).
+  `[TR-05]`
+- `@pytest.mark.unit` — Sample two partition files from output, assert identical column names
+  and dtypes (schema stability). `[TR-14]`
+- `@pytest.mark.integration` — Run against actual `data/interim/`; assert output is in
+  `data/processed/clean/` and readable. `[TR-18]`
 
-**Data integrity spot-check test (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture with 5 known well records having specific `production` values; run the full pipeline on the fixture; read back the processed Parquet and assert the `production` values for at least 3 of the known wells match the input values (end-to-end data integrity check).
+**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
+errors, `requirements.txt` updated with all third-party packages imported in this task.
 
-**Well completeness test (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture for one well with 12 monthly records (Jan–Dec 2022); run `parse_production_date` + `sort_and_repartition`; after `.compute()` assert the well has exactly 12 records spanning January to December without gaps.
+---
 
-**Zero production preservation test (`tests/test_transform.py`):**
-- `@pytest.mark.unit` — Build a fixture where one well has `production = 0.0` for a given month and another well has a null `production` for that month; run the full transform pipeline on the fixture; assert the zero value is preserved as `0.0` and the null value remains `NaN` in the processed output.
+## Task 10: Implement sort stability and partition correctness tests
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report no errors, requirements.txt updated with all third-party packages imported in this task.
+**Module:** `tests/test_transform.py`
+**Test functions:** `test_sort_stability`, `test_partition_single_well_correctness`
+
+**Description:**
+
+**`test_sort_stability`** `[TR-16]`:
+Write a fixture that produces a cleaned Parquet output partitioned into at least 2 files for
+the same lease. For each adjacent pair of Parquet files for the same `LEASE_KID`, read them
+in order and assert that the last `production_date` value in file N is earlier than or equal
+to the first `production_date` value in file N+1. Sort stability must hold across partition
+boundaries.
+
+**`test_partition_single_well_correctness`** `[TR-13]`:
+Write a fixture that produces a multi-partition Parquet output. For each partition file,
+read it as a Pandas DataFrame and assert that all rows in that partition share the same
+`LEASE_KID` if partition_on was used. If no `partition_on` was used, this test verifies
+the data is not mixed across wells in any single partition.
+
+Note: given the non-negotiable constraint that `partition_on` with a high-cardinality column
+is forbidden, the transform stage writes without `partition_on`. The test instead verifies
+that sort order is maintained and that data integrity is upheld.
+
+**Test cases:**
+- `@pytest.mark.unit` — `test_sort_stability`: assert last date in partition N < first date in
+  partition N+1 for the same sorted partition sequence. `[TR-16]`
+- `@pytest.mark.unit` — `test_partition_single_well_correctness`: assert that schema is
+  consistent (same column names and dtypes) across all sampled partitions. `[TR-13, TR-14]`
+- `@pytest.mark.integration` — Run both tests against actual `data/processed/clean/` output.
+
+**Definition of done:** Test functions implemented, all assertions pass, ruff and mypy report
+no errors.

@@ -1,432 +1,348 @@
-"""Tests for kgs_pipeline/acquire.py (Tasks 01–05) and config/utils."""
+"""Tests for kgs_pipeline/acquire.py."""
 
-import asyncio
+import textwrap
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
+import pandas as pd  # type: ignore[import-untyped]
 import pytest
-from pydantic import ValidationError
 
-from kgs_pipeline.config import CONFIG, PipelineConfig
-from kgs_pipeline.utils import (
-    compute_file_hash,
-    ensure_dir,
-    is_valid_raw_file,
-    retry,
-    timer,
+from kgs_pipeline.acquire import (
+    ScrapingError,
+    download_file,
+    download_lease,
+    extract_lease_id,
+    load_lease_index,
+    run_acquire,
+    scrape_download_url,
 )
 
-
-# ---------------------------------------------------------------------------
-# Task 01: PipelineConfig tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_config_defaults():
-    """PipelineConfig() with no args has correct defaults."""
-    cfg = PipelineConfig()
-    assert cfg.raw_dir == Path("data/raw")
-    assert cfg.interim_dir == Path("data/interim")
-    assert cfg.processed_dir == Path("data/processed")
-    assert cfg.features_dir == Path("data/processed/features")
-    assert cfg.year_start == 2020
-    assert cfg.year_end == 2025
-    assert cfg.max_concurrent_requests == 5
-    assert cfg.oil_max_bbl_per_month == 50000.0
-    assert cfg.dask_n_workers == 4
-
-
-@pytest.mark.unit
-def test_config_singleton_is_pipeline_config():
-    """The module-level CONFIG singleton is a PipelineConfig instance."""
-    assert isinstance(CONFIG, PipelineConfig)
-
-
-@pytest.mark.unit
-def test_config_year_start_too_low():
-    with pytest.raises(ValidationError):
-        PipelineConfig(year_start=1990)
-
-
-@pytest.mark.unit
-def test_config_year_start_greater_than_end():
-    with pytest.raises(ValidationError):
-        PipelineConfig(year_start=2025, year_end=2020)
-
-
-@pytest.mark.unit
-def test_config_max_concurrent_requests_zero():
-    with pytest.raises(ValidationError):
-        PipelineConfig(max_concurrent_requests=0)
-
-
-@pytest.mark.unit
-def test_config_path_fields_are_paths():
-    cfg = PipelineConfig()
-    assert isinstance(cfg.raw_dir, Path)
-    assert isinstance(cfg.interim_dir, Path)
-    assert isinstance(cfg.processed_dir, Path)
-    assert isinstance(cfg.features_dir, Path)
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Task 02: Utils tests
+# Fixtures
+# ---------------------------------------------------------------------------
+
+HEADER = '"LEASE_KID","LEASE","DOR_CODE","API_NUMBER","FIELD","PRODUCING_ZONE","OPERATOR","COUNTY","TOWNSHIP","TWN_DIR","RANGE","RANGE_DIR","SECTION","SPOT","LATITUDE","LONGITUDE","MONTH-YEAR","PRODUCT","WELLS","PRODUCTION","URL"'
+
+
+def _make_row(lease_id: str, month_year: str, url: str) -> str:
+    return f'"{lease_id}","TEST","123","API","FIELD","ZONE","OP","COUNTY","1","S","1","E","1","NE","39.0","-95.0","{month_year}","O","1","100.0","{url}"'
+
+
+@pytest.fixture()
+def index_fixture(tmp_path: Path) -> Path:
+    """CSV with 2 rows in 2024 and 1 in 2023."""
+    p = tmp_path / "leases.txt"
+    rows = [
+        HEADER,
+        _make_row("A", "1-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
+        _make_row("B", "6-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=B"),
+        _make_row("C", "3-2023", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=C"),
+    ]
+    p.write_text("\n".join(rows))
+    return p
+
+
+@pytest.fixture()
+def dup_url_fixture(tmp_path: Path) -> Path:
+    """CSV where 2 rows in 2024 share the same URL."""
+    p = tmp_path / "leases_dup.txt"
+    rows = [
+        HEADER,
+        _make_row("A", "1-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
+        _make_row("A", "2-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
+    ]
+    p.write_text("\n".join(rows))
+    return p
+
+
+@pytest.fixture()
+def invalid_year_fixture(tmp_path: Path) -> Path:
+    """CSV with a row that has MONTH-YEAR '-1-1965'."""
+    p = tmp_path / "leases_invalid.txt"
+    rows = [
+        HEADER,
+        _make_row("A", "1-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
+        _make_row("B", "-1-1965", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=B"),
+    ]
+    p.write_text("\n".join(rows))
+    return p
+
+
+@pytest.fixture()
+def all_pre2024_fixture(tmp_path: Path) -> Path:
+    p = tmp_path / "leases_old.txt"
+    rows = [
+        HEADER,
+        _make_row("A", "1-2020", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
+        _make_row("B", "6-2023", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=B"),
+    ]
+    p.write_text("\n".join(rows))
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Task 01: load_lease_index
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_ensure_dir_creates_directory(tmp_path: Path):
-    new_dir = tmp_path / "subdir" / "nested"
-    result = ensure_dir(new_dir)
-    assert new_dir.exists()
-    assert result == new_dir
-    # Idempotent
-    ensure_dir(new_dir)
+def test_load_lease_index_filters_pre2024(index_fixture: Path) -> None:
+    df = load_lease_index(str(index_fixture))
+    assert len(df) == 2
 
 
-@pytest.mark.unit
-def test_compute_file_hash_hex_string(tmp_path: Path):
-    f = tmp_path / "test.txt"
-    f.write_text("hello world", encoding="utf-8")
-    digest = compute_file_hash(f)
-    assert len(digest) == 64
-    assert all(c in "0123456789abcdef" for c in digest)
+def test_load_lease_index_deduplicates_urls(dup_url_fixture: Path) -> None:
+    df = load_lease_index(str(dup_url_fixture))
+    assert df["URL"].duplicated().sum() == 0
 
 
-@pytest.mark.unit
-def test_compute_file_hash_missing_file(tmp_path: Path):
+def test_load_lease_index_drops_invalid_year(invalid_year_fixture: Path) -> None:
+    """Row with MONTH-YEAR '-1-1965' has last element '1965' < 2024, so it's filtered out.
+    Only the 2024 row remains."""
+    df = load_lease_index(str(invalid_year_fixture))
+    assert len(df) == 1
+
+
+def test_load_lease_index_file_not_found() -> None:
     with pytest.raises(FileNotFoundError):
-        compute_file_hash(tmp_path / "nonexistent.txt")
+        load_lease_index("/nonexistent/path/leases.txt")
 
 
-@pytest.mark.unit
-def test_retry_exhausts_all_attempts():
-    call_count = 0
+def test_load_lease_index_all_pre2024_raises(all_pre2024_fixture: Path) -> None:
+    with pytest.raises(ValueError, match="No leases found"):
+        load_lease_index(str(all_pre2024_fixture))
 
-    @retry(max_attempts=3, backoff_s=0.001, exceptions=(ValueError,))
-    def always_fail():
-        nonlocal call_count
-        call_count += 1
-        raise ValueError("always fails")
 
+# ---------------------------------------------------------------------------
+# Task 02: extract_lease_id
+# ---------------------------------------------------------------------------
+
+
+def test_extract_lease_id_valid() -> None:
+    url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839"
+    assert extract_lease_id(url) == "1001135839"
+
+
+def test_extract_lease_id_no_f_lc() -> None:
     with pytest.raises(ValueError):
-        always_fail()
-    assert call_count == 3
+        extract_lease_id("https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?other=123")
 
 
-@pytest.mark.unit
-def test_retry_succeeds_on_second_attempt():
-    call_count = 0
-
-    @retry(max_attempts=3, backoff_s=0.001, exceptions=(ValueError,))
-    def fail_once():
-        nonlocal call_count
-        call_count += 1
-        if call_count < 2:
-            raise ValueError("first attempt fails")
-        return "ok"
-
-    result = fail_once()
-    assert result == "ok"
-    assert call_count == 2
+def test_extract_lease_id_empty_f_lc() -> None:
+    with pytest.raises(ValueError):
+        extract_lease_id("https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=")
 
 
-@pytest.mark.unit
-def test_is_valid_raw_file_zero_bytes(tmp_path: Path):
-    f = tmp_path / "empty.txt"
-    f.write_bytes(b"")
-    assert is_valid_raw_file(f) is False
-
-
-@pytest.mark.unit
-def test_is_valid_raw_file_only_header(tmp_path: Path):
-    f = tmp_path / "header_only.txt"
-    f.write_text("HEADER_LINE\n", encoding="utf-8")
-    assert is_valid_raw_file(f) is False
-
-
-@pytest.mark.unit
-def test_is_valid_raw_file_valid(tmp_path: Path):
-    f = tmp_path / "valid.txt"
-    f.write_text("header\ndata row\n", encoding="utf-8")
-    assert is_valid_raw_file(f) is True
-
-
-@pytest.mark.unit
-def test_is_valid_raw_file_invalid_utf8(tmp_path: Path):
-    f = tmp_path / "bad_encoding.txt"
-    f.write_bytes(b"\xff\xfe invalid bytes \x80\x81")
-    assert is_valid_raw_file(f) is False
-
-
-@pytest.mark.unit
-def test_timer_decorator_returns_value():
-    @timer()
-    def add(a: int, b: int) -> int:
-        return a + b
-
-    assert add(2, 3) == 5
+def test_extract_lease_id_extra_params() -> None:
+    url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=12345&other=abc"
+    assert extract_lease_id(url) == "12345"
 
 
 # ---------------------------------------------------------------------------
-# Task 03: load_lease_urls tests
+# Task 03: scrape_download_url
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_load_lease_urls_basic(tmp_path: Path):
-    from kgs_pipeline.acquire import load_lease_urls
-
-    f = tmp_path / "leases.txt"
-    f.write_text("URL\nhttps://example.com/1\nhttps://example.com/2\n", encoding="utf-8")
-    urls = load_lease_urls(f)
-    assert len(urls) == 2
-    assert all(isinstance(u, str) and u for u in urls)
+def _mock_response(html: str) -> MagicMock:
+    resp = MagicMock()
+    resp.text = html
+    resp.raise_for_status = MagicMock()
+    return resp
 
 
-@pytest.mark.unit
-def test_load_lease_urls_deduplication(tmp_path: Path):
-    from kgs_pipeline.acquire import load_lease_urls
-
-    f = tmp_path / "leases.txt"
-    f.write_text(
-        "URL\nhttps://example.com/1\nhttps://example.com/1\nhttps://example.com/2\n",
-        encoding="utf-8",
+def test_scrape_download_url_success() -> None:
+    html = textwrap.dedent("""
+        <html><body>
+        <a href="https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt">Download</a>
+        </body></html>
+    """)
+    session = MagicMock()
+    session.get.return_value = _mock_response(html)
+    result = scrape_download_url("1001135839", session)
+    assert (
+        result
+        == "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"
     )
-    urls = load_lease_urls(f)
-    assert len(urls) == 2
 
 
-@pytest.mark.unit
-def test_load_lease_urls_nulls_excluded(tmp_path: Path):
-    from kgs_pipeline.acquire import load_lease_urls
-
-    f = tmp_path / "leases.txt"
-    f.write_text("URL\nhttps://example.com/1\n\n", encoding="utf-8")
-    urls = load_lease_urls(f)
-    assert all(u for u in urls)
-    assert len(urls) == 1
+def test_scrape_download_url_no_link() -> None:
+    html = "<html><body><p>No download link here</p></body></html>"
+    session = MagicMock()
+    session.get.return_value = _mock_response(html)
+    with pytest.raises(ScrapingError):
+        scrape_download_url("1001135839", session)
 
 
-@pytest.mark.unit
-def test_load_lease_urls_missing_file(tmp_path: Path):
-    from kgs_pipeline.acquire import load_lease_urls
-
-    with pytest.raises(FileNotFoundError):
-        load_lease_urls(tmp_path / "nonexistent.txt")
-
-
-@pytest.mark.unit
-def test_load_lease_urls_no_url_column(tmp_path: Path):
-    from kgs_pipeline.acquire import load_lease_urls
-
-    f = tmp_path / "leases.txt"
-    f.write_text("LEASE_KID,LEASE\n1001,Test\n", encoding="utf-8")
-    with pytest.raises(KeyError):
-        load_lease_urls(f)
+def test_scrape_download_url_empty_body() -> None:
+    session = MagicMock()
+    session.get.return_value = _mock_response("")
+    with pytest.raises(ScrapingError):
+        scrape_download_url("1001135839", session)
 
 
 # ---------------------------------------------------------------------------
-# Task 04: scrape_lease_page tests
+# Task 04: download_file
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_scrape_idempotency_skips_existing(tmp_path: Path):
-    """If the expected output file already exists and is valid, skip scraping."""
-    from kgs_pipeline.acquire import scrape_lease_page
+def test_download_file_success(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.content = b"some data"
+    resp.raise_for_status = MagicMock()
+    session.get.return_value = resp
 
-    # Create a pre-existing valid file
+    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"
+    with patch("time.sleep"):
+        result = download_file(url, str(tmp_path), session)
+
+    assert result.name == "lp564.txt"
+    assert result.exists()
+
+
+def test_download_file_idempotent(tmp_path: Path) -> None:
+    """Second call should not invoke session.get."""
+    session = MagicMock()
     existing = tmp_path / "lp564.txt"
-    existing.write_text("header\ndata row\n", encoding="utf-8")
+    existing.write_bytes(b"already here")
 
-    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
-
-    mock_browser = MagicMock()
-    semaphore = asyncio.Semaphore(1)
-
-    result = asyncio.run(
-        scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser)
-    )
+    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"
+    result = download_file(url, str(tmp_path), session)
     assert result == existing
-    mock_browser.new_page.assert_not_called()
+    session.get.assert_not_called()
 
 
-@pytest.mark.unit
-def test_scrape_returns_none_on_missing_button(tmp_path: Path):
-    """Returns None when the 'Save Monthly Data to File' button is not found."""
-    from kgs_pipeline.acquire import scrape_lease_page
+def test_download_file_empty_response(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.content = b""
+    resp.raise_for_status = MagicMock()
+    session.get.return_value = resp
 
-    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=999"
-
-    mock_page = AsyncMock()
-    mock_page.query_selector = AsyncMock(return_value=None)
-    mock_page.goto = AsyncMock()
-    mock_page.close = AsyncMock()
-
-    mock_browser = AsyncMock()
-    mock_browser.new_page = AsyncMock(return_value=mock_page)
-
-    semaphore = asyncio.Semaphore(1)
-    result = asyncio.run(
-        scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser)
-    )
-    assert result is None
+    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp999.txt"
+    with pytest.raises(ValueError, match="empty"):
+        download_file(url, str(tmp_path), session)
 
 
-@pytest.mark.unit
-def test_scrape_returns_none_on_timeout(tmp_path: Path):
-    """Returns None when navigation raises TimeoutError."""
-    from kgs_pipeline.acquire import scrape_lease_page
-
-    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=888"
-
-    mock_page = AsyncMock()
-    mock_page.goto = AsyncMock(side_effect=TimeoutError("timeout"))
-    mock_page.close = AsyncMock()
-
-    mock_browser = AsyncMock()
-    mock_browser.new_page = AsyncMock(return_value=mock_page)
-
-    semaphore = asyncio.Semaphore(1)
-    result = asyncio.run(
-        scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser)
-    )
-    assert result is None
+def test_download_file_missing_param(tmp_path: Path) -> None:
+    session = MagicMock()
+    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?other=foo"
+    with pytest.raises(ValueError, match="p_file_name"):
+        download_file(url, str(tmp_path), session)
 
 
-@pytest.mark.unit
-def test_scrape_returns_none_on_missing_txt_link(tmp_path: Path):
-    """Returns None when MonthSave page has no .txt link."""
-    from kgs_pipeline.acquire import scrape_lease_page
+def test_download_file_creates_output_dir(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.content = b"data"
+    resp.raise_for_status = MagicMock()
+    session.get.return_value = resp
 
-    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=777"
-
-    # First query_selector returns a button (save btn), second returns None (no txt link)
-    mock_save_btn = AsyncMock()
-    mock_save_btn.get_attribute = AsyncMock(
-        return_value="https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=777"
-    )
-
-    mock_page = AsyncMock()
-    # First call → save btn found, second call → txt link not found
-    mock_page.query_selector = AsyncMock(side_effect=[mock_save_btn, None])
-    mock_page.goto = AsyncMock()
-    mock_page.close = AsyncMock()
-
-    mock_browser = AsyncMock()
-    mock_browser.new_page = AsyncMock(return_value=mock_page)
-
-    semaphore = asyncio.Semaphore(1)
-    result = asyncio.run(
-        scrape_lease_page(lease_url, tmp_path, semaphore, mock_browser)
-    )
-    assert result is None
+    new_dir = tmp_path / "new_subdir"
+    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp1.txt"
+    with patch("time.sleep"):
+        download_file(url, str(new_dir), session)
+    assert new_dir.exists()
 
 
 # ---------------------------------------------------------------------------
-# Task 05: run_acquire_pipeline tests
+# Task 05: download_lease
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_run_acquire_pipeline_success(tmp_path: Path):
-    """Returns list of 3 Paths when all leases succeed."""
-    from kgs_pipeline.acquire import run_acquire_pipeline
-
-    fake_paths = [tmp_path / f"lp{i}.txt" for i in range(3)]
-    for p in fake_paths:
-        p.write_text("header\ndata\n", encoding="utf-8")
-
+def test_download_lease_success(tmp_path: Path) -> None:
+    session = MagicMock()
     with (
-        patch("kgs_pipeline.acquire.load_lease_urls", return_value=["u1", "u2", "u3"]),
-        patch("kgs_pipeline.acquire._run_single_lease", side_effect=fake_paths),
-    ):
-        result = run_acquire_pipeline(
-            lease_index_path=tmp_path / "fake_index.txt",
-            output_dir=tmp_path,
-        )
-    assert len(result) == 3
-    assert all(isinstance(p, Path) for p in result)
-
-
-@pytest.mark.unit
-def test_run_acquire_pipeline_all_none(tmp_path: Path):
-    """Returns empty list when all leases return None."""
-    from kgs_pipeline.acquire import run_acquire_pipeline
-
-    with (
-        patch("kgs_pipeline.acquire.load_lease_urls", return_value=["u1", "u2"]),
-        patch("kgs_pipeline.acquire._run_single_lease", return_value=None),
-    ):
-        result = run_acquire_pipeline(
-            lease_index_path=tmp_path / "fake_index.txt",
-            output_dir=tmp_path,
-        )
-    assert result == []
-
-
-@pytest.mark.unit
-def test_run_acquire_pipeline_partial_success(tmp_path: Path):
-    """Returns only the 2 successful paths when one returns None."""
-    from kgs_pipeline.acquire import run_acquire_pipeline
-
-    p1 = tmp_path / "lp1.txt"
-    p1.write_text("header\ndata\n", encoding="utf-8")
-    p2 = tmp_path / "lp2.txt"
-    p2.write_text("header\ndata\n", encoding="utf-8")
-
-    with (
-        patch("kgs_pipeline.acquire.load_lease_urls", return_value=["u1", "u2", "u3"]),
+        patch("kgs_pipeline.acquire.extract_lease_id", return_value="123"),
         patch(
-            "kgs_pipeline.acquire._run_single_lease",
-            side_effect=[p1, p2, None],
+            "kgs_pipeline.acquire.scrape_download_url",
+            return_value="https://example.com?p_file_name=lp1.txt",
         ),
+        patch("kgs_pipeline.acquire.download_file", return_value=tmp_path / "lp1.txt"),
     ):
-        result = run_acquire_pipeline(
-            lease_index_path=tmp_path / "fake_index.txt",
-            output_dir=tmp_path,
-        )
-    assert len(result) == 2
+        result = download_lease("https://example.com?f_lc=123", str(tmp_path), session)
+    assert result == tmp_path / "lp1.txt"
 
 
-@pytest.mark.unit
-def test_run_acquire_pipeline_propagates_file_not_found(tmp_path: Path):
-    """Propagates FileNotFoundError from load_lease_urls."""
-    from kgs_pipeline.acquire import run_acquire_pipeline
-
-    with patch(
-        "kgs_pipeline.acquire.load_lease_urls",
-        side_effect=FileNotFoundError("not found"),
-    ):
-        with pytest.raises(FileNotFoundError):
-            run_acquire_pipeline(
-                lease_index_path=tmp_path / "missing.txt",
-                output_dir=tmp_path,
-            )
-
-
-@pytest.mark.unit
-def test_run_acquire_pipeline_idempotent(tmp_path: Path):
-    """Second run with same output_dir produces same file count, not doubled."""
-    from kgs_pipeline.acquire import run_acquire_pipeline
-
-    p1 = tmp_path / "lp1.txt"
-    p1.write_text("header\ndata\n", encoding="utf-8")
-
+def test_download_lease_scraping_error_returns_none(tmp_path: Path) -> None:
+    session = MagicMock()
     with (
-        patch("kgs_pipeline.acquire.load_lease_urls", return_value=["u1"]),
-        patch("kgs_pipeline.acquire._run_single_lease", return_value=p1),
+        patch("kgs_pipeline.acquire.extract_lease_id", return_value="123"),
+        patch("kgs_pipeline.acquire.scrape_download_url", side_effect=ScrapingError("no link")),
     ):
-        run_acquire_pipeline(
-            lease_index_path=tmp_path / "fake_index.txt",
-            output_dir=tmp_path,
-        )
-        result2 = run_acquire_pipeline(
-            lease_index_path=tmp_path / "fake_index.txt",
-            output_dir=tmp_path,
-        )
+        result = download_lease("https://example.com?f_lc=123", str(tmp_path), session)
+    assert result is None
 
-    assert len(result2) == 1
-    assert p1.read_text() == "header\ndata\n"
+
+def test_download_lease_value_error_returns_none(tmp_path: Path) -> None:
+    session = MagicMock()
+    with patch("kgs_pipeline.acquire.extract_lease_id", side_effect=ValueError("bad url")):
+        result = download_lease("https://example.com", str(tmp_path), session)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Task 06: run_acquire
+# ---------------------------------------------------------------------------
+
+
+def _make_df_with_urls(urls: list[str]) -> pd.DataFrame:
+    return pd.DataFrame({"URL": urls})
+
+
+def test_run_acquire_all_success(tmp_path: Path, index_fixture: Path) -> None:
+    p = tmp_path / "f.txt"
+    compute_result = tuple([p, p, p])
+    with (
+        patch(
+            "kgs_pipeline.acquire.load_lease_index",
+            return_value=_make_df_with_urls(["u1", "u2", "u3"]),
+        ),
+        patch("kgs_pipeline.acquire.download_lease", side_effect=[p, p, p]),
+        patch("dask.compute", return_value=compute_result),
+    ):
+        results = run_acquire(str(index_fixture), str(tmp_path))
+    assert len(results) == 3
+
+
+def test_run_acquire_all_fail(tmp_path: Path, index_fixture: Path) -> None:
+    compute_result = (None, None)
+    with (
+        patch(
+            "kgs_pipeline.acquire.load_lease_index", return_value=_make_df_with_urls(["u1", "u2"])
+        ),
+        patch("kgs_pipeline.acquire.download_lease", return_value=None),
+        patch("dask.compute", return_value=compute_result),
+    ):
+        results = run_acquire(str(index_fixture), str(tmp_path))
+    assert results == []
+
+
+def test_run_acquire_partial_success(tmp_path: Path, index_fixture: Path) -> None:
+    p1 = tmp_path / "f1.txt"
+    p2 = tmp_path / "f2.txt"
+    compute_result = (p1, None, p2)
+    with (
+        patch(
+            "kgs_pipeline.acquire.load_lease_index",
+            return_value=_make_df_with_urls(["u1", "u2", "u3"]),
+        ),
+        patch("kgs_pipeline.acquire.download_lease", side_effect=[p1, None, p2]),
+        patch("dask.compute", return_value=compute_result),
+    ):
+        results = run_acquire(str(index_fixture), str(tmp_path))
+    assert len(results) == 2
+
+
+def test_run_acquire_respects_max_workers(tmp_path: Path, index_fixture: Path) -> None:
+    p = tmp_path / "f.txt"
+    with (
+        patch("kgs_pipeline.acquire.load_lease_index", return_value=_make_df_with_urls(["u1"])),
+        patch("kgs_pipeline.acquire.download_lease", return_value=p),
+        patch("dask.compute", return_value=(p,)) as mock_compute,
+    ):
+        run_acquire(str(index_fixture), str(tmp_path), max_workers=3)
+    call_kwargs = mock_compute.call_args
+    assert call_kwargs.kwargs.get("num_workers") == 3

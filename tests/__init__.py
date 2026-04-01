@@ -1,1 +1,1 @@
-"""Test package for the KGS oil production data pipeline."""
+"""Test suite for KGS pipeline."""
