@@ -3,30 +3,36 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kgs_pipeline"
+name = "kgs-pipeline"
 version = "0.1.0"
-description = "KGS Kansas oil and gas production data pipeline"
+description = "KGS Oil & Gas Production Data Pipeline"
 requires-python = ">=3.11"
-dependencies = [
-    "pandas>=2.0",
-    "dask[dataframe]>=2023.0",
-    "requests>=2.31",
-    "beautifulsoup4>=4.12",
-    "pyarrow>=13.0",
-    "pyyaml>=6.0",
-    "numpy>=1.25",
-    "scikit-learn>=1.3",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4",
-    "pytest-mock>=3.11",
-    "ruff>=0.1",
-    "mypy>=1.5",
-    "pandas-stubs>=2.0",
-    "types-requests>=2.31",
+    "pytest",
+    "pytest-mock",
+    "ruff",
+    "mypy",
+    "pandas-stubs",
+    "types-requests",
+    "dask[complete]",
+    "requests",
+    "beautifulsoup4",
+    "pyarrow",
+    "lxml",
+    "pandas",
+    "numpy",
+    "urllib3",
 ]
+
+[project.scripts]
+kgs-acquire   = "kgs_pipeline.acquire:main"
+kgs-ingest    = "kgs_pipeline.ingest:main"
+kgs-transform = "kgs_pipeline.transform:main"
+kgs-features  = "kgs_pipeline.features:main"
+kgs-pipeline  = "kgs_pipeline.pipeline:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -35,21 +41,6 @@ include = ["kgs_pipeline*"]
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
-follow_imports = "silent"
+disable_error_code = ["import-untyped"]
 warn_return_any = false
 warn_unused_ignores = false
-
-[tool.mypy-pandas.*]
-ignore_missing_imports = true
-
-[tool.mypy-sklearn.*]
-ignore_missing_imports = true
-
-[tool.mypy-requests.*]
-ignore_missing_imports = true
-
-[tool.mypy-dask.*]
-ignore_missing_imports = true
-
-[tool.mypy-pyarrow.*]
-ignore_missing_imports = true

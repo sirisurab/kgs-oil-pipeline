@@ -1,332 +1,332 @@
-"""Tests for kgs_pipeline/ingest.py."""
+"""Tests for kgs_pipeline.ingest module."""
+
+from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-import dask.dataframe as dd  # type: ignore[import-untyped]
+import dask.dataframe as dd
 import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
 from kgs_pipeline.ingest import (
-    SchemaError,
-    coerce_types,
-    filter_date_range,
+    EXPECTED_COLUMNS,
+    build_dask_dataframe,
+    discover_raw_files,
+    filter_by_year,
     read_raw_file,
     run_ingest,
-    validate_schema,
+    write_interim_parquet,
 )
 
-pytestmark = pytest.mark.unit
-
 # ---------------------------------------------------------------------------
-# Fixtures / helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
-HEADER = (
-    "LEASE_KID,LEASE,DOR_CODE,API_NUMBER,FIELD,PRODUCING_ZONE,OPERATOR,COUNTY,"
-    "TOWNSHIP,TWN_DIR,RANGE,RANGE_DIR,SECTION,SPOT,LATITUDE,LONGITUDE,"
-    "MONTH-YEAR,PRODUCT,WELLS,PRODUCTION"
+_CSV_HEADER = (
+    "LEASE KID,LEASE,DOR_CODE,API_NUMBER,FIELD,PRODUCING_ZONE,OPERATOR,"
+    "COUNTY,TOWNSHIP,TWN_DIR,RANGE,RANGE_DIR,SECTION,SPOT,"
+    "LATITUDE,LONGITUDE,MONTH-YEAR,PRODUCT,WELLS,PRODUCTION\n"
 )
 
 
-def _row(
-    lease_id: str = "L1",
-    lease: str = "TEST",
+def _make_csv_row(
+    lease_kid: str = "1",
     month_year: str = "1-2024",
     product: str = "O",
-    production: str = "100.0",
-    wells: str = "2",
-    operator: str = "OPS",
-    county: str = "Allen",
+    production: str = "100",
 ) -> str:
     return (
-        f"{lease_id},{lease},123,API-1,FIELD,ZONE,{operator},{county},"
-        f"1,S,1,E,1,NE,39.0,-95.0,{month_year},{product},{wells},{production}"
+        f"{lease_kid},LEASE_{lease_kid},DC,API001,FIELD,ZONE,OP,ALLEN,"
+        f"TS,N,R,E,1,NE,38.0,-97.0,{month_year},{product},1,{production}\n"
     )
 
 
-def _write_fixture(path: Path, rows: list[str]) -> Path:
-    path.write_text(HEADER + "\n" + "\n".join(rows))
-    return path
+def _write_raw_file(path: Path, rows: list[str]) -> None:
+    path.write_text(_CSV_HEADER + "".join(rows))
 
 
 # ---------------------------------------------------------------------------
-# Task 01: read_raw_file
+# Task 01: discover_raw_files
 # ---------------------------------------------------------------------------
 
 
-def test_read_raw_file_returns_df(tmp_path: Path) -> None:
-    f = _write_fixture(tmp_path / "test.txt", [_row()])
-    df = read_raw_file(str(f))
-    assert len(df) == 1
-    assert "source_file" in df.columns
-    assert df["source_file"].iloc[0] == "test.txt"
+@pytest.mark.unit
+def test_discover_raw_files_returns_txt(tmp_path: Path) -> None:
+    for name in ("a.txt", "b.txt", "c.txt", "d.csv"):
+        (tmp_path / name).write_text("data")
+    result = discover_raw_files(str(tmp_path))
+    assert len(result) == 3
+    assert all(p.suffix == ".txt" for p in result)
 
 
-def test_read_raw_file_header_only_raises(tmp_path: Path) -> None:
-    f = tmp_path / "empty.txt"
-    f.write_text(HEADER + "\n")
-    with pytest.raises(ValueError, match="no data rows"):
-        read_raw_file(str(f))
+@pytest.mark.unit
+def test_discover_raw_files_excludes_hidden(tmp_path: Path) -> None:
+    (tmp_path / ".hidden.txt").write_text("hidden")
+    (tmp_path / "a.txt").write_text("data")
+    (tmp_path / "b.txt").write_text("data")
+    result = discover_raw_files(str(tmp_path))
+    assert len(result) == 2
+    assert all(not p.name.startswith(".") for p in result)
 
 
-def test_read_raw_file_not_found_raises() -> None:
+@pytest.mark.unit
+def test_discover_raw_files_missing_dir() -> None:
     with pytest.raises(FileNotFoundError):
-        read_raw_file("/nonexistent/file.txt")
+        discover_raw_files("/nonexistent/path")
 
 
-def test_read_raw_file_strips_column_whitespace(tmp_path: Path) -> None:
-    f = tmp_path / "spaces.txt"
-    f.write_text(" LEASE_KID , MONTH-YEAR \n" + "L1,1-2024\n")
-    df = read_raw_file(str(f))
+@pytest.mark.unit
+def test_discover_raw_files_empty_dir(tmp_path: Path) -> None:
+    result = discover_raw_files(str(tmp_path))
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Task 02: read_raw_file
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_read_raw_file_standard(tmp_path: Path) -> None:
+    f = tmp_path / "lease.txt"
+    _write_raw_file(f, [_make_csv_row() for _ in range(3)])
+    df = read_raw_file(f)
+    assert df.shape[0] == 3
     assert "LEASE_KID" in df.columns
-    assert "MONTH-YEAR" in df.columns
+    assert "source_file" in df.columns
+    assert "MONTH_YEAR" in df.columns  # normalised from MONTH-YEAR
+
+
+@pytest.mark.unit
+def test_read_raw_file_missing_column_filled(tmp_path: Path) -> None:
+    # Write CSV without COUNTY
+    rows_no_county = _CSV_HEADER.replace(",COUNTY", "") + _make_csv_row().replace(",ALLEN", "")
+    f = tmp_path / "lease.txt"
+    f.write_text(rows_no_county)
+    df = read_raw_file(f)
+    assert "COUNTY" in df.columns
+
+
+@pytest.mark.unit
+def test_read_raw_file_latin1_encoding(tmp_path: Path) -> None:
+    content = _CSV_HEADER + _make_csv_row()
+    f = tmp_path / "lease.txt"
+    f.write_bytes(content.encode("latin-1"))
+    df = read_raw_file(f)
+    assert not df.empty
+
+
+@pytest.mark.unit
+def test_read_raw_file_empty_file(tmp_path: Path) -> None:
+    f = tmp_path / "empty.txt"
+    f.write_bytes(b"")
+    df = read_raw_file(f)
+    assert df.empty
+    assert all(col in df.columns for col in EXPECTED_COLUMNS)
+
+
+@pytest.mark.unit
+def test_read_raw_file_parse_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    f = tmp_path / "bad.txt"
+    f.write_text('col1,col2\n"unclosed quote\n')
+    # Should return empty df, not raise
+    df = read_raw_file(f)
+    assert isinstance(df, pd.DataFrame)
 
 
 # ---------------------------------------------------------------------------
-# Task 02: validate_schema
+# Task 03: filter_by_year
 # ---------------------------------------------------------------------------
 
 
-def _make_df_with_cols(cols: list[str]) -> pd.DataFrame:
-    return pd.DataFrame(columns=cols)
-
-
-def test_validate_schema_all_required() -> None:
-    from kgs_pipeline.config import REQUIRED_COLUMNS
-
-    df = _make_df_with_cols(REQUIRED_COLUMNS + ["EXTRA_COL"])
-    validate_schema(df, "dummy.txt")  # should not raise
-
-
-def test_validate_schema_missing_raises() -> None:
-    cols = [
-        "LEASE_KID",
-        "LEASE",
-        "API_NUMBER",
-        "MONTH-YEAR",
-        "PRODUCT",
-        "WELLS",
-        "OPERATOR",
-        "COUNTY",
-        "source_file",
-    ]
-    # Missing PRODUCTION
-    df = _make_df_with_cols(cols)
-    with pytest.raises(SchemaError, match="PRODUCTION"):
-        validate_schema(df, "dummy.txt")
-
-
-def test_validate_schema_empty_df_no_raise() -> None:
-    from kgs_pipeline.config import REQUIRED_COLUMNS
-
-    df = pd.DataFrame(columns=REQUIRED_COLUMNS)
-    validate_schema(df, "dummy.txt")
-
-
-# ---------------------------------------------------------------------------
-# Task 03: coerce_types
-# ---------------------------------------------------------------------------
-
-
-def test_coerce_types_numeric() -> None:
-    from kgs_pipeline.config import REQUIRED_COLUMNS
-
-    row = {c: "value" for c in REQUIRED_COLUMNS}
-    row["PRODUCTION"] = "161.8"
-    row["WELLS"] = "2"
-    df = pd.DataFrame([row])
-    df = coerce_types(df)
-    assert df["PRODUCTION"].iloc[0] == pytest.approx(161.8)
-
-
-def test_coerce_types_nan_on_invalid() -> None:
-    from kgs_pipeline.config import REQUIRED_COLUMNS
-
-    row = {c: "value" for c in REQUIRED_COLUMNS}
-    row["PRODUCTION"] = "N/A"
-    df = pd.DataFrame([row])
-    df = coerce_types(df)
-    assert pd.isna(df["PRODUCTION"].iloc[0])
-
-
-def test_coerce_types_string_dtype() -> None:
-    from kgs_pipeline.config import REQUIRED_COLUMNS
-
-    row = {c: "value" for c in REQUIRED_COLUMNS}
-    row["PRODUCTION"] = "100"
-    df = pd.DataFrame([row])
-    df = coerce_types(df)
-    string_cols = [
-        c for c in df.columns if c not in ["PRODUCTION", "WELLS", "LATITUDE", "LONGITUDE"]
-    ]
-    for col in string_cols:
-        assert df[col].dtype == pd.StringDtype(), f"{col} should be StringDtype"
-
-
-# ---------------------------------------------------------------------------
-# Task 04: filter_date_range
-# ---------------------------------------------------------------------------
-
-
-def _df_with_month_years(values: list[str]) -> pd.DataFrame:
-    return pd.DataFrame({"MONTH-YEAR": values, "PRODUCTION": ["100"] * len(values)})
-
-
-def test_filter_date_range_keeps_2024_and_2025() -> None:
-    df = _df_with_month_years(["1-2024", "6-2023", "12-2025"])
-    result = filter_date_range(df)
+@pytest.mark.unit
+def test_filter_by_year_basic() -> None:
+    data = pd.DataFrame(
+        {
+            "MONTH_YEAR": ["1-2023", "12-2024", "6-2025", "0-2022"],
+            "val": [1, 2, 3, 4],
+        }
+    )
+    ddf = dd.from_pandas(data, npartitions=1)
+    result = filter_by_year(ddf, min_year=2024).compute()
     assert len(result) == 2
 
 
-def test_filter_date_range_drops_yearly_summary() -> None:
-    df = _df_with_month_years(["0-2024", "1-2024"])
-    result = filter_date_range(df)
-    assert len(result) == 1
-    assert result["MONTH-YEAR"].iloc[0] == "1-2024"
-
-
-def test_filter_date_range_drops_cumulative_sentinel() -> None:
-    df = _df_with_month_years(["-1-2024", "1-2024"])
-    result = filter_date_range(df)
+@pytest.mark.unit
+def test_filter_by_year_boundary_include() -> None:
+    data = pd.DataFrame({"MONTH_YEAR": ["1-2024"], "val": [1]})
+    ddf = dd.from_pandas(data, npartitions=1)
+    result = filter_by_year(ddf, min_year=2024).compute()
     assert len(result) == 1
 
 
-def test_filter_date_range_empty_result() -> None:
-    df = _df_with_month_years(["1-2020", "6-2023"])
-    result = filter_date_range(df)
+@pytest.mark.unit
+def test_filter_by_year_boundary_exclude() -> None:
+    data = pd.DataFrame({"MONTH_YEAR": ["12-2023"], "val": [1]})
+    ddf = dd.from_pandas(data, npartitions=1)
+    result = filter_by_year(ddf, min_year=2024).compute()
     assert len(result) == 0
 
 
-def test_filter_date_range_zero_production_kept() -> None:
-    df = pd.DataFrame({"MONTH-YEAR": ["1-2024"], "PRODUCTION": [0.0]})
-    result = filter_date_range(df)
+@pytest.mark.unit
+def test_filter_by_year_null_excluded() -> None:
+    data = pd.DataFrame({"MONTH_YEAR": [None, "1-2024"], "val": [1, 2]})
+    ddf = dd.from_pandas(data, npartitions=1)
+    result = filter_by_year(ddf, min_year=2024).compute()
     assert len(result) == 1
-    assert result["PRODUCTION"].iloc[0] == 0.0
+
+
+@pytest.mark.unit
+def test_filter_by_year_returns_dask() -> None:
+    data = pd.DataFrame({"MONTH_YEAR": ["1-2024"], "val": [1]})
+    ddf = dd.from_pandas(data, npartitions=1)
+    result = filter_by_year(ddf, min_year=2024)
+    assert isinstance(result, dd.DataFrame)
 
 
 # ---------------------------------------------------------------------------
-# Task 05: run_ingest
+# Task 04: build_dask_dataframe
 # ---------------------------------------------------------------------------
 
 
-def _make_kgs_txt(path: Path, rows_2024: int = 2, rows_2023: int = 2) -> None:
-    """Write a minimal KGS .txt file with mixed years."""
-    lines = [HEADER]
-    for i in range(rows_2024):
-        lines.append(_row(lease_id=f"L{i}", month_year="1-2024", production="100.0"))
-    for i in range(rows_2023):
-        lines.append(_row(lease_id=f"L{i}", month_year="6-2023", production="50.0"))
-    path.write_text("\n".join(lines))
+@pytest.mark.unit
+def test_build_dask_dataframe_returns_dask(tmp_path: Path) -> None:
+    """TR-17: return type must be dask.dataframe.DataFrame."""
+    files = []
+    for i in range(2):
+        f = tmp_path / f"lease{i}.txt"
+        _write_raw_file(f, [_make_csv_row(month_year="1-2024"), _make_csv_row(month_year="1-2023")])
+        files.append(f)
+    result = build_dask_dataframe(files, min_year=2024)
+    assert isinstance(result, dd.DataFrame)
 
 
-def test_run_ingest_returns_dask_df(tmp_path: Path) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
+@pytest.mark.unit
+def test_build_dask_dataframe_empty_raises() -> None:
+    with pytest.raises(ValueError):
+        build_dask_dataframe([])
+
+
+@pytest.mark.unit
+def test_build_dask_dataframe_source_file(tmp_path: Path) -> None:
+    f = tmp_path / "lease.txt"
+    _write_raw_file(f, [_make_csv_row()])
+    result = build_dask_dataframe([f])
+    assert "source_file" in result.columns
+
+
+@pytest.mark.unit
+def test_build_dask_dataframe_expected_columns(tmp_path: Path) -> None:
+    files = []
     for i in range(3):
-        _make_kgs_txt(raw / f"lease_{i}.txt")
-    ddf = run_ingest(str(raw), str(out))
-    assert isinstance(ddf, dd.DataFrame)
-
-
-def test_run_ingest_required_columns(tmp_path: Path) -> None:
-    from kgs_pipeline.config import REQUIRED_COLUMNS
-
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
-    _make_kgs_txt(raw / "lease.txt")
-    ddf = run_ingest(str(raw), str(out))
-    for col in REQUIRED_COLUMNS:
-        assert col in ddf.columns, f"Missing column: {col}"
-
-
-def test_run_ingest_filters_pre2024(tmp_path: Path) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
-    for i in range(3):
-        _make_kgs_txt(raw / f"lease_{i}.txt", rows_2024=2, rows_2023=2)
-    ddf = run_ingest(str(raw), str(out))
-    df = ddf.compute()
-    assert len(df) == 6  # 3 files × 2 rows from 2024
-
-
-def test_run_ingest_partial_failure(tmp_path: Path) -> None:
-    """One valid file + one invalid file: should succeed on valid file."""
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
-    # Valid file
-    _make_kgs_txt(raw / "valid.txt")
-    # Invalid file: missing required columns
-    (raw / "invalid.txt").write_text("COL_A,COL_B\n1,2\n")
-    ddf = run_ingest(str(raw), str(out))
-    assert isinstance(ddf, dd.DataFrame)
-
-
-def test_run_ingest_parquet_file_count(tmp_path: Path) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
-    _make_kgs_txt(raw / "lease.txt")
-    run_ingest(str(raw), str(out))
-    parquet_files = list(out.rglob("*.parquet"))
-    assert 1 <= len(parquet_files) <= 200
-
-
-def test_run_ingest_parquet_readable(tmp_path: Path) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
-    _make_kgs_txt(raw / "lease.txt")
-    run_ingest(str(raw), str(out))
-    ddf2 = dd.read_parquet(str(out))
-    assert len(ddf2.compute()) > 0
-
-
-def test_run_ingest_zero_production_retained(tmp_path: Path) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
-    f = raw / "lease_zero.txt"
-    lines = [HEADER, _row(month_year="1-2024", production="0.0")]
-    f.write_text("\n".join(lines))
-    ddf = run_ingest(str(raw), str(out))
-    df = ddf.compute()
-    assert 0.0 in df["PRODUCTION"].values
-
-
-def test_run_ingest_no_txt_files_raises(tmp_path: Path) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
-    with pytest.raises(ValueError, match="No .txt files"):
-        run_ingest(str(raw), str(out))
+        f = tmp_path / f"l{i}.txt"
+        _write_raw_file(f, [_make_csv_row(month_year="6-2024"), _make_csv_row(month_year="6-2023")])
+        files.append(f)
+    result = build_dask_dataframe(files)
+    for col in EXPECTED_COLUMNS:
+        assert col in result.columns
 
 
 # ---------------------------------------------------------------------------
-# Task 06: Schema completeness across partitions
+# Task 05: write_interim_parquet
 # ---------------------------------------------------------------------------
 
 
-def test_schema_completeness_across_partitions(tmp_path: Path) -> None:
-    """Assert all required columns present in each Parquet partition."""
-    from kgs_pipeline.config import REQUIRED_COLUMNS
+@pytest.mark.unit
+def test_write_interim_parquet_writes_files(tmp_path: Path) -> None:
+    rows = [_make_csv_row(month_year="1-2024") for _ in range(10)]
+    data_rows = []
+    for r in rows:
+        parts = r.strip().split(",")
+        data_rows.append(parts)
+    # Build a minimal Dask df
+    df = pd.DataFrame(
+        {
+            **{
+                col: pd.array(["x"] * 10, dtype=pd.StringDtype())
+                for col in [
+                    "LEASE_KID",
+                    "LEASE",
+                    "DOR_CODE",
+                    "API_NUMBER",
+                    "FIELD",
+                    "PRODUCING_ZONE",
+                    "OPERATOR",
+                    "COUNTY",
+                    "TOWNSHIP",
+                    "TWN_DIR",
+                    "RANGE",
+                    "RANGE_DIR",
+                    "SECTION",
+                    "SPOT",
+                    "MONTH_YEAR",
+                    "PRODUCT",
+                    "source_file",
+                ]
+            },
+            "LATITUDE": [38.0] * 10,
+            "LONGITUDE": [-97.0] * 10,
+            "PRODUCTION": [100.0] * 10,
+            "WELLS": [1.0] * 10,
+        }
+    )
+    ddf = dd.from_pandas(df, npartitions=3)
+    out_dir = tmp_path / "interim"
+    count = write_interim_parquet(ddf, str(out_dir))
+    assert count >= 1
+    assert len(list(out_dir.glob("*.parquet"))) == count
 
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "interim"
 
-    # Create enough rows to generate >= 1 partition (may be just 1 for small data)
-    for i in range(5):
-        _make_kgs_txt(raw / f"lease_{i}.txt", rows_2024=4, rows_2023=0)
+@pytest.mark.unit
+def test_write_interim_parquet_creates_dir(tmp_path: Path) -> None:
+    new_dir = tmp_path / "new" / "interim"
+    df = pd.DataFrame({"LEASE_KID": pd.array(["1"], dtype=pd.StringDtype()), "PRODUCTION": [1.0]})
+    ddf = dd.from_pandas(df, npartitions=1)
+    write_interim_parquet(ddf, str(new_dir))
+    assert new_dir.exists()
 
-    run_ingest(str(raw), str(out))
-    parquet_files = sorted(out.rglob("*.parquet"))
-    assert len(parquet_files) >= 1
 
-    for pf in parquet_files[:3]:
-        part_df = pd.read_parquet(str(pf))
-        for col in REQUIRED_COLUMNS:
-            assert col in part_df.columns, f"Column {col} missing in {pf.name}"
+@pytest.mark.unit
+def test_write_interim_parquet_count_matches(tmp_path: Path) -> None:
+    df = pd.DataFrame({"col": pd.array(["a", "b", "c"], dtype=pd.StringDtype())})
+    ddf = dd.from_pandas(df, npartitions=3)
+    out = tmp_path / "out"
+    count = write_interim_parquet(ddf, str(out))
+    assert count == len(list(out.glob("*.parquet")))
+
+
+# ---------------------------------------------------------------------------
+# Task 06: run_ingest orchestrator
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_run_ingest_calls_stages(tmp_path: Path) -> None:
+    with (
+        patch("kgs_pipeline.ingest.discover_raw_files", return_value=[Path("f.txt")]) as m1,
+        patch("kgs_pipeline.ingest.build_dask_dataframe", return_value=MagicMock()) as m2,
+        patch("kgs_pipeline.ingest.write_interim_parquet", return_value=5) as m3,
+    ):
+        result = run_ingest(str(tmp_path), str(tmp_path / "out"))
+        assert result == 5
+        m1.assert_called_once()
+        m2.assert_called_once()
+        m3.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Task 07: TR-17 lazy evaluation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_tr17_build_dask_returns_dask_not_pandas(tmp_path: Path) -> None:
+    files = []
+    for i in range(2):
+        f = tmp_path / f"l{i}.txt"
+        _write_raw_file(f, [_make_csv_row()])
+        files.append(f)
+    result = build_dask_dataframe(files)
+    assert isinstance(result, dd.DataFrame)
+    assert not isinstance(result, pd.DataFrame)

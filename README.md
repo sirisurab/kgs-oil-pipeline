@@ -1,16 +1,19 @@
-# KGS Oil & Gas Production Pipeline
+# KGS Oil & Gas Production Data Pipeline
 
-A Python data pipeline for acquiring, ingesting, transforming, and feature-engineering
-Kansas Geological Survey (KGS) monthly lease-level oil and gas production data.
+End-to-end pipeline for acquiring, ingesting, transforming, and feature-engineering
+Kansas Geological Survey (KGS) oil and gas lease production data (2024 onward).
 
-## Pipeline Stages
+## Components
 
-| Stage | Module | Description |
-|-------|--------|-------------|
-| Acquire | `kgs_pipeline/acquire.py` | Downloads per-lease production files from KGS CHASM server |
-| Ingest | `kgs_pipeline/ingest.py` | Reads raw files, validates schema, writes interim Parquet |
-| Transform | `kgs_pipeline/transform.py` | Cleans data: nulls, outliers, dedup, string standardisation |
-| Features | `kgs_pipeline/features.py` | Engineers ML features: cumulative, GOR, rolling, lags, encoding |
+| Module | Description |
+|--------|-------------|
+| `kgs_pipeline/config.py` | Configuration dataclass with env-var overrides |
+| `kgs_pipeline/logging_utils.py` | JSON-structured logging factory |
+| `kgs_pipeline/acquire.py` | Download KGS lease data files in parallel via Dask |
+| `kgs_pipeline/ingest.py` | Load raw files into Dask DataFrames; write interim Parquet |
+| `kgs_pipeline/transform.py` | Clean, standardise, pivot, and deduplicate data |
+| `kgs_pipeline/features.py` | Feature engineering (GOR, cumulative, decline rate, rolling, lag) |
+| `kgs_pipeline/pipeline.py` | Top-level orchestrator CLI |
 
 ## Setup
 
@@ -19,47 +22,40 @@ make env
 make install
 ```
 
-## Running the Pipeline
+## Run Tests
 
 ```bash
-make acquire      # Download raw lease files from KGS
-make ingest       # Parse raw files → interim Parquet
-make transform    # Clean interim data → processed/clean Parquet
-make features     # Feature engineering → processed/features Parquet
+make test
 ```
 
-## Testing
+## Run the Full Pipeline
 
 ```bash
-make test         # Run unit tests (default: excludes integration tests)
-pytest tests/ -v -m "unit"
-pytest tests/ -v -m "integration"  # requires real data
+kgs-pipeline \
+  --index-path data/external/oil_leases_2020_present.txt \
+  --raw-dir data/raw \
+  --interim-dir data/interim \
+  --processed-dir data/processed \
+  --features-dir data/features \
+  --min-year 2024 \
+  --workers 5
 ```
 
-## Code Quality
+## Run Individual Stages
 
 ```bash
-make lint         # ruff check
-make typecheck    # mypy
+kgs-acquire  --min-year 2024 --workers 5
+kgs-ingest   --min-year 2024
+kgs-transform
+kgs-features
 ```
 
 ## Data Directories
 
-```
-data/
-├── external/     # Pre-filtered lease index (oil_leases_2024_present.txt)
-├── raw/          # Downloaded raw .txt files per lease
-├── interim/      # Consolidated Parquet after ingestion
-└── processed/
-    ├── clean/    # Cleaned Parquet after transform
-    └── features/ # ML-ready Parquet after feature engineering
-```
-
-## Key Technical Details
-
-- **Python 3.11+** required
-- **Dask** for parallel processing and Parquet I/O
-- **Requests + BeautifulSoup** for KGS web scraping
-- Retry decorator with exponential backoff wraps all HTTP calls
-- Idempotent: re-running any stage skips already-completed work
-- All unit tests are self-contained with synthetic data (no network required)
+| Path | Description |
+|------|-------------|
+| `data/external/` | KGS lease index file |
+| `data/raw/` | Downloaded raw lease `.txt` files |
+| `data/interim/` | Consolidated interim Parquet files |
+| `data/processed/` | Cleaned wide-format Parquet files |
+| `data/features/` | ML-ready feature Parquet files + `manifest.json` |

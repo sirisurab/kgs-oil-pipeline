@@ -1,225 +1,268 @@
-"""KGS raw file ingestion module.
+"""Ingest component: load raw KGS lease files into Dask DataFrames."""
 
-Reads raw .txt files from data/raw/, validates schema, coerces types,
-filters dates, and writes consolidated interim Parquet output.
-"""
+from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
-import dask  # type: ignore[import-untyped]
-import dask.dataframe as dd  # type: ignore[import-untyped]
+import dask
+import dask.dataframe as dd
 import pandas as pd  # type: ignore[import-untyped]
 
-from kgs_pipeline.config import REQUIRED_COLUMNS
-from kgs_pipeline.utils import setup_logging
+from kgs_pipeline.config import config as _cfg
+from kgs_pipeline.logging_utils import get_logger
 
-logger = setup_logging(__name__)
+logger = get_logger(__name__)
+
+# Canonical column names after normalisation
+EXPECTED_COLUMNS: list[str] = [
+    "LEASE_KID",
+    "LEASE",
+    "DOR_CODE",
+    "API_NUMBER",
+    "FIELD",
+    "PRODUCING_ZONE",
+    "OPERATOR",
+    "COUNTY",
+    "TOWNSHIP",
+    "TWN_DIR",
+    "RANGE",
+    "RANGE_DIR",
+    "SECTION",
+    "SPOT",
+    "LATITUDE",
+    "LONGITUDE",
+    "MONTH_YEAR",
+    "PRODUCT",
+    "WELLS",
+    "PRODUCTION",
+]
+
+# Columns that should be float64
+_FLOAT_COLS = {"LATITUDE", "LONGITUDE", "PRODUCTION", "WELLS"}
+# All non-float columns are string
+_STRING_COLS = set(EXPECTED_COLUMNS) - _FLOAT_COLS
+
+# Meta dtype mapping for Dask
+_META_DTYPES: dict[str, object] = {col: pd.StringDtype() for col in _STRING_COLS}
+_META_DTYPES.update({col: "float64" for col in _FLOAT_COLS})
+_META_DTYPES["source_file"] = pd.StringDtype()
 
 
-class SchemaError(Exception):
-    """Raised when a raw DataFrame is missing required columns."""
-
-
-# ---------------------------------------------------------------------------
-# Task 01: Single-file reader
-# ---------------------------------------------------------------------------
-
-
-def read_raw_file(file_path: str) -> pd.DataFrame:
-    """Read a single KGS raw .txt file into a Pandas DataFrame.
-
-    Args:
-        file_path: Path to the raw .txt file.
-
-    Returns:
-        DataFrame with all columns as strings plus a source_file column.
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If the file is empty or has no data rows.
-    """
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Raw file not found: {file_path}")
-    if path.stat().st_size == 0:
-        raise ValueError(f"Raw file is empty: {file_path}")
-
-    df = pd.read_csv(file_path, dtype=str)
-    df.columns = [c.strip() for c in df.columns]
-
-    if len(df) == 0:
-        raise ValueError(f"Raw file has no data rows: {file_path}")
-
-    df["source_file"] = path.name
+def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip whitespace, replace spaces/hyphens with underscores, uppercase."""
+    df.columns = [c.strip().replace(" ", "_").replace("-", "_").upper() for c in df.columns]
     return df
 
 
 # ---------------------------------------------------------------------------
-# Task 02: Schema validator
+# Task 01: Raw file discovery
 # ---------------------------------------------------------------------------
 
 
-def validate_schema(df: pd.DataFrame, file_path: str) -> None:
-    """Validate that df contains all required columns.
-
-    Args:
-        df: DataFrame to validate.
-        file_path: Included in error message for diagnostics.
+def discover_raw_files(raw_dir: str, pattern: str = "*.txt") -> list[Path]:
+    """Scan *raw_dir* for files matching *pattern*; skip hidden files.
 
     Raises:
-        SchemaError: If any required column is missing.
+        FileNotFoundError: if *raw_dir* does not exist.
     """
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
-        raise SchemaError(f"Missing columns {missing} in file: {file_path}")
+    directory = Path(raw_dir)
+    if not directory.exists():
+        raise FileNotFoundError(f"Raw data directory not found: {raw_dir}")
+
+    files = sorted(p for p in directory.glob(pattern) if not p.name.startswith("."))
+    logger.info("Discovered raw files", extra={"count": len(files), "dir": raw_dir})
+    return files
 
 
 # ---------------------------------------------------------------------------
-# Task 03: Type coercion
+# Task 02: Single-file reader with schema detection
 # ---------------------------------------------------------------------------
 
 
-def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
-    """Coerce DataFrame columns to canonical types.
+def read_raw_file(file_path: Path) -> pd.DataFrame:
+    """Read a single KGS raw lease file into a pandas DataFrame.
 
-    Numeric columns: PRODUCTION, WELLS, LATITUDE, LONGITUDE → float64.
-    All remaining columns → pd.StringDtype().
-
-    Args:
-        df: Raw DataFrame (all columns string dtype).
-
-    Returns:
-        DataFrame with coerced types.
+    Never raises — returns an empty DataFrame with expected columns on failure.
     """
-    numeric_cols = ["PRODUCTION", "WELLS", "LATITUDE", "LONGITUDE"]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    empty_df = pd.DataFrame({col: pd.array([], dtype=pd.StringDtype()) for col in EXPECTED_COLUMNS})
+    empty_df["source_file"] = pd.array([], dtype=pd.StringDtype())
+    for col in _FLOAT_COLS:
+        empty_df[col] = pd.array([], dtype="float64")
 
-    string_cols = [c for c in df.columns if c not in numeric_cols]
-    for col in string_cols:
-        df[col] = df[col].astype(pd.StringDtype())
+    if not file_path.exists() or file_path.stat().st_size == 0:
+        logger.warning("Empty or missing file", extra={"file": str(file_path)})
+        return empty_df
 
-    return df
-
-
-# ---------------------------------------------------------------------------
-# Task 04: Date-range filter
-# ---------------------------------------------------------------------------
-
-
-def filter_date_range(df: pd.DataFrame, min_year: int = 2024) -> pd.DataFrame:
-    """Filter to rows where MONTH-YEAR year >= min_year and month > 0.
-
-    Args:
-        df: DataFrame with MONTH-YEAR string column.
-        min_year: Minimum year to retain (inclusive).
-
-    Returns:
-        Filtered DataFrame.
-    """
-
-    def _parse_month_year(val: object) -> tuple[int | None, int | None]:
-        if not isinstance(val, str) or pd.isna(val):
-            return None, None
-        parts = val.split("-")
-        year_str = parts[-1]
-        if not year_str.isdigit():
-            return None, None
-        # Month is everything before the last "-" joined back
-        # For "1-2024" → month_str="1", for "-1-2024" → month_str="-1"
-        month_str = "-".join(parts[:-1])
+    df: pd.DataFrame | None = None
+    for enc in ("utf-8", "latin-1"):
         try:
-            month = int(month_str)
-            year = int(year_str)
-        except ValueError:
-            return None, None
-        return month, year
+            candidate = pd.read_csv(file_path, encoding=enc, low_memory=False)
+            df = candidate
+            break
+        except UnicodeDecodeError:
+            continue
+        except pd.errors.ParserError as exc:
+            logger.warning(
+                "CSV parse error",
+                extra={"file": str(file_path), "error": str(exc)},
+            )
+            return empty_df
 
-    parsed = df["MONTH-YEAR"].apply(_parse_month_year)
-    months = pd.array([x[0] for x in parsed], dtype=pd.Int64Dtype())
-    years = pd.array([x[1] for x in parsed], dtype=pd.Int64Dtype())
+    if df is None or df.empty:
+        logger.warning("File produced no rows", extra={"file": str(file_path)})
+        return empty_df
 
-    months_s = pd.Series(months)
-    years_s = pd.Series(years)
+    df = _normalise_columns(df)
+    df["source_file"] = file_path.name
 
-    mask = years_s.notna() & (years_s >= min_year) & months_s.notna() & (months_s > 0)
-    return df[mask.values].reset_index(drop=True)
+    # Ensure all expected columns are present
+    for col in EXPECTED_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    # Cast float columns
+    for col in _FLOAT_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
 
 
 # ---------------------------------------------------------------------------
-# Task 05: Parallel file ingestion pipeline
+# Task 03: Year-range row filter
 # ---------------------------------------------------------------------------
 
 
-def _process_file(file_path: str) -> pd.DataFrame | None:
-    """Pipeline for a single file: read → validate → coerce → filter."""
-    try:
-        df = read_raw_file(file_path)
-        validate_schema(df, file_path)
-        df = coerce_types(df)
-        df = filter_date_range(df)
-        return df
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Skipping file %s: %s", file_path, exc)
-        return None
+def _filter_partition(pdf: pd.DataFrame, min_year: int) -> pd.DataFrame:
+    """Filter partition to rows where MONTH_YEAR year component >= min_year."""
+    if "MONTH_YEAR" not in pdf.columns or pdf.empty:
+        return pdf
+
+    mask = pdf["MONTH_YEAR"].notna()
+    pdf = pdf[mask].copy()
+    if pdf.empty:
+        return pdf
+
+    def _year(val: object) -> int | None:
+        s = str(val).strip()
+        parts = s.split("-")
+        try:
+            return int(parts[-1])
+        except (ValueError, IndexError):
+            return None
+
+    years = pdf["MONTH_YEAR"].apply(_year)
+    return pdf[years.notna() & (years >= min_year)].copy()
 
 
-def run_ingest(raw_dir: str, output_dir: str) -> dd.DataFrame:
-    """Main entry point for the ingest stage.
+def filter_by_year(ddf: dd.DataFrame, min_year: int = 2024) -> dd.DataFrame:
+    """Filter Dask DataFrame to rows with MONTH_YEAR year >= *min_year*."""
+    return ddf.map_partitions(_filter_partition, min_year, meta=ddf._meta)
 
-    Args:
-        raw_dir: Directory containing raw .txt files.
-        output_dir: Directory for interim Parquet output.
 
-    Returns:
-        Dask DataFrame of the written interim Parquet.
+# ---------------------------------------------------------------------------
+# Task 04: Multi-file Dask ingestion
+# ---------------------------------------------------------------------------
+
+
+def _build_meta() -> pd.DataFrame:
+    """Return the meta DataFrame for dd.from_delayed."""
+    meta: dict[str, object] = {
+        col: pd.array([], dtype=pd.StringDtype()) for col in EXPECTED_COLUMNS
+    }
+    for col in _FLOAT_COLS:
+        meta[col] = pd.array([], dtype="float64")
+    meta["source_file"] = pd.array([], dtype=pd.StringDtype())
+    return pd.DataFrame(meta)
+
+
+def build_dask_dataframe(
+    file_paths: list[Path],
+    min_year: int = 2024,
+) -> dd.DataFrame:
+    """Build a Dask DataFrame from multiple raw files.
 
     Raises:
-        ValueError: If no .txt files found, all files fail, or no rows survive.
+        ValueError: if *file_paths* is empty.
     """
-    txt_files = sorted(Path(raw_dir).glob("*.txt"))
-    if not txt_files:
-        raise ValueError(f"No .txt files found in {raw_dir}")
+    if not file_paths:
+        raise ValueError("file_paths must not be empty")
 
-    delayed_tasks = [dask.delayed(_process_file)(str(f)) for f in txt_files]
-    results = dask.compute(*delayed_tasks, scheduler="threads")
+    delayed_dfs = [dask.delayed(read_raw_file)(fp) for fp in file_paths]
+    meta = _build_meta()
+    ddf = dd.from_delayed(delayed_dfs, meta=meta)
+    n = min(len(file_paths), 50)
+    ddf = ddf.repartition(npartitions=n)
+    ddf = filter_by_year(ddf, min_year)
 
-    valid: list[pd.DataFrame] = [r for r in results if r is not None]
-    if not valid:
-        raise ValueError("All raw files failed ingestion")
-
-    combined = pd.concat(valid, ignore_index=True)
-    if len(combined) == 0:
-        raise ValueError("No data rows survived ingestion")
-
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    total_rows = len(combined)
-    n_partitions = max(1, total_rows // 500_000)
-
-    ddf = dd.from_pandas(combined, npartitions=n_partitions)
-    ddf.to_parquet(output_dir, write_index=False)
-
-    ddf_out = dd.read_parquet(output_dir)
-    n_out = ddf_out.npartitions
-    ddf_out = ddf_out.repartition(npartitions=min(n_out, 50))
     logger.info(
-        "Ingest complete: %d rows from %d files → %s",
-        total_rows,
-        len(valid),
-        output_dir,
+        "Built Dask DataFrame",
+        extra={"files": len(file_paths), "partitions": ddf.npartitions},
     )
-    return ddf_out
+    return ddf
+
+
+# ---------------------------------------------------------------------------
+# Task 05: Interim Parquet writer
+# ---------------------------------------------------------------------------
+
+
+def write_interim_parquet(ddf: dd.DataFrame, output_dir: str) -> int:
+    """Write Dask DataFrame to *output_dir* as consolidated Parquet files.
+
+    Returns:
+        Number of Parquet files written.
+
+    Raises:
+        ValueError: if *output_dir* is an existing non-directory path.
+    """
+    out = Path(output_dir)
+    if out.exists() and not out.is_dir():
+        raise ValueError(f"{output_dir} exists but is not a directory")
+    out.mkdir(parents=True, exist_ok=True)
+
+    estimated_rows = ddf.npartitions * 10_000
+    n_partitions = max(1, estimated_rows // 500_000)
+
+    ddf.repartition(npartitions=n_partitions).to_parquet(
+        str(out), write_index=False, overwrite=True
+    )
+
+    file_count = len(list(out.glob("*.parquet")))
+    logger.info(
+        "Wrote interim Parquet",
+        extra={"files": file_count, "output_dir": str(out)},
+    )
+    return file_count
+
+
+# ---------------------------------------------------------------------------
+# Task 06: Ingest orchestrator and CLI
+# ---------------------------------------------------------------------------
+
+
+def run_ingest(raw_dir: str, output_dir: str, min_year: int = 2024) -> int:
+    """Chain discover → build → write for the ingest stage."""
+    paths = discover_raw_files(raw_dir)
+    ddf = build_dask_dataframe(paths, min_year)
+    return write_interim_parquet(ddf, output_dir)
+
+
+def main() -> None:
+    """CLI entry point for the ingest stage."""
+    parser = argparse.ArgumentParser(description="KGS ingest: load raw files to interim Parquet")
+    parser.add_argument("--raw-dir", default=_cfg.RAW_DATA_DIR)
+    parser.add_argument("--output-dir", default=_cfg.INTERIM_DATA_DIR)
+    parser.add_argument("--min-year", type=int, default=2024)
+    args = parser.parse_args()
+
+    count = run_ingest(
+        raw_dir=args.raw_dir,
+        output_dir=args.output_dir,
+        min_year=args.min_year,
+    )
+    print(f"Ingest wrote {count} Parquet file(s).")
 
 
 if __name__ == "__main__":
-    import argparse
-
-    from kgs_pipeline.config import INTERIM_DIR, RAW_DIR
-
-    parser = argparse.ArgumentParser(description="KGS ingest stage")
-    parser.add_argument("--raw-dir", default=str(RAW_DIR))
-    parser.add_argument("--output-dir", default=str(INTERIM_DIR))
-    args = parser.parse_args()
-
-    run_ingest(args.raw_dir, args.output_dir)
+    main()

@@ -1,67 +1,46 @@
-"""Pipeline configuration constants and defaults."""
+"""Pipeline configuration — all tuneable constants with env-var overrides."""
 
-from pathlib import Path
+from __future__ import annotations
 
-# Project root
-ROOT_DIR = Path(__file__).parent.parent
+import os
+from dataclasses import dataclass, field
 
-# Data directories
-DATA_DIR = ROOT_DIR / "data"
-RAW_DIR = DATA_DIR / "raw"
-INTERIM_DIR = DATA_DIR / "interim"
-CLEAN_DIR = DATA_DIR / "processed" / "clean"
-FEATURES_DIR = DATA_DIR / "processed" / "features"
-EXTERNAL_DIR = DATA_DIR / "external"
-LOGS_DIR = ROOT_DIR / "logs"
 
-# Default index file (filtered 2024-present)
-LEASE_INDEX_FILE = EXTERNAL_DIR / "oil_leases_2024_present.txt"
+@dataclass
+class Config:
+    LEASE_INDEX_PATH: str = field(
+        default_factory=lambda: os.environ.get(
+            "LEASE_INDEX_PATH", "data/external/oil_leases_2020_present.txt"
+        )
+    )
+    RAW_DATA_DIR: str = field(
+        default_factory=lambda: os.environ.get("RAW_DATA_DIR", "data/raw")
+    )
+    INTERIM_DATA_DIR: str = field(
+        default_factory=lambda: os.environ.get("INTERIM_DATA_DIR", "data/interim")
+    )
+    PROCESSED_DATA_DIR: str = field(
+        default_factory=lambda: os.environ.get("PROCESSED_DATA_DIR", "data/processed")
+    )
+    FEATURES_DATA_DIR: str = field(
+        default_factory=lambda: os.environ.get("FEATURES_DATA_DIR", "data/features")
+    )
+    MAX_WORKERS: int = field(
+        default_factory=lambda: int(os.environ.get("MAX_WORKERS", "5"))
+    )
+    SLEEP_SECONDS: float = field(
+        default_factory=lambda: float(os.environ.get("SLEEP_SECONDS", "0.5"))
+    )
+    MIN_YEAR: int = field(
+        default_factory=lambda: int(os.environ.get("MIN_YEAR", "2024"))
+    )
+    MONTH_SAVE_URL_TEMPLATE: str = (
+        "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc={lease_id}"
+    )
+    MAIN_LEASE_URL_PREFIX: str = (
+        "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc="
+    )
 
-# KGS URLs
-KGS_MAIN_LEASE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease"
-KGS_MONTH_SAVE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave"
 
-# Acquire settings
-MIN_YEAR = 2024
-MAX_WORKERS = 5
-RETRY_MAX = 3
-RETRY_BASE_DELAY = 1.0
-RETRY_FACTOR = 2.0
-
-# Transform settings
-IQR_MULTIPLIER = 1.5
-PRODUCTION_UNIT_ERROR_THRESHOLD = 50_000.0
-
-# Partition settings
-ROWS_PER_PARTITION = 500_000
-MAX_PARTITIONS = 200
-MAX_READ_PARTITIONS = 50
-
-# Required schema columns
-REQUIRED_COLUMNS = [
-    "LEASE_KID",
-    "LEASE",
-    "API_NUMBER",
-    "MONTH-YEAR",
-    "PRODUCT",
-    "PRODUCTION",
-    "WELLS",
-    "OPERATOR",
-    "COUNTY",
-    "source_file",
-]
-
-# String columns to standardise
-STRING_COLS = [
-    "LEASE",
-    "OPERATOR",
-    "COUNTY",
-    "PRODUCT",
-    "PRODUCING_ZONE",
-    "FIELD",
-    "API_NUMBER",
-    "LEASE_KID",
-    "SPOT",
-    "TWN_DIR",
-    "RANGE_DIR",
-]
+# Module-level singleton used by default throughout the pipeline
+config = Config()

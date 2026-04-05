@@ -1,586 +1,552 @@
-# Features Component — Task Specifications
+# Features Component Tasks
+
+**Module:** `kgs_pipeline/features.py`
+**Test file:** `tests/test_features.py`
 
 ## Overview
 
-The features component loads the cleaned Parquet files from `data/processed/clean/`, applies
-domain-specific feature engineering (cumulative production, decline rates, ratios, rolling
-averages, lag features, well age, formation and county aggregates), encodes categorical
-variables, and writes the final ML-ready dataset to `data/processed/features/` as Parquet.
-The stage uses Dask with `map_partitions` for partition-level parallelism. All computed
-features must satisfy the physical correctness constraints defined in test-requirements.xml.
+The features component reads processed Parquet files from `data/processed/`, computes
+derived ML-ready features for each lease (cumulative production, decline rates, rolling
+averages, lag features, GOR, water cut, months since first production), and writes
+feature-ready Parquet files to `data/features/`. It also writes a metadata manifest
+JSON file describing the output schema, record counts, feature column list, and
+processing timestamps.
+
+The processed schema (output of transform) includes:
+`lease_kid`, `api_number`, `lease_name`, `operator`, `county`, `field`,
+`producing_zone`, `production_date`, `oil_bbl`, `gas_mcf`, `well_count`, `latitude`,
+`longitude`, `is_outlier`, `has_negative_production`, `source_file`.
+
+Note: the KGS dataset does not contain a separate water production column. The `water_bbl`
+column is introduced in the features stage with a default value of `0.0` to satisfy the
+output schema contract required by downstream ML workflows (TR-19). If water production
+data becomes available in future KGS dataset versions, this column will carry real values.
+
+## Design Decisions
+
+- All feature functions accept and return `dask.dataframe.DataFrame` — never call
+  `.compute()` internally (TR-17). Apply feature computations inside `map_partitions`
+  operating on per-lease groups where sequential ordering is required.
+- String column meta uses `pd.StringDtype()` — never `"object"`.
+- After reading processed Parquet, immediately repartition to `min(npartitions, 50)`.
+- Output: write to `data/features/` as Parquet, targeting 20-50 files. Never partition
+  on `lease_kid` directly (high cardinality).
+- All derived numeric features use `float64`.
+- Decline rate is clipped to `[-1.0, 10.0]` (TR-07).
+- GOR is `gas_mcf / oil_bbl`; when `oil_bbl == 0`, result is `NaN` (not exception,
+  not infinity) (TR-06).
+- Water cut is `water_bbl / (oil_bbl + water_bbl)`; when both are zero, result is
+  `NaN` (TR-09e, TR-10).
+- Cumulative production values must be monotonically non-decreasing per lease (TR-03,
+  TR-08).
+- Rolling windows: 3-month and 6-month for oil, gas, and water. Partial window results
+  for the first N-1 months are `NaN` (min_periods=1 is NOT used — use min_periods equal
+  to the window size to produce NaN for insufficient history) (TR-09b).
+- Lag features: lag-1 (previous month) for oil_bbl, gas_mcf, water_bbl (TR-09c).
+- Months since first production: integer count of months from the lease's first
+  non-zero production date to each row's production_date.
+- Production per day: `oil_bbl / days_in_month`, `gas_mcf / days_in_month` where
+  `days_in_month` is derived from `production_date`.
+
+---
+
+## Task 01: Read processed Parquet and repartition
 
 **Module:** `kgs_pipeline/features.py`
-**Entry-point CLI:** invoked by `pipeline.py --features`
-**Test file:** `tests/test_features.py`
-
----
-
-## Output feature schema
-
-The features Parquet output must contain all of the following columns. `[TR-19]`
-
-| Column name             | Type     | Description                                                         |
-|-------------------------|----------|---------------------------------------------------------------------|
-| LEASE_KID               | str      | Lease identifier                                                    |
-| PRODUCT                 | str      | "O" or "G"                                                          |
-| production_date         | datetime | First day of production month                                       |
-| oil_bbl                 | float    | Monthly oil production (BBL); 0.0 for gas-only leases               |
-| gas_mcf                 | float    | Monthly gas production (MCF); 0.0 for oil-only leases               |
-| water_bbl               | float    | Monthly water production (BBL); may be NaN if not reported          |
-| cum_oil                 | float    | Cumulative oil BBL per lease, monotonically non-decreasing          |
-| cum_gas                 | float    | Cumulative gas MCF per lease, monotonically non-decreasing          |
-| cum_water               | float    | Cumulative water BBL per lease                                      |
-| gor                     | float    | Gas-oil ratio (gas_mcf / oil_bbl); NaN if oil_bbl=0 & gas_mcf > 0  |
-| water_cut               | float    | water_bbl / (oil_bbl + water_bbl); range [0, 1]                     |
-| decline_rate            | float    | Period-over-period oil decline rate, clipped to [-1.0, 10.0]        |
-| well_age_months         | int      | Months since first production date for the lease                    |
-| oil_roll3               | float    | 3-month rolling average of oil_bbl                                  |
-| oil_roll6               | float    | 6-month rolling average of oil_bbl                                  |
-| gas_roll3               | float    | 3-month rolling average of gas_mcf                                  |
-| gas_roll6               | float    | 6-month rolling average of gas_mcf                                  |
-| water_roll3             | float    | 3-month rolling average of water_bbl                                |
-| water_roll6             | float    | 6-month rolling average of water_bbl                                |
-| oil_lag1                | float    | oil_bbl lagged by 1 month                                           |
-| oil_lag3                | float    | oil_bbl lagged by 3 months                                          |
-| gas_lag1                | float    | gas_mcf lagged by 1 month                                           |
-| gas_lag3                | float    | gas_mcf lagged by 3 months                                          |
-| county_mean_oil         | float    | Mean monthly oil production for the county                          |
-| county_std_oil          | float    | Std of monthly oil production for the county                        |
-| formation_mean_oil      | float    | Mean monthly oil production for the producing zone/formation        |
-| formation_std_oil       | float    | Std of monthly oil production for the producing zone/formation      |
-| COUNTY_enc              | int      | LabelEncoded county                                                 |
-| PRODUCING_ZONE_enc      | int      | LabelEncoded producing zone                                         |
-| OPERATOR_enc            | int      | LabelEncoded operator                                               |
-| PRODUCT_enc             | int      | LabelEncoded product ("O"/"G")                                      |
-
----
-
-## Design decisions and constraints
-
-- All Parquet reads and writes use Dask. No `.compute()` inside module functions except where
-  explicitly permitted (e.g., global aggregate lookups, label encoding fit). `[TR-17]`
-- After reading cleaned Parquet, immediately repartition to `min(npartitions, 50)`.
-- Output file count: repartition to `max(1, total_rows // 500_000)` before writing. Never more
-  than 200 output files.
-- Per-well time-series operations (cumulative, rolling, lag, decline rate) must be computed
-  within each `LEASE_KID` group. Use `ddf.groupby("LEASE_KID").apply(fn, meta=...)` or
-  implement via `map_partitions` with sorting guarantees.
-- Before any per-well sequential operation, sort within each partition by `(LEASE_KID,
-  production_date)` inside a `map_partitions` call.
-- Water column: the cleaned data may not have an explicit water column since raw KGS data
-  reports oil and gas separately under the PRODUCT column. In this case, `water_bbl` is NaN
-  for all rows and cumulative/rolling/lag water features will also be NaN. The pipeline must
-  handle this gracefully without raising.
-- Physical bounds must be enforced on computed features: GOR >= 0 (or NaN), water_cut ∈ [0,1],
-  decline_rate clipped to [-1.0, 10.0], cumulative values non-decreasing. `[TR-01, TR-03]`
-- GOR zero-denominator: if oil_bbl == 0 and gas_mcf > 0, GOR = NaN. If both == 0, GOR = 0.0
-  (or NaN — document choice). If oil_bbl > 0, GOR = gas_mcf / oil_bbl. `[TR-06]`
-- Water cut: water_bbl / (oil_bbl + water_bbl). If denominator == 0, water_cut = NaN. `[TR-10]`
-- String `meta=` arguments must use `pd.StringDtype()`, never `"object"`.
-- `requirements.txt` must be updated with all third-party packages imported in this module.
-
----
-
-## Task 01: Implement cleaned data loader
-
-**Module:** `kgs_pipeline/features.py`
-**Function:** `load_clean(clean_dir: str) -> dask.dataframe.DataFrame`
+**Function:** `read_processed(processed_dir: str) -> dd.DataFrame`
 
 **Description:**
-Read all Parquet files from `clean_dir` into a Dask DataFrame. Immediately repartition to
-`min(npartitions, 50)`. Raise `ValueError` if the directory is empty or has no Parquet files.
+Read all Parquet files from `processed_dir` using `dd.read_parquet(processed_dir)`.
+Immediately repartition to `min(ddf.npartitions, 50)`. Raise `FileNotFoundError` if
+`processed_dir` does not exist or contains no Parquet files. Log the partition count.
 
-**Inputs:** `clean_dir: str` — path to `data/processed/clean/`.
-
-**Outputs:** `dask.dataframe.DataFrame`
+**Dependencies:** `dask.dataframe`, `pathlib`, `kgs_pipeline.logging_utils`
 
 **Test cases:**
-- `@pytest.mark.unit` — Write a minimal clean Parquet fixture to `tmp_path`; assert return
-  type is `dask.dataframe.DataFrame`. `[TR-17]`
-- `@pytest.mark.unit` — Assert `npartitions <= 50`.
-- `@pytest.mark.unit` — Given an empty directory, assert `ValueError`.
-- `@pytest.mark.integration` — Load from actual `data/processed/clean/`; assert readability.
-  `[TR-18]`
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Given a temporary directory with synthetic processed Parquet
+  files, assert `read_processed` returns a `dask.dataframe.DataFrame` with the
+  correct columns.
+- `@pytest.mark.unit` — Assert `npartitions <= 50` after the call.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
+- `@pytest.mark.unit` — Given a non-existent path, assert `FileNotFoundError` is raised.
+- `@pytest.mark.integration` — Given `data/processed/` populated by transform, assert
+  a non-empty Dask DataFrame is returned.
+
+**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
+no errors. `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 02: Implement oil/gas/water column pivot
+## Task 02: Add water_bbl column and compute GOR and water cut
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `pivot_products(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Functions:**
+- `add_water_column(ddf: dd.DataFrame) -> dd.DataFrame`
+- `compute_gor(ddf: dd.DataFrame) -> dd.DataFrame`
+- `compute_water_cut(ddf: dd.DataFrame) -> dd.DataFrame`
 
 **Description:**
-The cleaned data has one row per `(LEASE_KID, MONTH-YEAR, PRODUCT)` where PRODUCT is "O" or "G".
-Pivot to a wide format with one row per `(LEASE_KID, production_date)` and separate columns
-for oil_bbl, gas_mcf:
-1. Filter rows where PRODUCT == "O" → oil_bbl = PRODUCTION; fill NaN with 0.0.
-2. Filter rows where PRODUCT == "G" → gas_mcf = PRODUCTION; fill NaN with 0.0.
-3. Merge the two filtered DataFrames on `(LEASE_KID, production_date)` (outer join).
-4. Fill NaN oil_bbl and gas_mcf with 0.0 after the merge.
-5. Add `water_bbl` column as NaN (float) — KGS data does not report water separately.
-6. Retain other metadata columns from the "O" rows (COUNTY, PRODUCING_ZONE, OPERATOR,
-   LEASE, FIELD, source_file).
 
-This function calls `.compute()` to perform the pivot (it is a reshape operation that is
-inherently non-lazy). After pivoting, convert back to a Dask DataFrame and repartition to
-`min(npartitions, 50)`.
+`add_water_column`:
+- Add `water_bbl` column with default value `0.0` (float64) to every row.
+- This column represents water production; defaulted to zero because the KGS dataset
+  does not report water production. Future data versions may populate this column.
 
-**Inputs:** `ddf: dask.dataframe.DataFrame`
+`compute_gor`:
+- Compute `gor = gas_mcf / oil_bbl` element-wise inside `map_partitions`.
+- When `oil_bbl == 0` and `gas_mcf > 0`: result is `NaN` (TR-06a).
+- When `oil_bbl == 0` and `gas_mcf == 0`: result is `NaN` (TR-06b).
+- When `oil_bbl > 0` and `gas_mcf == 0`: result is `0.0` (TR-06c).
+- Use `numpy.where` or pandas division with `replace(inf, NaN)` to avoid
+  ZeroDivisionError or infinite values.
+- Add `gor` column with dtype `float64` to the DataFrame.
 
-**Outputs:** `dask.dataframe.DataFrame` with columns: LEASE_KID, production_date, oil_bbl,
-gas_mcf, water_bbl, COUNTY, PRODUCING_ZONE, OPERATOR, LEASE, FIELD, source_file.
+`compute_water_cut`:
+- Compute `water_cut = water_bbl / (oil_bbl + water_bbl)` element-wise inside
+  `map_partitions`.
+- When both `oil_bbl == 0` and `water_bbl == 0`: result is `NaN` (TR-10).
+- When `water_bbl == 0` and `oil_bbl > 0`: result is `0.0` — valid, no water (TR-10a).
+- When `oil_bbl == 0` and `water_bbl > 0`: result is `1.0` — valid late-life well (TR-10b).
+- Values outside `[0.0, 1.0]` by construction are impossible if inputs are non-negative.
+- Add `water_cut` column with dtype `float64`.
 
-**Edge cases:**
-- Lease with only gas records (no oil rows) → oil_bbl = 0.0 for all its rows.
-- Lease with only oil records → gas_mcf = 0.0 for all its rows.
-- Month present in oil but not gas → after outer merge, gas_mcf filled with 0.0.
+**Dependencies:** `dask.dataframe`, `pandas`, `numpy`, `kgs_pipeline.logging_utils`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given a fixture with 2 oil rows and 2 gas rows for the same lease
-  and months, assert the pivot produces 2 rows (wide format). `[TR-05]`
-- `@pytest.mark.unit` — Given a lease with only "O" rows, assert gas_mcf is 0.0 (not NaN)
-  in all output rows.
-- `@pytest.mark.unit` — Assert `water_bbl` column exists with NaN values.
-- `@pytest.mark.unit` — Assert oil_bbl=0.0 rows are retained (not dropped). `[TR-05]`
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — `add_water_column`: assert every row has `water_bbl=0.0` and
+  dtype `float64`.
+- `@pytest.mark.unit` TR-06a — `compute_gor`: `oil_bbl=0`, `gas_mcf=500` → `gor=NaN`.
+- `@pytest.mark.unit` TR-06b — `compute_gor`: `oil_bbl=0`, `gas_mcf=0` → `gor=NaN`.
+- `@pytest.mark.unit` TR-06c — `compute_gor`: `oil_bbl=100`, `gas_mcf=0` → `gor=0.0`.
+- `@pytest.mark.unit` — `compute_gor`: `oil_bbl=100`, `gas_mcf=500` → `gor=5.0`.
+- `@pytest.mark.unit` TR-10a — `compute_water_cut`: `water_bbl=0`, `oil_bbl=100` →
+  `water_cut=0.0`.
+- `@pytest.mark.unit` TR-10b — `compute_water_cut`: `oil_bbl=0`, `water_bbl=50` →
+  `water_cut=1.0`.
+- `@pytest.mark.unit` TR-10 — `compute_water_cut`: `oil_bbl=0`, `water_bbl=0` →
+  `water_cut=NaN`.
+- `@pytest.mark.unit` — `compute_water_cut`: `oil_bbl=75`, `water_bbl=25` →
+  `water_cut=0.25`.
+- `@pytest.mark.unit` — Assert all three functions return `dask.dataframe.DataFrame` (TR-17).
 
----
-
-## Task 03: Implement cumulative production features
-
-**Module:** `kgs_pipeline/features.py`
-**Function:** `compute_cumulative(df: pd.DataFrame) -> pd.DataFrame`
-
-**Description:**
-Compute cumulative production columns for a **single lease's** sorted time-series DataFrame
-(operates on a Pandas DataFrame, called via `groupby.apply` or `map_partitions` with
-per-group sorting). Steps:
-1. Sort by `production_date` ascending.
-2. `cum_oil = oil_bbl.cumsum()` — must be monotonically non-decreasing since oil_bbl >= 0.
-3. `cum_gas = gas_mcf.cumsum()` — same constraint.
-4. `cum_water = water_bbl.cumsum()` — NaN-safe: use `cumsum(skipna=True)` so NaN months
-   propagate the previous cumulative value without resetting. If all water_bbl are NaN,
-   cum_water is NaN.
-5. Assert (within function) that `cum_oil` is non-decreasing: `assert (cum_oil.diff().dropna() >= 0).all()`. `[TR-03]`
-6. Return the DataFrame with `cum_oil`, `cum_gas`, `cum_water` columns added.
-
-**Inputs:** `df: pd.DataFrame` — single-lease sorted time-series.
-
-**Outputs:** `pd.DataFrame` with `cum_oil`, `cum_gas`, `cum_water` added.
-
-**Test cases — [TR-03, TR-08]:**
-- `@pytest.mark.unit` — Given oil_bbl = [100, 150, 0, 200] (shut-in at month 3), assert
-  cum_oil = [100, 250, 250, 450]. Flat during shut-in, correct resumption. `[TR-08]`
-- `@pytest.mark.unit` — Assert cum_oil is monotonically non-decreasing for any non-negative
-  oil_bbl input. `[TR-03]`
-- `@pytest.mark.unit` — Given oil_bbl = [0, 0, 100, 200] (well not online for first 2 months),
-  assert cum_oil = [0, 0, 100, 300]. `[TR-08]`
-- `@pytest.mark.unit` — Given oil_bbl = [100, 0, 0, 50] with zero months mid-sequence,
-  assert cum_oil stays flat at 100 during the zero months then correctly resumes. `[TR-08]`
-- `@pytest.mark.unit` — Given water_bbl = [NaN, NaN, NaN], assert cum_water is all NaN
-  (not 0.0).
-
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+**Definition of done:** All three functions implemented, all tests pass, `ruff` and
+`mypy` report no errors. `requirements.txt` updated with all third-party packages
+imported in this task.
 
 ---
 
-## Task 04: Implement GOR and water cut features
+## Task 03: Cumulative production per lease
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `compute_ratios(df: pd.DataFrame) -> pd.DataFrame`
+**Function:** `compute_cumulative(ddf: dd.DataFrame) -> dd.DataFrame`
 
 **Description:**
-Compute GOR and water cut for a single-lease Pandas DataFrame:
+Compute cumulative oil, gas, and water production per lease (`lease_kid`), sorted by
+`production_date` ascending. Add columns: `cum_oil` (`float64`), `cum_gas` (`float64`),
+`cum_water` (`float64`).
 
-**GOR (gas-oil ratio):** `[TR-06, TR-09]`
-- If `oil_bbl > 0`: `gor = gas_mcf / oil_bbl`
-- If `oil_bbl == 0` and `gas_mcf > 0`: `gor = NaN` (mathematically undefined)
-- If `oil_bbl == 0` and `gas_mcf == 0` (shut-in): `gor = 0.0`
-- Must not raise ZeroDivisionError in any case. Use `np.where` or `pd.Series.where`.
+Implementation approach using `map_partitions` is insufficient for cumulative production
+across partition boundaries. Use Dask's `groupby` + `transform` with a custom function,
+or materialise per-lease groups using `ddf.groupby("lease_kid").apply(...)` with
+`meta` specified. Document the chosen approach in the function docstring.
 
-**Water cut:** `[TR-09, TR-10]`
-- `water_cut = water_bbl / (oil_bbl + water_bbl)`
-- If `(oil_bbl + water_bbl) == 0`: `water_cut = NaN`
-- Result must be in [0.0, 1.0] or NaN. A result of 0.0 (no water) and 1.0 (100% water) are
-  both valid and must NOT be treated as errors. `[TR-10]`
-- Values outside [0, 1] indicate a data error and should be set to NaN.
+Recommended approach:
+1. Call `ddf.compute()` inside the function only if absolutely required for the
+   cumulative computation. If so, document that this is an intentional exception to the
+   lazy evaluation rule (cumulative across partitions requires full materialisation or a
+   sort-based approach).
+   **Preferred**: use `ddf.assign(cum_oil=ddf.groupby("lease_kid")["oil_bbl"].cumsum(),
+   cum_gas=ddf.groupby("lease_kid")["gas_mcf"].cumsum(), ...)` which Dask supports lazily.
+   Verify the result remains a `dask.dataframe.DataFrame` before returning.
+2. Sort by `["lease_kid", "production_date"]` before computing cumulative (Dask cumsum
+   within groupby requires sorted data for correctness).
 
-**Inputs:** `df: pd.DataFrame` — single-lease DataFrame with `oil_bbl`, `gas_mcf`, `water_bbl`.
+**Domain correctness (TR-03, TR-08):**
+- `cum_oil`, `cum_gas`, `cum_water` must be monotonically non-decreasing per lease.
+- When a lease has zero production in a month (shut-in), the cumulative value must
+  remain flat (equal to the prior month) — not decrease (TR-08a).
+- Zero-production months at the start of the record must have cumulative = 0 (TR-08b).
+- Cumulative must resume correctly from the flat value after shut-in (TR-08c).
 
-**Outputs:** `pd.DataFrame` with `gor` and `water_cut` columns added.
-
-**Test cases — [TR-01, TR-06, TR-09, TR-10]:**
-- `@pytest.mark.unit` — oil_bbl=100, gas_mcf=500 → gor=5.0. `[TR-09]`
-- `@pytest.mark.unit` — oil_bbl=0, gas_mcf=500 → gor=NaN (not an exception). `[TR-06]`
-- `@pytest.mark.unit` — oil_bbl=0, gas_mcf=0 → gor=0.0. `[TR-06]`
-- `@pytest.mark.unit` — oil_bbl=100, gas_mcf=0 → gor=0.0. `[TR-06]`
-- `@pytest.mark.unit` — water_bbl=0, oil_bbl=100 → water_cut=0.0 (valid, not an outlier).
-  `[TR-10]`
-- `@pytest.mark.unit` — water_bbl=200, oil_bbl=0 → water_cut=1.0 (valid end-of-life well).
-  `[TR-10]`
-- `@pytest.mark.unit` — water_bbl=0, oil_bbl=0 → water_cut=NaN. `[TR-10]`
-- `@pytest.mark.unit` — Assert no `ZeroDivisionError` is raised for any combination of zeros.
-  `[TR-06]`
-- `@pytest.mark.unit` — Assert GOR formula is gas_mcf / oil_bbl, not gas_bbl / oil_mcf.
-  `[TR-09]`
-- `@pytest.mark.unit` — Assert water_cut formula denominator is (oil_bbl + water_bbl), not
-  just oil_bbl. `[TR-09]`
-
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
-
----
-
-## Task 05: Implement decline rate feature
-
-**Module:** `kgs_pipeline/features.py`
-**Function:** `compute_decline_rate(df: pd.DataFrame) -> pd.DataFrame`
-
-**Description:**
-Compute the period-over-period production decline rate for each month in a single-lease
-sorted time-series. `[TR-07]`
-
-Formula: `decline_rate[t] = (oil_bbl[t-1] - oil_bbl[t]) / oil_bbl[t-1]`
-- If `oil_bbl[t-1] == 0`: the raw result would be division by zero. Handle as follows:
-  - If `oil_bbl[t] == 0` (two consecutive zero months, shut-in): `decline_rate = 0.0`
-  - If `oil_bbl[t] > 0` (production resumes after shut-in): `decline_rate = -1.0` (maximum
-    negative clip value — represents infinite negative decline, i.e., production came back).
-- After raw computation, clip to `[-1.0, 10.0]`. `[TR-07]`
-- First row for each lease (no prior period): `decline_rate = NaN`.
-
-**Inputs:** `df: pd.DataFrame` — single-lease sorted DataFrame with `oil_bbl`.
-
-**Outputs:** `pd.DataFrame` with `decline_rate` column added.
-
-**Test cases — [TR-07]:**
-- `@pytest.mark.unit` — oil_bbl = [200, 100, 50] → decline_rate = [NaN, 0.5, 0.5]. `[TR-07]`
-- `@pytest.mark.unit` — A decline rate computed as 15.0 (above clip bound) is clipped to 10.0.
-  `[TR-07]`
-- `@pytest.mark.unit` — A decline rate computed as -2.0 (below clip bound) is clipped to -1.0.
-  `[TR-07]`
-- `@pytest.mark.unit` — Value within [-1.0, 10.0] passes through unchanged. `[TR-07]`
-- `@pytest.mark.unit` — oil_bbl[t-1] = 0, oil_bbl[t] = 0 → decline_rate = 0.0 (no exception).
-  `[TR-07]`
-- `@pytest.mark.unit` — oil_bbl[t-1] = 0, oil_bbl[t] = 100 → decline_rate = -1.0 (clipped).
-  `[TR-07]`
-
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
-
----
-
-## Task 06: Implement well age feature
-
-**Module:** `kgs_pipeline/features.py`
-**Function:** `compute_well_age(df: pd.DataFrame) -> pd.DataFrame`
-
-**Description:**
-Compute `well_age_months` as the number of months elapsed since the earliest `production_date`
-for the lease:
-- `well_age_months[t] = (production_date[t].year - first_date.year) * 12 + (production_date[t].month - first_date.month)`
-- First month = 0.
-- Return type: `int` (or `Int64` nullable integer).
-
-**Inputs:** `df: pd.DataFrame` — single-lease sorted DataFrame with `production_date`.
-
-**Outputs:** `pd.DataFrame` with `well_age_months` column added.
+**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given dates [2024-01-01, 2024-02-01, 2024-04-01], assert
-  well_age_months = [0, 1, 3].
-- `@pytest.mark.unit` — Single-row DataFrame → well_age_months = 0.
-- `@pytest.mark.unit` — Assert dtype is integer (not float).
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` TR-03 — Given a synthetic single-lease sequence with production
+  values `[100, 200, 150, 0, 300]` over 5 months, assert `cum_oil` equals
+  `[100, 300, 450, 450, 750]` (monotonically non-decreasing, flat during shut-in month).
+- `@pytest.mark.unit` TR-08a — Given a zero-production month mid-sequence, assert
+  `cum_oil` does not decrease and equals the prior month's cumulative.
+- `@pytest.mark.unit` TR-08b — Given a lease where the first 2 months have
+  `oil_bbl=0.0`, assert `cum_oil=0.0` for those months.
+- `@pytest.mark.unit` TR-08c — Given production resumes after 2 shut-in months (value
+  say 400), assert `cum_oil` for that month equals the flat cumulative + 400.
+- `@pytest.mark.unit` — Given two leases in the same DataFrame, assert cumulative is
+  computed independently per lease (lease B's cumulative is not affected by lease A).
+- `@pytest.mark.unit` — Assert columns `cum_oil`, `cum_gas`, `cum_water` are present
+  in the output.
 
----
-
-## Task 07: Implement rolling average features
-
-**Module:** `kgs_pipeline/features.py`
-**Function:** `compute_rolling(df: pd.DataFrame, windows: list[int] = [3, 6]) -> pd.DataFrame`
-
-**Description:**
-Compute rolling averages for `oil_bbl`, `gas_mcf`, `water_bbl` over the specified windows
-within a single-lease sorted time-series. Use `pd.Series.rolling(window=W, min_periods=1)`.
-Name output columns `oil_roll3`, `oil_roll6`, `gas_roll3`, `gas_roll6`, `water_roll3`,
-`water_roll6` for windows [3, 6].
-
-When the rolling window is larger than available history (e.g., first 2 months of a 3-month
-window), `min_periods=1` ensures a partial average is computed, not NaN. This is the
-specified behaviour. `[TR-09]`
-
-**Inputs:**
-- `df: pd.DataFrame` — single-lease sorted DataFrame.
-- `windows: list[int]` — rolling window sizes.
-
-**Outputs:** `pd.DataFrame` with rolling columns added.
-
-**Test cases — [TR-09]:**
-- `@pytest.mark.unit` — oil_bbl = [100, 200, 300, 400]; assert oil_roll3 matches
-  hand-computed values: [100.0, 150.0, 200.0, 300.0] (with min_periods=1). `[TR-09]`
-- `@pytest.mark.unit` — oil_bbl = [100, 200, 300, 400, 500, 600]; assert oil_roll6 matches
-  hand-computed values for all 6 rows. `[TR-09]`
-- `@pytest.mark.unit` — First row of oil_roll3 equals oil_bbl[0] (window of 1 = identity).
-- `@pytest.mark.unit` — Assert water_roll3 is NaN for all rows when water_bbl is all NaN.
-
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
+no errors. `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 08: Implement lag features
+## Task 04: Decline rate computation
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `compute_lags(df: pd.DataFrame, lags: list[int] = [1, 3]) -> pd.DataFrame`
+**Function:** `compute_decline_rate(ddf: dd.DataFrame) -> dd.DataFrame`
 
 **Description:**
-Compute lag features for `oil_bbl` and `gas_mcf` within a single-lease sorted time-series.
-Use `pd.Series.shift(n)`. Lag-N for row T equals the raw production value at row T-N.
-Name columns: `oil_lag1`, `oil_lag3`, `gas_lag1`, `gas_lag3`.
+Compute the period-over-period oil production decline rate per lease and add it as
+column `decline_rate` (`float64`).
 
-The first N rows for each lag will be NaN (no prior period available).
+Formula: `decline_rate = (oil_bbl[t] - oil_bbl[t-1]) / oil_bbl[t-1]`
 
-**Inputs:**
-- `df: pd.DataFrame` — single-lease sorted DataFrame.
-- `lags: list[int]` — lag periods.
+Edge cases (inside `map_partitions`):
+- When `oil_bbl[t-1] == 0` and `oil_bbl[t] > 0`: raw result is undefined (division by
+  zero); set to `NaN` before clipping (TR-07d).
+- When `oil_bbl[t-1] == 0` and `oil_bbl[t] == 0`: result is `NaN` (both shut-in).
+- After computing the raw decline rate, clip to `[-1.0, 10.0]` (TR-07).
+- For the first row of each lease (no prior month), `decline_rate = NaN`.
 
-**Outputs:** `pd.DataFrame` with lag columns added.
+Implementation: use `map_partitions` with a custom `_compute_decline_partition` function
+that groups by `lease_kid` within the partition, sorts by `production_date`, and applies
+`pct_change()` on `oil_bbl`. For cross-partition correctness, document that the data
+must be sorted and that within-partition computation may produce NaN for the first row
+of a lease within a partition (not the overall first row). This is an accepted limitation;
+document it.
 
-**Test cases — [TR-09]:**
-- `@pytest.mark.unit` — oil_bbl = [100, 200, 300, 400]; assert oil_lag1 = [NaN, 100, 200, 300].
-  Verify lag-1 at month N equals the raw value at month N-1 for at least 3 consecutive months.
-  `[TR-09]`
-- `@pytest.mark.unit` — oil_bbl = [100, 200, 300, 400]; assert oil_lag3 = [NaN, NaN, NaN, 100].
-- `@pytest.mark.unit` — Assert first row of oil_lag1 is NaN.
-
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
-
----
-
-## Task 09: Implement aggregate features
-
-**Module:** `kgs_pipeline/features.py`
-**Function:** `compute_aggregates(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
-
-**Description:**
-Compute county-level and formation-level aggregate features and join them back to the main
-DataFrame:
-
-1. **County aggregates:** compute `county_mean_oil` and `county_std_oil` — the mean and
-   standard deviation of `oil_bbl` grouped by `COUNTY`. This requires calling `.compute()`
-   once to get the global county stats as a Pandas lookup table, then merging back via
-   `map_partitions`.
-2. **Formation aggregates:** compute `formation_mean_oil` and `formation_std_oil` — mean and
-   std of `oil_bbl` grouped by `PRODUCING_ZONE`. Same approach.
-3. Merge the aggregate lookup tables back to the Dask DataFrame via `map_partitions` using
-   `pd.DataFrame.merge(..., on="COUNTY", how="left")` and
-   `pd.DataFrame.merge(..., on="PRODUCING_ZONE", how="left")`.
-4. Fill NaN values in aggregate columns with the global mean where the group had insufficient
-   data (e.g., a county with only 1 record has undefined std → fill std with 0.0).
-
-**Inputs:** `ddf: dask.dataframe.DataFrame`
-
-**Outputs:** `dask.dataframe.DataFrame` with `county_mean_oil`, `county_std_oil`,
-`formation_mean_oil`, `formation_std_oil` columns added.
+**Dependencies:** `dask.dataframe`, `pandas`, `numpy`, `kgs_pipeline.logging_utils`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given 3 leases: 2 in county "Allen" (oil 100, 200) and 1 in county
-  "Barton" (oil 300); assert county_mean_oil for "Allen" rows = 150.0 and for "Barton" = 300.0.
-- `@pytest.mark.unit` — Assert county_std_oil for a county with a single record is 0.0 (not NaN).
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame`. `[TR-17]`
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` TR-07a — Given a sequence with computed decline rate of `-1.5`
+  (before clipping), assert output `decline_rate = -1.0` (clipped to lower bound).
+- `@pytest.mark.unit` TR-07b — Given a computed decline rate of `15.0`, assert output
+  `decline_rate = 10.0` (clipped to upper bound).
+- `@pytest.mark.unit` TR-07c — Given a computed decline rate of `0.5` (within bounds),
+  assert output `decline_rate = 0.5` (unchanged).
+- `@pytest.mark.unit` TR-07d — Given `oil_bbl[t-1]=0` and `oil_bbl[t]=100`, assert
+  `decline_rate = NaN` (handled before clipping, not an extreme unclipped value).
+- `@pytest.mark.unit` — Given `oil_bbl[t-1]=0` and `oil_bbl[t]=0` (both shut-in),
+  assert `decline_rate = NaN`.
+- `@pytest.mark.unit` — Given a first row for a lease (no prior data), assert
+  `decline_rate = NaN`.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
+
+**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
+no errors. `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 10: Implement categorical encoding
+## Task 05: Rolling averages and lag features
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `encode_categoricals(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `compute_rolling_and_lag_features(ddf: dd.DataFrame) -> dd.DataFrame`
 
 **Description:**
-Encode categorical columns using `sklearn.preprocessing.LabelEncoder`. Columns to encode:
-`COUNTY`, `PRODUCING_ZONE`, `OPERATOR`, `PRODUCT`. Output columns: `COUNTY_enc`,
-`PRODUCING_ZONE_enc`, `OPERATOR_enc`, `PRODUCT_enc` (integer dtype).
+Compute rolling averages and lag-1 features per lease, sorted by `production_date`.
 
-Steps:
-1. Call `.compute()` once to collect all unique values per categorical column (required to fit
-   LabelEncoder globally).
-2. Fit one `LabelEncoder` per column on the global unique values.
-3. Apply encoding via `map_partitions` using the fitted encoders.
-4. Handle unseen values gracefully — if a partition contains a value not seen during fit
-   (should not happen in a stable pipeline, but defensive coding), encode as -1.
-5. Return the Dask DataFrame with the `_enc` columns appended; original categorical columns
-   are retained.
+Rolling averages (window sizes 3 and 6 months, `min_periods` equals the window size
+to produce NaN when history is insufficient):
+- `oil_bbl_roll3`, `oil_bbl_roll6` — rolling mean of `oil_bbl`
+- `gas_mcf_roll3`, `gas_mcf_roll6` — rolling mean of `gas_mcf`
+- `water_bbl_roll3`, `water_bbl_roll6` — rolling mean of `water_bbl`
 
-**Inputs:** `ddf: dask.dataframe.DataFrame`
+Lag-1 features (previous month's value, within each lease group):
+- `oil_bbl_lag1` — `oil_bbl` shifted by 1 within each lease group
+- `gas_mcf_lag1` — `gas_mcf` shifted by 1
+- `water_bbl_lag1` — `water_bbl` shifted by 1
 
-**Outputs:** `dask.dataframe.DataFrame` with `COUNTY_enc`, `PRODUCING_ZONE_enc`,
-`OPERATOR_enc`, `PRODUCT_enc` added.
+All new columns have dtype `float64`. NaN is the correct value for months where
+insufficient history exists (first 2 months for 3-month rolling, first 5 months for
+6-month rolling, first month for lag-1).
+
+Implementation: inside `map_partitions`, group by `lease_kid`, sort by
+`production_date`, and apply rolling and shift operations per group. Return the
+reassembled DataFrame with new columns appended.
+
+**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given PRODUCT column with values ["O", "G", "O"], assert PRODUCT_enc
-  is integer-typed with exactly 2 distinct values.
-- `@pytest.mark.unit` — Assert COUNTY_enc dtype is integer.
-- `@pytest.mark.unit` — Assert original COUNTY column is still present alongside COUNTY_enc.
-- `@pytest.mark.unit` — Given an unseen category value introduced in a test partition,
-  assert encoding returns -1 (not a crash).
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` TR-09a — Given a known 6-month oil sequence `[100, 200, 150,
+  300, 250, 400]`, assert `oil_bbl_roll3` for month 3 (index 2) equals `150.0` (mean
+  of 100, 200, 150) and month 4 equals `216.667` (mean of 200, 150, 300) within
+  floating-point tolerance.
+- `@pytest.mark.unit` TR-09b — Given only 2 months of history, assert `oil_bbl_roll3`
+  is `NaN` for both months (min_periods = window size = 3, not met).
+- `@pytest.mark.unit` TR-09b — Given only 4 months of history, assert `oil_bbl_roll6`
+  is `NaN` for all 4 months (window=6 not met).
+- `@pytest.mark.unit` TR-09c — Given a 4-month oil sequence `[10, 20, 30, 40]`, assert
+  `oil_bbl_lag1` equals `[NaN, 10.0, 20.0, 30.0]`.
+- `@pytest.mark.unit` — Assert all 9 new columns (`oil_bbl_roll3`, `oil_bbl_roll6`,
+  `gas_mcf_roll3`, `gas_mcf_roll6`, `water_bbl_roll3`, `water_bbl_roll6`,
+  `oil_bbl_lag1`, `gas_mcf_lag1`, `water_bbl_lag1`) are present in output.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
+
+**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
+no errors. `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 11: Implement per-lease feature pipeline dispatcher
+## Task 06: Derived production-rate features
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `compute_per_lease_features(df: pd.DataFrame) -> pd.DataFrame`
+**Function:** `compute_rate_features(ddf: dd.DataFrame) -> dd.DataFrame`
 
 **Description:**
-Apply all per-lease sequential time-series feature functions to a single-lease Pandas
-DataFrame. This function is used as the callable inside a `groupby("LEASE_KID").apply` or
-dispatched via `map_partitions` after grouping. It chains:
-1. Sort by `production_date`.
-2. `compute_cumulative(df)`
-3. `compute_ratios(df)`
-4. `compute_decline_rate(df)`
-5. `compute_well_age(df)`
-6. `compute_rolling(df)`
-7. `compute_lags(df)`
-8. Return the fully-featured per-lease DataFrame.
+Compute production-per-day and months-since-first-production features inside
+`map_partitions`.
 
-If any per-lease computation raises an exception, log a WARNING with the LEASE_KID and
-return the input DataFrame unmodified for that lease (do not propagate — other leases must
-continue).
+Features to add:
+- `oil_bbl_per_day` (`float64`): `oil_bbl / days_in_month` where `days_in_month` is
+  derived from `production_date` using `production_date.dt.days_in_month`.
+- `gas_mcf_per_day` (`float64`): `gas_mcf / days_in_month`.
+- `months_since_first_prod` (`float64`): for each lease, the number of months elapsed
+  since the lease's first month with `oil_bbl > 0`. Computed as the difference in
+  months between `production_date` and the minimum `production_date` where
+  `oil_bbl > 0`, per `lease_kid`. If a lease has no months with `oil_bbl > 0`,
+  set `months_since_first_prod = NaN` for all its rows.
 
-**Inputs:** `df: pd.DataFrame` — rows for one `LEASE_KID`, sorted by `production_date`.
-
-**Outputs:** `pd.DataFrame` — same rows with all feature columns added.
+**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
 
 **Test cases:**
-- `@pytest.mark.unit` — Given a synthetic 6-month single-lease DataFrame, assert the output
-  contains all columns: cum_oil, cum_gas, cum_water, gor, water_cut, decline_rate,
-  well_age_months, oil_roll3, oil_roll6, gas_roll3, gas_roll6, water_roll3, water_roll6,
-  oil_lag1, oil_lag3, gas_lag1, gas_lag3. `[TR-19]`
-- `@pytest.mark.unit` — Assert cum_oil is monotonically non-decreasing. `[TR-03]`
-- `@pytest.mark.unit` — Assert all oil_bbl values >= 0.0. `[TR-01]`
-- `@pytest.mark.unit` — Assert gor >= 0.0 wherever it is not NaN. `[TR-01]`
-- `@pytest.mark.unit` — Assert water_cut is in [0.0, 1.0] wherever it is not NaN. `[TR-01]`
-- `@pytest.mark.unit` — Assert decline_rate is in [-1.0, 10.0] for all non-NaN values. `[TR-07]`
-- `@pytest.mark.unit` — If the per-lease function raises an exception for a corrupt input,
-  assert the function returns the input DataFrame unchanged (no crash).
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Given `oil_bbl=310.0` and `production_date=2024-01-01` (January,
+  31 days), assert `oil_bbl_per_day = 10.0`.
+- `@pytest.mark.unit` — Given `production_date=2024-02-01` (February 2024, 29 days)
+  and `oil_bbl=290.0`, assert `oil_bbl_per_day = 10.0`.
+- `@pytest.mark.unit` — Given a lease with first production in Jan 2024 and a row in
+  Apr 2024, assert `months_since_first_prod = 3.0`.
+- `@pytest.mark.unit` — Given a lease with all `oil_bbl=0.0`, assert
+  `months_since_first_prod = NaN` for all rows.
+- `@pytest.mark.unit` — Assert columns `oil_bbl_per_day`, `gas_mcf_per_day`,
+  `months_since_first_prod` are present in output.
+- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
+
+**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
+no errors. `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 12: Implement features orchestrator
+## Task 07: Write features Parquet output
 
 **Module:** `kgs_pipeline/features.py`
-**Function:** `run_features(clean_dir: str, output_dir: str) -> dask.dataframe.DataFrame`
+**Function:** `write_features_parquet(ddf: dd.DataFrame, output_dir: str) -> int`
 
 **Description:**
-Main entry point for the features stage. Chains all feature engineering steps and writes
-the final ML-ready dataset:
-1. `load_clean(clean_dir)` → `ddf`
-2. `pivot_products(ddf)` → `ddf`
-3. Apply `compute_per_lease_features` via `ddf.groupby("LEASE_KID", group_keys=False).apply(compute_per_lease_features, meta=...)`
-4. `compute_aggregates(ddf)` → `ddf`
-5. `encode_categoricals(ddf)` → `ddf`
-6. Repartition to `max(1, estimated_rows // 500_000)` — estimate without full `.compute()`.
-7. Write to `output_dir` via `ddf.to_parquet(output_dir, write_index=False)`.
-8. Re-read: `ddf_features = dask.dataframe.read_parquet(output_dir)`.
-9. Repartition to `min(npartitions, 50)`.
-10. Return `ddf_features`.
+Write the feature-enriched Dask DataFrame to `data/features/` as Parquet files.
 
-The returned Dask DataFrame must not have been computed. `[TR-17]`
+1. Repartition to `max(1, ddf.npartitions // 5)` (target 20-50 output files).
+2. Write: `ddf.repartition(npartitions=N).to_parquet(output_dir, write_index=False,
+   overwrite=True)`.
+3. Return the count of `.parquet` files written.
+4. Log the file count, output directory, and total feature columns.
 
-**Inputs:**
-- `clean_dir: str` — path to `data/processed/clean/`.
-- `output_dir: str` — path to `data/processed/features/`.
-
-**Outputs:** `dask.dataframe.DataFrame`
+**Dependencies:** `dask`, `pathlib`, `kgs_pipeline.logging_utils`
 
 **Test cases:**
-- `@pytest.mark.unit` — Run `run_features` on a synthetic 3-lease 6-month fixture; assert
-  return type is `dask.dataframe.DataFrame`. `[TR-17]`
-- `@pytest.mark.unit` — Assert the output DataFrame contains all columns listed in the output
-  feature schema table (see overview). `[TR-19]`
-- `@pytest.mark.unit` — Assert no PRODUCTION or oil_bbl value < 0.0 in the output. `[TR-01]`
-- `@pytest.mark.unit` — Assert cum_oil is monotonically non-decreasing per lease in the
-  output. `[TR-03]`
-- `@pytest.mark.unit` — Read back the written Parquet with a fresh `dask.dataframe.read_parquet`
-  call; assert success. `[TR-18]`
-- `@pytest.mark.unit` — Sample 2 partitions from the output; assert identical column names
-  and dtypes (schema stability). `[TR-14]`
-- `@pytest.mark.unit` — Assert output file count is between 1 and 200.
-- `@pytest.mark.integration` — Run against actual `data/processed/clean/`; assert output
-  at `data/processed/features/` is readable and contains all expected feature columns. `[TR-18, TR-19]`
 
-**Definition of done:** Function implemented, all test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.
+- `@pytest.mark.unit` — Given a small synthetic feature DataFrame, assert
+  `write_features_parquet` returns >= 1 and writes Parquet files to the output dir.
+- `@pytest.mark.unit` — Assert written files can be read back with `pd.read_parquet`
+  without error (TR-18).
+- `@pytest.mark.unit` — Assert return value equals actual file count on disk.
+
+**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
+no errors. `requirements.txt` updated with all third-party packages imported in this task.
 
 ---
 
-## Task 13: Implement feature correctness and completeness tests
+## Task 08: Metadata manifest writer
+
+**Module:** `kgs_pipeline/features.py`
+**Function:** `write_manifest(ddf: dd.DataFrame, output_dir: str, processing_start: datetime) -> Path`
+
+**Description:**
+Write a JSON metadata manifest to `{output_dir}/manifest.json` describing the feature
+output. The manifest must include:
+- `schema`: dict of `{column_name: dtype_str}` for all columns in `ddf`.
+- `feature_columns`: list of derived feature column names (all columns beyond the base
+  processed schema).
+- `record_count`: total row count (call `len(ddf)` — this triggers a compute; document
+  this as an intentional materialisation for manifest purposes).
+- `partition_count`: `ddf.npartitions`.
+- `processing_start`: ISO-8601 string from the `processing_start` argument.
+- `processing_end`: ISO-8601 string of the current UTC time at manifest write time.
+- `min_production_date`: ISO-8601 string of the minimum `production_date` in the dataset.
+- `max_production_date`: ISO-8601 string of the maximum `production_date` in the dataset.
+
+Return the `Path` to the written manifest file.
+
+**Dependencies:** `json`, `datetime`, `pathlib`, `kgs_pipeline.logging_utils`
+
+**Test cases:**
+
+- `@pytest.mark.unit` — Given a small synthetic Dask DataFrame, assert the manifest
+  JSON file is created, is valid JSON, and contains keys `schema`, `feature_columns`,
+  `record_count`, `partition_count`, `processing_start`, `processing_end`,
+  `min_production_date`, `max_production_date`.
+- `@pytest.mark.unit` — Assert `record_count` in the manifest equals the actual row
+  count of the DataFrame.
+- `@pytest.mark.unit` — Assert the returned `Path` points to an existing file.
+- `@pytest.mark.unit` — Assert `processing_end` >= `processing_start` (chronological
+  order).
+
+**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
+no errors. `requirements.txt` updated with all third-party packages imported in this task.
+
+---
+
+## Task 09: Features orchestrator and CLI
+
+**Module:** `kgs_pipeline/features.py`
+**Function:** `run_features(processed_dir: str, output_dir: str) -> Path`
+**Entry point:** `main()` and `if __name__ == "__main__"` block
+
+**Description:**
+Chain all feature functions:
+1. Record `processing_start = datetime.utcnow()`.
+2. `read_processed(processed_dir)` → base Dask DataFrame.
+3. `add_water_column(ddf)` → with water_bbl.
+4. `compute_gor(ddf)` → with gor.
+5. `compute_water_cut(ddf)` → with water_cut.
+6. `compute_cumulative(ddf)` → with cum_oil, cum_gas, cum_water.
+7. `compute_decline_rate(ddf)` → with decline_rate.
+8. `compute_rolling_and_lag_features(ddf)` → with rolling and lag columns.
+9. `compute_rate_features(ddf)` → with per-day and months_since_first_prod.
+10. `write_features_parquet(ddf, output_dir)` → writes Parquet files.
+11. Re-read the written Parquet as a fresh Dask DataFrame for manifest computation.
+12. `write_manifest(ddf, output_dir, processing_start)` → writes manifest JSON.
+13. Return the manifest `Path`.
+
+`main()` uses `argparse`:
+- `--processed-dir`: default from `config.PROCESSED_DATA_DIR`
+- `--output-dir`: default from `config.FEATURES_DATA_DIR`
+
+Register console script: `kgs-features = "kgs_pipeline.features:main"`
+
+**Test cases:**
+
+- `@pytest.mark.unit` — Mock all sub-functions; assert `run_features` calls them in
+  correct order and returns a `Path`.
+- `@pytest.mark.integration` — Given real `data/processed/` input, assert `run_features`
+  writes Parquet files to `data/features/` and a `manifest.json`, and returns a `Path`
+  pointing to the manifest.
+
+**Definition of done:** Orchestrator and CLI implemented, all tests pass, `ruff` and
+`mypy` report no errors, console script registered. `requirements.txt` updated with all
+third-party packages imported in this task.
+
+---
+
+## Task 10: Features domain and technical correctness tests (TR-03, TR-06 to TR-10, TR-14, TR-17 to TR-19)
 
 **Module:** `tests/test_features.py`
-**Test functions (dedicated test functions, separate from per-task tests above):**
 
-**`test_feature_column_presence`** `[TR-19]`:
-Using a known synthetic single-well input (6 months, known oil/gas values), call
-`run_features` and assert the output contains every column listed in the feature schema table.
-This test exists to catch silent column drops due to computation errors.
+**Description:**
+Implement all domain and technical correctness tests for the features stage.
 
-**`test_cumulative_monotonicity`** `[TR-03]`:
-For each unique LEASE_KID in the output of `run_features` on the synthetic fixture, assert
-that `cum_oil.diff().dropna()` >= 0 for all values (non-decreasing). Repeat for `cum_gas`.
+**Test cases:**
 
-**`test_gor_formula_correctness`** `[TR-09]`:
-Given a row with oil_bbl=200, gas_mcf=1000, assert gor=5.0.
-Given a row with oil_bbl=0, gas_mcf=500, assert gor is NaN.
-Given a row with oil_bbl=100, gas_mcf=0, assert gor=0.0.
-Verify formula direction: gas / oil, not oil / gas.
+- `@pytest.mark.unit` TR-01 — Physical bounds: given a row with `oil_bbl=-1.0` passed
+  through the full features pipeline, assert no exception is raised and `gor` is `NaN`
+  (since `oil_bbl` is negative, treat like zero for GOR purposes, or document the
+  expected behaviour explicitly in the test).
+- `@pytest.mark.unit` TR-03 — Decline curve monotonicity: given a synthetic lease with
+  production `[100, 200, 150, 300]`, assert `cum_oil = [100, 300, 450, 750]` and that
+  all consecutive differences of `cum_oil` are >= 0.
+- `@pytest.mark.unit` TR-06a — GOR zero denominator: `oil_bbl=0`, `gas_mcf=500` →
+  `gor=NaN`, no exception.
+- `@pytest.mark.unit` TR-06b — GOR zero-zero: `oil_bbl=0`, `gas_mcf=0` → `gor=NaN`.
+- `@pytest.mark.unit` TR-06c — GOR gas-zero: `oil_bbl=100`, `gas_mcf=0` → `gor=0.0`.
+- `@pytest.mark.unit` TR-07a — Decline rate clipped at -1.0.
+- `@pytest.mark.unit` TR-07b — Decline rate clipped at 10.0.
+- `@pytest.mark.unit` TR-07c — Decline rate within bounds passes through unchanged.
+- `@pytest.mark.unit` TR-07d — Shut-in followed by production: `decline_rate=NaN`,
+  not an extreme pre-clip value.
+- `@pytest.mark.unit` TR-08a — Cumulative flat during shut-in month.
+- `@pytest.mark.unit` TR-08b — Cumulative = 0 for leading zero-production months.
+- `@pytest.mark.unit` TR-08c — Cumulative resumes correctly after shut-in.
+- `@pytest.mark.unit` TR-09a — Rolling 3-month average matches hand-computed value for
+  known sequence.
+- `@pytest.mark.unit` TR-09b — Rolling window larger than history returns NaN.
+- `@pytest.mark.unit` TR-09c — Lag-1 for month N equals raw value for month N-1,
+  verified for 3 consecutive months.
+- `@pytest.mark.unit` TR-09d — GOR formula is `gas_mcf / oil_bbl` (not unit-swapped).
+- `@pytest.mark.unit` TR-09e — Water cut formula is `water_bbl / (oil_bbl + water_bbl)`.
+- `@pytest.mark.unit` TR-10a — Water cut = 0.0 when `water_bbl=0`, `oil_bbl>0`; row
+  retained.
+- `@pytest.mark.unit` TR-10b — Water cut = 1.0 when `oil_bbl=0`, `water_bbl>0`; row
+  retained.
+- `@pytest.mark.unit` TR-10c — Only values outside `[0, 1]` are treated as invalid
+  (assert that 0.0 and 1.0 are not flagged).
+- `@pytest.mark.integration` TR-14 — Schema stability: read at least 3 feature Parquet
+  partition files from `data/features/` and assert all have identical column names and
+  dtypes.
+- `@pytest.mark.integration` TR-17 — Lazy evaluation: assert each features stage
+  function (`add_water_column`, `compute_gor`, `compute_water_cut`, `compute_cumulative`,
+  `compute_decline_rate`, `compute_rolling_and_lag_features`, `compute_rate_features`)
+  returns `dask.dataframe.DataFrame`, not `pd.DataFrame`.
+- `@pytest.mark.integration` TR-18 — Parquet readability: read every `.parquet` file
+  in `data/features/` with `pd.read_parquet` and assert no exception.
+- `@pytest.mark.unit` TR-19 — Feature column presence: given a synthetic single-lease
+  input through the full features pipeline, assert the output DataFrame contains all of:
+  `lease_kid`, `production_date`, `oil_bbl`, `gas_mcf`, `water_bbl`, `cum_oil`,
+  `cum_gas`, `cum_water`, `gor`, `water_cut`, `decline_rate`, `oil_bbl_roll3`,
+  `oil_bbl_roll6`, `gas_mcf_roll3`, `gas_mcf_roll6`, `water_bbl_roll3`,
+  `water_bbl_roll6`, `oil_bbl_lag1`, `gas_mcf_lag1`, `water_bbl_lag1`,
+  `oil_bbl_per_day`, `gas_mcf_per_day`, `months_since_first_prod`.
 
-**`test_water_cut_formula_correctness`** `[TR-09]`:
-Given water_bbl=200, oil_bbl=200, assert water_cut=0.5.
-Given water_bbl=0, oil_bbl=100, assert water_cut=0.0.
-Given water_bbl=100, oil_bbl=0, assert water_cut=1.0.
+**Definition of done:** All test cases implemented in `tests/test_features.py`, all unit
+tests pass, `ruff` and `mypy` report no errors. `requirements.txt` updated with all
+third-party packages imported in this task.
 
-**`test_decline_rate_bounds`** `[TR-07]`:
-Construct a sequence where the raw decline exceeds 10.0; assert clipped to 10.0.
-Construct a sequence where the raw decline is below -1.0; assert clipped to -1.0.
-Construct a shut-in sequence (two consecutive zeros); assert no unclipped extreme value.
+---
 
-**`test_rolling_correctness`** `[TR-09]`:
-Given oil_bbl = [100, 200, 300, 400, 500, 600] for a 6-month lease, hand-compute expected
-rolling 3-month and 6-month averages and assert they match `compute_rolling` output exactly.
+## Task 11: Pipeline orchestrator and end-to-end runner
 
-**`test_lag_correctness`** `[TR-09]`:
-Given oil_bbl = [100, 200, 300, 400], assert oil_lag1 at index 1 = 100, at index 2 = 200,
-at index 3 = 300 (three consecutive months verified).
+**Module:** `kgs_pipeline/pipeline.py`
+**Function:** `run_pipeline(index_path: str, raw_dir: str, interim_dir: str, processed_dir: str, features_dir: str, min_year: int = 2024, workers: int = 5) -> dict`
+**Entry point:** `main()` CLI in `kgs_pipeline/pipeline.py`
 
-**`test_schema_stability_across_partitions`** `[TR-14]`:
-Read 2+ partition files from `data/processed/features/` output (or tmp_path fixture); assert
-all have identical column names and dtypes.
+**Description:**
+Implement the top-level pipeline runner that chains all four stages in order:
+1. `run_acquire(index_path, raw_dir, min_year, workers)` → list of downloaded Paths.
+2. `run_ingest(raw_dir, interim_dir, min_year)` → interim file count.
+3. `run_transform(interim_dir, processed_dir)` → processed file count.
+4. `run_features(processed_dir, features_dir)` → manifest Path.
+5. Return a summary dict: `{"acquired": len(paths), "interim_files": N, "processed_files": M, "manifest": str(manifest_path)}`.
 
-**`test_lazy_evaluation`** `[TR-17]`:
-Assert that calling `run_features` returns a `dask.dataframe.DataFrame`, not a `pd.DataFrame`.
+`main()` uses `argparse`:
+- `--index-path`: default from config
+- `--raw-dir`: default from config
+- `--interim-dir`: default from config
+- `--processed-dir`: default from config
+- `--features-dir`: default from config
+- `--min-year`: integer, default 2024
+- `--workers`: integer, default 5
+- `--start-year`: alias for `--min-year`
+- `--end-year`: integer, ignored in this version (reserved for future filtering; log
+  a deprecation notice if provided)
 
-All tests above:
-- `@pytest.mark.unit` for synthetic fixture tests.
-- `@pytest.mark.integration` for tests reading from actual `data/processed/` paths.
+Log structured JSON progress messages at the start and end of each stage.
+Exit code 0 on success, 1 on unhandled error.
 
-**Definition of done:** All test functions implemented, all assertions pass, ruff and mypy
-report no errors.
+Register console script: `kgs-pipeline = "kgs_pipeline.pipeline:main"`
+
+**Test cases:**
+
+- `@pytest.mark.unit` — Mock all four stage `run_*` functions; assert `run_pipeline`
+  calls them in correct order and the returned dict has all four expected keys.
+- `@pytest.mark.unit` — Assert `main()` with `--workers 3 --min-year 2024` calls
+  `run_pipeline` with `workers=3` and `min_year=2024`.
+- `@pytest.mark.unit` — Assert that if `run_acquire` raises an exception, `main()`
+  catches it and raises `SystemExit` with code 1.
+
+**Definition of done:** `run_pipeline` and `main` implemented, all tests pass, console
+script registered, `ruff` and `mypy` report no errors. `requirements.txt` updated with
+all third-party packages imported in this task.

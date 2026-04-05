@@ -1,348 +1,363 @@
-"""Tests for kgs_pipeline/acquire.py."""
+"""Tests for kgs_pipeline.acquire module."""
 
-import textwrap
+from __future__ import annotations
+
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pandas as pd  # type: ignore[import-untyped]
 import pytest
+import requests  # type: ignore[import-untyped]
 
 from kgs_pipeline.acquire import (
-    ScrapingError,
     download_file,
-    download_lease,
     extract_lease_id,
+    fetch_month_save_page,
     load_lease_index,
+    main,
+    parse_download_link,
     run_acquire,
-    scrape_download_url,
 )
 
-pytestmark = pytest.mark.unit
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_LEASE_INDEX_HEADER = "LEASE KID,URL,OPERATOR,COUNTY,MONTH-YEAR\n"
+
+
+def _csv_index(rows: list[str]) -> str:
+    return _LEASE_INDEX_HEADER + "\n".join(rows) + "\n"
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-HEADER = '"LEASE_KID","LEASE","DOR_CODE","API_NUMBER","FIELD","PRODUCING_ZONE","OPERATOR","COUNTY","TOWNSHIP","TWN_DIR","RANGE","RANGE_DIR","SECTION","SPOT","LATITUDE","LONGITUDE","MONTH-YEAR","PRODUCT","WELLS","PRODUCTION","URL"'
-
-
-def _make_row(lease_id: str, month_year: str, url: str) -> str:
-    return f'"{lease_id}","TEST","123","API","FIELD","ZONE","OP","COUNTY","1","S","1","E","1","NE","39.0","-95.0","{month_year}","O","1","100.0","{url}"'
-
-
-@pytest.fixture()
-def index_fixture(tmp_path: Path) -> Path:
-    """CSV with 2 rows in 2024 and 1 in 2023."""
-    p = tmp_path / "leases.txt"
-    rows = [
-        HEADER,
-        _make_row("A", "1-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
-        _make_row("B", "6-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=B"),
-        _make_row("C", "3-2023", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=C"),
-    ]
-    p.write_text("\n".join(rows))
-    return p
-
-
-@pytest.fixture()
-def dup_url_fixture(tmp_path: Path) -> Path:
-    """CSV where 2 rows in 2024 share the same URL."""
-    p = tmp_path / "leases_dup.txt"
-    rows = [
-        HEADER,
-        _make_row("A", "1-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
-        _make_row("A", "2-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
-    ]
-    p.write_text("\n".join(rows))
-    return p
-
-
-@pytest.fixture()
-def invalid_year_fixture(tmp_path: Path) -> Path:
-    """CSV with a row that has MONTH-YEAR '-1-1965'."""
-    p = tmp_path / "leases_invalid.txt"
-    rows = [
-        HEADER,
-        _make_row("A", "1-2024", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
-        _make_row("B", "-1-1965", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=B"),
-    ]
-    p.write_text("\n".join(rows))
-    return p
-
-
-@pytest.fixture()
-def all_pre2024_fixture(tmp_path: Path) -> Path:
-    p = tmp_path / "leases_old.txt"
-    rows = [
-        HEADER,
-        _make_row("A", "1-2020", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=A"),
-        _make_row("B", "6-2023", "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=B"),
-    ]
-    p.write_text("\n".join(rows))
-    return p
-
-
-# ---------------------------------------------------------------------------
-# Task 01: load_lease_index
+# Task 03: load_lease_index
 # ---------------------------------------------------------------------------
 
 
-def test_load_lease_index_filters_pre2024(index_fixture: Path) -> None:
-    df = load_lease_index(str(index_fixture))
-    assert len(df) == 2
+@pytest.mark.unit
+def test_load_lease_index_year_filter(tmp_path: Path) -> None:
+    """3 rows year=2024, 2 rows year=2023 → 3 rows returned."""
+    content = _csv_index(
+        [
+            "1,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1,OP1,ALLEN,1-2024",
+            "2,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=2,OP2,ALLEN,3-2024",
+            "3,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=3,OP3,ALLEN,6-2024",
+            "4,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=4,OP4,ALLEN,1-2023",
+            "5,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=5,OP5,ALLEN,12-2023",
+        ]
+    )
+    index_file = tmp_path / "leases.txt"
+    index_file.write_text(content)
+    df = load_lease_index(str(index_file), min_year=2024)
+    assert len(df) == 3
 
 
-def test_load_lease_index_deduplicates_urls(dup_url_fixture: Path) -> None:
-    df = load_lease_index(str(dup_url_fixture))
-    assert df["URL"].duplicated().sum() == 0
-
-
-def test_load_lease_index_drops_invalid_year(invalid_year_fixture: Path) -> None:
-    """Row with MONTH-YEAR '-1-1965' has last element '1965' < 2024, so it's filtered out.
-    Only the 2024 row remains."""
-    df = load_lease_index(str(invalid_year_fixture))
+@pytest.mark.unit
+def test_load_lease_index_deduplication(tmp_path: Path) -> None:
+    """Duplicate URLs are deduplicated to 1 row."""
+    content = _csv_index(
+        [
+            "1,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1,OP1,ALLEN,1-2024",
+            "2,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1,OP2,ALLEN,2-2024",
+        ]
+    )
+    index_file = tmp_path / "leases.txt"
+    index_file.write_text(content)
+    df = load_lease_index(str(index_file), min_year=2024)
     assert len(df) == 1
 
 
-def test_load_lease_index_file_not_found() -> None:
+@pytest.mark.unit
+def test_load_lease_index_negative_month_year(tmp_path: Path) -> None:
+    """Row with MONTH-YEAR='-1-1965' is excluded without raising."""
+    content = _csv_index(
+        [
+            "1,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1,OP1,ALLEN,-1-1965",
+            "2,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=2,OP2,ALLEN,1-2024",
+        ]
+    )
+    index_file = tmp_path / "leases.txt"
+    index_file.write_text(content)
+    df = load_lease_index(str(index_file), min_year=2024)
+    assert len(df) == 1
+
+
+@pytest.mark.unit
+def test_load_lease_index_missing_file() -> None:
     with pytest.raises(FileNotFoundError):
         load_lease_index("/nonexistent/path/leases.txt")
 
 
-def test_load_lease_index_all_pre2024_raises(all_pre2024_fixture: Path) -> None:
-    with pytest.raises(ValueError, match="No leases found"):
-        load_lease_index(str(all_pre2024_fixture))
-
-
 # ---------------------------------------------------------------------------
-# Task 02: extract_lease_id
+# Task 04: extract_lease_id
 # ---------------------------------------------------------------------------
 
 
-def test_extract_lease_id_valid() -> None:
+@pytest.mark.unit
+def test_extract_lease_id_standard() -> None:
     url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839"
     assert extract_lease_id(url) == "1001135839"
 
 
-def test_extract_lease_id_no_f_lc() -> None:
+@pytest.mark.unit
+def test_extract_lease_id_no_param() -> None:
     with pytest.raises(ValueError):
         extract_lease_id("https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?other=123")
 
 
-def test_extract_lease_id_empty_f_lc() -> None:
+@pytest.mark.unit
+def test_extract_lease_id_empty_value() -> None:
     with pytest.raises(ValueError):
         extract_lease_id("https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=")
 
 
-def test_extract_lease_id_extra_params() -> None:
-    url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=12345&other=abc"
-    assert extract_lease_id(url) == "12345"
+@pytest.mark.unit
+def test_extract_lease_id_multiple_params() -> None:
+    url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?other=x&f_lc=abc123"
+    assert extract_lease_id(url) == "abc123"
 
 
 # ---------------------------------------------------------------------------
-# Task 03: scrape_download_url
+# Task 05: fetch_month_save_page and parse_download_link
 # ---------------------------------------------------------------------------
 
+_SAMPLE_HTML = (
+    "<html><body>"
+    '<a href="/ords/qualified.anon_blobber.download?p_file_name=lp564.txt">Download</a>'
+    "</body></html>"
+)
+_SAMPLE_HTML_ABS = (
+    "<html><body>"
+    '<a href="https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt">Download</a>'
+    "</body></html>"
+)
 
-def _mock_response(html: str) -> MagicMock:
-    resp = MagicMock()
-    resp.text = html
-    resp.raise_for_status = MagicMock()
-    return resp
+
+@pytest.mark.unit
+def test_fetch_month_save_page_success() -> None:
+    session = MagicMock(spec=requests.Session)
+    mock_resp = MagicMock()
+    mock_resp.text = _SAMPLE_HTML
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status.return_value = None
+    session.get.return_value = mock_resp
+
+    result = fetch_month_save_page("123", session, max_retries=3)
+    assert result == _SAMPLE_HTML
+    session.get.assert_called_once()
 
 
-def test_scrape_download_url_success() -> None:
-    html = textwrap.dedent("""
-        <html><body>
-        <a href="https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt">Download</a>
-        </body></html>
-    """)
-    session = MagicMock()
-    session.get.return_value = _mock_response(html)
-    result = scrape_download_url("1001135839", session)
+@pytest.mark.unit
+def test_fetch_month_save_page_retries_and_raises() -> None:
+    session = MagicMock(spec=requests.Session)
+    session.get.side_effect = requests.exceptions.ConnectionError("fail")
+
+    with pytest.raises(RuntimeError):
+        fetch_month_save_page("123", session, max_retries=3, backoff_base=0.0)
+
+    assert session.get.call_count == 3
+
+
+@pytest.mark.unit
+def test_parse_download_link_relative() -> None:
+    url = parse_download_link(_SAMPLE_HTML, base_url="https://chasm.kgs.ku.edu")
+    assert url.startswith("https://chasm.kgs.ku.edu")
+    assert "anon_blobber.download" in url
+
+
+@pytest.mark.unit
+def test_parse_download_link_no_link() -> None:
+    with pytest.raises(ValueError):
+        parse_download_link("<html><body>no link here</body></html>")
+
+
+@pytest.mark.unit
+def test_parse_download_link_absolute() -> None:
+    url = parse_download_link(_SAMPLE_HTML_ABS)
     assert (
-        result
-        == "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"
+        url == "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"
     )
 
 
-def test_scrape_download_url_no_link() -> None:
-    html = "<html><body><p>No download link here</p></body></html>"
-    session = MagicMock()
-    session.get.return_value = _mock_response(html)
-    with pytest.raises(ScrapingError):
-        scrape_download_url("1001135839", session)
-
-
-def test_scrape_download_url_empty_body() -> None:
-    session = MagicMock()
-    session.get.return_value = _mock_response("")
-    with pytest.raises(ScrapingError):
-        scrape_download_url("1001135839", session)
-
-
 # ---------------------------------------------------------------------------
-# Task 04: download_file
+# Task 06: download_file
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 def test_download_file_success(tmp_path: Path) -> None:
-    session = MagicMock()
-    resp = MagicMock()
-    resp.content = b"some data"
-    resp.raise_for_status = MagicMock()
-    session.get.return_value = resp
+    session = MagicMock(spec=requests.Session)
+    mock_resp = MagicMock()
+    mock_resp.content = b"col1,col2\nval1,val2\n"
+    mock_resp.status_code = 200
+    session.get.return_value = mock_resp
 
     url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"
-    with patch("time.sleep"):
-        result = download_file(url, str(tmp_path), session)
+    result = download_file(url, str(tmp_path), session, sleep_seconds=0)
 
+    assert result is not None
     assert result.name == "lp564.txt"
-    assert result.exists()
+    assert result.parent == tmp_path
 
 
+@pytest.mark.unit
 def test_download_file_idempotent(tmp_path: Path) -> None:
-    """Second call should not invoke session.get."""
-    session = MagicMock()
+    """Existing non-empty file skips network call."""
     existing = tmp_path / "lp564.txt"
-    existing.write_bytes(b"already here")
+    existing.write_bytes(b"existing content")
 
-    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"
-    result = download_file(url, str(tmp_path), session)
-    assert result == existing
+    session = MagicMock(spec=requests.Session)
+    url = "https://example.com/download?p_file_name=lp564.txt"
+    result = download_file(url, str(tmp_path), session, sleep_seconds=0)
+
     session.get.assert_not_called()
+    assert result == existing
 
 
+@pytest.mark.unit
 def test_download_file_empty_response(tmp_path: Path) -> None:
-    session = MagicMock()
-    resp = MagicMock()
-    resp.content = b""
-    resp.raise_for_status = MagicMock()
-    session.get.return_value = resp
+    session = MagicMock(spec=requests.Session)
+    mock_resp = MagicMock()
+    mock_resp.content = b""
+    mock_resp.status_code = 200
+    session.get.return_value = mock_resp
 
-    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp999.txt"
-    with pytest.raises(ValueError, match="empty"):
-        download_file(url, str(tmp_path), session)
-
-
-def test_download_file_missing_param(tmp_path: Path) -> None:
-    session = MagicMock()
-    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?other=foo"
-    with pytest.raises(ValueError, match="p_file_name"):
-        download_file(url, str(tmp_path), session)
-
-
-def test_download_file_creates_output_dir(tmp_path: Path) -> None:
-    session = MagicMock()
-    resp = MagicMock()
-    resp.content = b"data"
-    resp.raise_for_status = MagicMock()
-    session.get.return_value = resp
-
-    new_dir = tmp_path / "new_subdir"
-    url = "https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp1.txt"
-    with patch("time.sleep"):
-        download_file(url, str(new_dir), session)
-    assert new_dir.exists()
-
-
-# ---------------------------------------------------------------------------
-# Task 05: download_lease
-# ---------------------------------------------------------------------------
-
-
-def test_download_lease_success(tmp_path: Path) -> None:
-    session = MagicMock()
-    with (
-        patch("kgs_pipeline.acquire.extract_lease_id", return_value="123"),
-        patch(
-            "kgs_pipeline.acquire.scrape_download_url",
-            return_value="https://example.com?p_file_name=lp1.txt",
-        ),
-        patch("kgs_pipeline.acquire.download_file", return_value=tmp_path / "lp1.txt"),
-    ):
-        result = download_lease("https://example.com?f_lc=123", str(tmp_path), session)
-    assert result == tmp_path / "lp1.txt"
-
-
-def test_download_lease_scraping_error_returns_none(tmp_path: Path) -> None:
-    session = MagicMock()
-    with (
-        patch("kgs_pipeline.acquire.extract_lease_id", return_value="123"),
-        patch("kgs_pipeline.acquire.scrape_download_url", side_effect=ScrapingError("no link")),
-    ):
-        result = download_lease("https://example.com?f_lc=123", str(tmp_path), session)
+    url = "https://example.com/download?p_file_name=lp564.txt"
+    result = download_file(url, str(tmp_path), session, sleep_seconds=0)
     assert result is None
 
 
-def test_download_lease_value_error_returns_none(tmp_path: Path) -> None:
-    session = MagicMock()
-    with patch("kgs_pipeline.acquire.extract_lease_id", side_effect=ValueError("bad url")):
-        result = download_lease("https://example.com", str(tmp_path), session)
+@pytest.mark.unit
+def test_download_file_timeout_returns_none(tmp_path: Path) -> None:
+    session = MagicMock(spec=requests.Session)
+    session.get.side_effect = requests.exceptions.Timeout("timed out")
+
+    url = "https://example.com/download?p_file_name=lp564.txt"
+    result = download_file(url, str(tmp_path), session, sleep_seconds=0)
     assert result is None
 
 
+@pytest.mark.unit
+def test_download_file_404_raises(tmp_path: Path) -> None:
+    session = MagicMock(spec=requests.Session)
+    mock_resp = MagicMock()
+    mock_resp.content = b"not found"
+    mock_resp.status_code = 404
+    session.get.return_value = mock_resp
+
+    url = "https://example.com/download?p_file_name=lp564.txt"
+    with pytest.raises(RuntimeError):
+        download_file(url, str(tmp_path), session, sleep_seconds=0)
+
+
 # ---------------------------------------------------------------------------
-# Task 06: run_acquire
+# Task 07: run_acquire (mocked)
 # ---------------------------------------------------------------------------
 
 
-def _make_df_with_urls(urls: list[str]) -> pd.DataFrame:
-    return pd.DataFrame({"URL": urls})
+@pytest.mark.unit
+def test_run_acquire_returns_paths(tmp_path: Path) -> None:
+    index_content = _csv_index(
+        [
+            f"{i},https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc={i},OP,ALLEN,1-2024"
+            for i in range(1, 4)
+        ]
+    )
+    index_file = tmp_path / "leases.txt"
+    index_file.write_text(index_content)
+
+    fake_path = tmp_path / "lp001.txt"
+    fake_path.write_bytes(b"data")
+
+    with patch("kgs_pipeline.acquire._download_one_lease", return_value=fake_path):
+        result = run_acquire(str(index_file), str(tmp_path), min_year=2024, max_workers=2)
+
+    assert len(result) == 3
 
 
-def test_run_acquire_all_success(tmp_path: Path, index_fixture: Path) -> None:
-    p = tmp_path / "f.txt"
-    compute_result = tuple([p, p, p])
-    with (
-        patch(
-            "kgs_pipeline.acquire.load_lease_index",
-            return_value=_make_df_with_urls(["u1", "u2", "u3"]),
-        ),
-        patch("kgs_pipeline.acquire.download_lease", side_effect=[p, p, p]),
-        patch("dask.compute", return_value=compute_result),
-    ):
-        results = run_acquire(str(index_fixture), str(tmp_path))
-    assert len(results) == 3
+@pytest.mark.unit
+def test_run_acquire_filters_none(tmp_path: Path) -> None:
+    """One None result (failure) reduces returned list to 2."""
+    index_content = _csv_index(
+        [
+            f"{i},https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc={i},OP,ALLEN,1-2024"
+            for i in range(1, 4)
+        ]
+    )
+    index_file = tmp_path / "leases.txt"
+    index_file.write_text(index_content)
+
+    fake_path = tmp_path / "lp001.txt"
+    fake_path.write_bytes(b"data")
+
+    side_effects = [fake_path, None, fake_path]
+
+    with patch("kgs_pipeline.acquire._download_one_lease", side_effect=side_effects):
+        result = run_acquire(str(index_file), str(tmp_path), min_year=2024, max_workers=2)
+
+    assert len(result) == 2
 
 
-def test_run_acquire_all_fail(tmp_path: Path, index_fixture: Path) -> None:
-    compute_result = (None, None)
-    with (
-        patch(
-            "kgs_pipeline.acquire.load_lease_index", return_value=_make_df_with_urls(["u1", "u2"])
-        ),
-        patch("kgs_pipeline.acquire.download_lease", return_value=None),
-        patch("dask.compute", return_value=compute_result),
-    ):
-        results = run_acquire(str(index_fixture), str(tmp_path))
-    assert results == []
+# ---------------------------------------------------------------------------
+# Task 08: TR-20 idempotency tests
+# ---------------------------------------------------------------------------
 
 
-def test_run_acquire_partial_success(tmp_path: Path, index_fixture: Path) -> None:
-    p1 = tmp_path / "f1.txt"
-    p2 = tmp_path / "f2.txt"
-    compute_result = (p1, None, p2)
-    with (
-        patch(
-            "kgs_pipeline.acquire.load_lease_index",
-            return_value=_make_df_with_urls(["u1", "u2", "u3"]),
-        ),
-        patch("kgs_pipeline.acquire.download_lease", side_effect=[p1, None, p2]),
-        patch("dask.compute", return_value=compute_result),
-    ):
-        results = run_acquire(str(index_fixture), str(tmp_path))
-    assert len(results) == 2
+@pytest.mark.unit
+def test_tr20b_idempotent_existing_file(tmp_path: Path) -> None:
+    """TR-20b: existing file skips get, content is unchanged."""
+    existing = tmp_path / "lp001.txt"
+    original_content = b"header\ndata row\n"
+    existing.write_bytes(original_content)
+
+    session = MagicMock(spec=requests.Session)
+    url = "https://example.com/download?p_file_name=lp001.txt"
+    result = download_file(url, str(tmp_path), session, sleep_seconds=0)
+
+    session.get.assert_not_called()
+    assert existing.read_bytes() == original_content
+    assert result == existing
 
 
-def test_run_acquire_respects_max_workers(tmp_path: Path, index_fixture: Path) -> None:
-    p = tmp_path / "f.txt"
-    with (
-        patch("kgs_pipeline.acquire.load_lease_index", return_value=_make_df_with_urls(["u1"])),
-        patch("kgs_pipeline.acquire.download_lease", return_value=p),
-        patch("dask.compute", return_value=(p,)) as mock_compute,
-    ):
-        run_acquire(str(index_fixture), str(tmp_path), max_workers=3)
-    call_kwargs = mock_compute.call_args
-    assert call_kwargs.kwargs.get("num_workers") == 3
+@pytest.mark.unit
+def test_tr20c_no_exception_on_existing(tmp_path: Path) -> None:
+    """TR-20c: no exception when file already exists."""
+    existing = tmp_path / "lp001.txt"
+    existing.write_bytes(b"content")
+
+    session = MagicMock(spec=requests.Session)
+    url = "https://example.com/download?p_file_name=lp001.txt"
+    # Should not raise
+    download_file(url, str(tmp_path), session, sleep_seconds=0)
+
+
+# ---------------------------------------------------------------------------
+# Task 09: CLI tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_main_calls_run_acquire(tmp_path: Path) -> None:
+    index_file = tmp_path / "leases.txt"
+    index_file.write_text(_csv_index([]))
+
+    with patch("kgs_pipeline.acquire.run_acquire", return_value=[]) as mock_run:
+        with patch.object(sys, "argv", ["acquire", "--min-year", "2024", "--workers", "3"]):
+            try:
+                main()
+            except SystemExit:
+                pass
+        mock_run.assert_called_once()
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("min_year") == 2024 or mock_run.call_args[0][2] == 2024
+
+
+@pytest.mark.unit
+def test_main_exits_1_on_error() -> None:
+    with patch("kgs_pipeline.acquire.run_acquire", side_effect=RuntimeError("boom")):
+        with patch.object(sys, "argv", ["acquire"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1

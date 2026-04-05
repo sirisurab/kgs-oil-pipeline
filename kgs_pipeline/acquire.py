@@ -1,272 +1,353 @@
-"""KGS lease production data acquisition module.
+"""Acquire component: download KGS lease production data files."""
 
-Downloads per-lease production files from the KGS CHASM server in parallel using Dask.
-"""
+from __future__ import annotations
 
+import argparse
+import sys
 import time
+import urllib.parse
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
-import dask  # type: ignore[import-untyped]
+import dask
 import pandas as pd  # type: ignore[import-untyped]
 import requests  # type: ignore[import-untyped]
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter  # type: ignore[import-untyped]
+from urllib3.util.retry import Retry
 
-from kgs_pipeline.utils import retry, setup_logging
+from kgs_pipeline.config import config as _cfg
+from kgs_pipeline.logging_utils import get_logger
 
-logger = setup_logging(__name__)
-
-
-class ScrapingError(Exception):
-    """Raised when the expected download link cannot be found on a KGS page."""
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Task 01: Lease index loader
+# Task 03: Lease index loader
 # ---------------------------------------------------------------------------
 
 
-def load_lease_index(index_path: str) -> pd.DataFrame:
-    """Load and filter the lease index CSV to deduplicated rows with year >= 2024.
+def load_lease_index(index_path: str, min_year: int = 2024) -> pd.DataFrame:
+    """Load and filter the KGS lease index file.
 
-    Args:
-        index_path: Path to the lease index text/CSV file.
-
-    Returns:
-        DataFrame with deduplicated rows filtered to year >= 2024.
+    Returns one row per unique lease URL active from *min_year* onward.
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If the file is empty or no leases survive the year filter.
+        FileNotFoundError: if *index_path* does not exist.
     """
     path = Path(index_path)
     if not path.exists():
-        raise FileNotFoundError(f"Lease index file not found: {index_path}")
-    if path.stat().st_size == 0:
-        raise ValueError("Lease index file is empty")
+        raise FileNotFoundError(f"Lease index not found: {index_path}")
 
-    df = pd.read_csv(index_path, dtype=str)
-    if df.empty:
-        raise ValueError("Lease index file is empty")
+    df: pd.DataFrame | None = None
+    for sep in (",", "\t", "|"):
+        try:
+            candidate = pd.read_csv(path, sep=sep, encoding="utf-8", low_memory=False)
+            if len(candidate.columns) > 1:
+                df = candidate
+                break
+        except UnicodeDecodeError:
+            candidate = pd.read_csv(path, sep=sep, encoding="latin-1", low_memory=False)
+            if len(candidate.columns) > 1:
+                df = candidate
+                break
+        except Exception:
+            continue
 
-    # Extract year from MONTH-YEAR by splitting on "-" and taking the last element
-    def _extract_year(month_year: str) -> str | None:
-        if not isinstance(month_year, str):
-            return None
-        parts = month_year.split("-")
-        return parts[-1] if parts else None
+    if df is None:
+        raise ValueError(f"Could not parse lease index file: {index_path}")
 
-    df["_year_str"] = df["MONTH-YEAR"].apply(_extract_year)
-    # Drop rows where year component is not numeric
-    df = df[df["_year_str"].apply(lambda y: isinstance(y, str) and y.isdigit())]
-    df["_year"] = df["_year_str"].astype(int)
-    df = df[df["_year"] >= 2024]
-    df = df.drop(columns=["_year_str", "_year"])
+    df.columns = [c.strip() for c in df.columns]
+    logger.info("Lease index loaded", extra={"rows_raw": len(df), "path": index_path})
 
-    if df.empty:
-        raise ValueError("No leases found for year >= 2024")
+    # Filter by MONTH-YEAR year component >= min_year
+    month_year_col: str | None = "MONTH-YEAR"
+    if month_year_col not in df.columns:
+        # Try normalised name
+        month_year_col = next(
+            (c for c in df.columns if "MONTH" in c.upper() and "YEAR" in c.upper()),
+            None,
+        )
 
-    df = df.drop_duplicates(subset=["URL"], keep="first")
-    return df.reset_index(drop=True)
+    if month_year_col:
+
+        def _extract_year(val: object) -> int | None:
+            s = str(val).strip()
+            parts = s.split("-")
+            last = parts[-1]
+            try:
+                return int(last)
+            except ValueError:
+                return None
+
+        years = df[month_year_col].apply(_extract_year)
+        df = df[years.notna() & (years >= min_year)].copy()
+
+    # Identify URL column
+    url_col = next((c for c in df.columns if c.upper() == "URL"), None)
+    if url_col is None:
+        raise KeyError("No URL column found in lease index")
+
+    df = df[df[url_col].notna() & (df[url_col].astype(str).str.strip() != "")]
+    df = df.drop_duplicates(subset=[url_col], keep="first")
+
+    logger.info(
+        "Lease index filtered",
+        extra={"rows_filtered": len(df), "min_year": min_year},
+    )
+    return df
 
 
 # ---------------------------------------------------------------------------
-# Task 02: Lease ID extractor
+# Task 04: Lease ID extractor
 # ---------------------------------------------------------------------------
 
 
 def extract_lease_id(url: str) -> str:
-    """Parse the f_lc query parameter from a KGS MainLease URL.
-
-    Args:
-        url: Full URL with f_lc query parameter.
-
-    Returns:
-        Lease ID string.
+    """Extract the ``f_lc`` query parameter value from a KGS lease URL.
 
     Raises:
-        ValueError: If f_lc is absent or empty.
+        ValueError: if ``f_lc`` is absent or empty.
     """
-    parsed = urlparse(url)
-    if not parsed.query:
-        raise ValueError(f"URL has no query string: {url}")
-    params = parse_qs(parsed.query)
-    if "f_lc" not in params:
-        raise ValueError(f"URL missing 'f_lc' parameter: {url}")
-    value = params["f_lc"][0]
-    if not value:
-        raise ValueError(f"URL has empty 'f_lc' parameter: {url}")
-    return value
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+    values = params.get("f_lc", [])
+    if not values or not values[0].strip():
+        raise ValueError(f"No f_lc parameter found in URL: {url}")
+    return values[0].strip()
 
 
 # ---------------------------------------------------------------------------
-# Task 03: MonthSave page scraper
+# Task 05: MonthSave page fetcher and download-link parser
 # ---------------------------------------------------------------------------
 
 
-@retry(max_retries=3, base_delay=1.0, factor=2.0)
-def _get_with_retry(session: requests.Session, url: str) -> requests.Response:
-    """Make a GET request with retry logic."""
-    response = session.get(url, timeout=30)
-    response.raise_for_status()
-    return response
+def fetch_month_save_page(
+    lease_id: str,
+    session: requests.Session,
+    max_retries: int = 3,
+    backoff_base: float = 1.0,
+) -> str:
+    """Fetch the MonthSave HTML page for *lease_id*.
 
-
-def scrape_download_url(lease_id: str, session: requests.Session) -> str:
-    """Scrape the data file download URL from the KGS MonthSave page.
-
-    Args:
-        lease_id: KGS lease identifier string.
-        session: Shared requests Session.
-
-    Returns:
-        Absolute URL containing 'anon_blobber.download'.
+    Retries up to *max_retries* times with exponential backoff.
 
     Raises:
-        ScrapingError: If no download link is found on the page.
+        RuntimeError: after all retries are exhausted.
     """
-    month_save_url = f"https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc={lease_id}"
-    response = _get_with_retry(session, month_save_url)
-    soup = BeautifulSoup(response.text, "html.parser")
+    url = _cfg.MONTH_SAVE_URL_TEMPLATE.format(lease_id=lease_id)
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = session.get(url, timeout=30)
+            resp.raise_for_status()
+            logger.info(
+                "Fetched MonthSave page",
+                extra={"lease_id": lease_id, "status_code": resp.status_code},
+            )
+            return resp.text
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            sleep_time = backoff_base * (2**attempt)
+            logger.warning(
+                "MonthSave fetch failed, retrying",
+                extra={"lease_id": lease_id, "attempt": attempt, "sleep": sleep_time},
+            )
+            time.sleep(sleep_time)
+
+    raise RuntimeError(
+        f"Failed to fetch MonthSave page for lease {lease_id} after {max_retries} retries"
+    ) from last_exc
+
+
+def parse_download_link(html: str, base_url: str = "https://chasm.kgs.ku.edu") -> str:
+    """Parse the data-file download URL from a MonthSave HTML page.
+
+    Raises:
+        ValueError: if no ``anon_blobber.download`` link is found.
+    """
+    soup = BeautifulSoup(html, "html.parser")
     anchor = soup.find("a", href=lambda h: h and "anon_blobber.download" in h)
     if anchor is None:
-        raise ScrapingError(f"No 'anon_blobber.download' link found for lease_id={lease_id}")
-    return str(anchor["href"])
+        raise ValueError("No anon_blobber.download link found in HTML")
+    href: str = anchor["href"]  # type: ignore[assignment]
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    # Relative URL — prepend base_url
+    return base_url.rstrip("/") + "/" + href.lstrip("/")
 
 
 # ---------------------------------------------------------------------------
-# Task 04: File downloader
+# Task 06: Data file downloader
 # ---------------------------------------------------------------------------
 
 
-@retry(max_retries=3, base_delay=1.0, factor=2.0)
-def _download_with_retry(session: requests.Session, url: str) -> requests.Response:
-    """Make a GET request for file download with retry logic."""
-    response = session.get(url, timeout=60)
-    response.raise_for_status()
-    return response
+def download_file(
+    download_url: str,
+    output_dir: str,
+    session: requests.Session,
+    sleep_seconds: float = 0.5,
+) -> Path | None:
+    """Download a single KGS data file to *output_dir*.
 
-
-def download_file(download_url: str, output_dir: str, session: requests.Session) -> Path:
-    """Download a single KGS production file to output_dir.
-
-    Args:
-        download_url: Full download URL with p_file_name query parameter.
-        output_dir: Directory where the file will be saved.
-        session: Shared requests Session.
-
-    Returns:
-        Path to the saved (or pre-existing) file.
-
-    Raises:
-        ValueError: If p_file_name parameter is missing or response body is empty.
+    Returns the output ``Path`` on success, or ``None`` on empty/failed download.
+    Raises ``RuntimeError`` on HTTP status >= 400.
     """
-    parsed = urlparse(download_url)
-    params = parse_qs(parsed.query)
-    if "p_file_name" not in params:
-        raise ValueError(f"Download URL missing 'p_file_name' parameter: {download_url}")
-    filename = params["p_file_name"][0]
+    parsed = urllib.parse.urlparse(download_url)
+    params = urllib.parse.parse_qs(parsed.query)
+    filenames = params.get("p_file_name", [])
+    if filenames and filenames[0].strip():
+        filename = filenames[0].strip()
+    else:
+        filename = parsed.path.split("/")[-1] or "unknown.txt"
 
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
     output_path = Path(output_dir) / filename
 
-    # Idempotency: skip if already downloaded
-    if output_path.exists():
-        logger.debug("File already exists, skipping: %s", output_path)
+    if output_path.exists() and output_path.stat().st_size > 0:
+        logger.info(
+            "Skipped (already downloaded)",
+            extra={"file": str(output_path), "size": output_path.stat().st_size},
+        )
         return output_path
 
-    response = _download_with_retry(session, download_url)
-    if not response.content:
-        raise ValueError(f"Downloaded file is empty: {filename}")
+    time.sleep(sleep_seconds)
 
-    output_path.write_bytes(response.content)
-    time.sleep(0.5)
-    logger.info("Downloaded: %s", output_path)
+    try:
+        resp = session.get(download_url, timeout=60)
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Download request failed", extra={"url": download_url, "error": str(exc)})
+        return None
+
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code} downloading {download_url}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(resp.content)
+
+    if output_path.stat().st_size == 0:
+        logger.warning("Downloaded file is empty, removing", extra={"file": str(output_path)})
+        output_path.unlink()
+        return None
+
+    logger.info(
+        "Downloaded",
+        extra={"file": str(output_path), "size": output_path.stat().st_size},
+    )
     return output_path
 
 
 # ---------------------------------------------------------------------------
-# Task 05: Single-lease download worker
+# Task 07: Parallel download orchestrator
 # ---------------------------------------------------------------------------
 
 
-def download_lease(url: str, output_dir: str, session: requests.Session) -> Path | None:
-    """Orchestrate the full download workflow for a single lease.
-
-    Args:
-        url: Lease main-page URL from the index.
-        output_dir: Target directory for raw files.
-        session: Shared requests Session.
-
-    Returns:
-        Path on success, None on failure.
-    """
+def _download_one_lease(
+    row: dict,
+    output_dir: str,
+    sleep_seconds: float,
+) -> Path | None:
+    """Download a single lease — used as a Dask delayed task."""
+    session = _make_session()
     try:
-        lease_id = extract_lease_id(url)
-        download_url = scrape_download_url(lease_id, session)
-        return download_file(download_url, output_dir, session)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to download lease %s: %s", url, exc)
+        lease_id = extract_lease_id(row["URL"])
+        html = fetch_month_save_page(lease_id, session)
+        dl_url = parse_download_link(html)
+        return download_file(dl_url, output_dir, session, sleep_seconds)
+    except Exception as exc:
+        logger.warning(
+            "Lease download failed",
+            extra={"url": row.get("URL"), "error": str(exc)},
+        )
         return None
+    finally:
+        session.close()
 
 
-# ---------------------------------------------------------------------------
-# Task 06: Parallel acquire orchestrator
-# ---------------------------------------------------------------------------
+def _make_session() -> requests.Session:
+    """Create a requests.Session with retry logic."""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 def run_acquire(
     index_path: str,
     output_dir: str,
+    min_year: int = 2024,
     max_workers: int = 5,
 ) -> list[Path]:
-    """Main entry point for the acquire stage.
+    """Orchestrate full acquisition: load index → parallel download all leases."""
+    df = load_lease_index(index_path, min_year)
+    records = df.to_dict(orient="records")
 
-    Args:
-        index_path: Path to the lease index file.
-        output_dir: Directory for raw downloaded files.
-        max_workers: Dask thread concurrency limit.
+    sleep_seconds = _cfg.SLEEP_SECONDS
 
-    Returns:
-        List of paths to successfully downloaded (or pre-existing) files.
-    """
-    df = load_lease_index(index_path)
-    urls = df["URL"].tolist()
-    logger.info("Acquire stage: %d unique lease URLs to process", len(urls))
+    delayed_tasks = [
+        dask.delayed(_download_one_lease)(row, output_dir, sleep_seconds) for row in records
+    ]
 
-    with requests.Session() as session:
-        tasks = [dask.delayed(download_lease)(url, output_dir, session) for url in urls]
-        results = dask.compute(*tasks, scheduler="threads", num_workers=max_workers)
-
-    successful: list[Path] = [r for r in results if r is not None]
-    failures = len(results) - len(successful)
-    logger.info(
-        "Acquire complete: %d attempted, %d succeeded, %d failed",
-        len(urls),
-        len(successful),
-        failures,
+    results = dask.compute(
+        *delayed_tasks,
+        scheduler="threads",
+        num_workers=max_workers,
     )
-    return successful
+
+    downloaded: list[Path] = [r for r in results if r is not None]
+    failed = sum(1 for r in results if r is None)
+
+    logger.info(
+        "Acquire complete",
+        extra={
+            "attempted": len(records),
+            "downloaded": len(downloaded),
+            "failed": failed,
+        },
+    )
+    return downloaded
 
 
-if __name__ == "__main__":
-    import argparse
+# ---------------------------------------------------------------------------
+# Task 09: CLI entry point
+# ---------------------------------------------------------------------------
 
-    from kgs_pipeline.config import LEASE_INDEX_FILE, RAW_DIR
 
-    parser = argparse.ArgumentParser(description="KGS acquire stage")
+def main() -> None:
+    """CLI entry point for the acquire stage."""
+    parser = argparse.ArgumentParser(description="KGS acquire: download lease data files")
     parser.add_argument(
-        "--index",
-        default=str(LEASE_INDEX_FILE),
+        "--index-path",
+        default=_cfg.LEASE_INDEX_PATH,
         help="Path to lease index file",
     )
     parser.add_argument(
         "--output-dir",
-        default=str(RAW_DIR),
-        help="Output directory for raw files",
+        default=_cfg.RAW_DATA_DIR,
+        help="Directory to write downloaded files",
     )
-    parser.add_argument("--max-workers", type=int, default=5)
+    parser.add_argument("--min-year", type=int, default=_cfg.MIN_YEAR)
+    parser.add_argument("--workers", type=int, default=_cfg.MAX_WORKERS)
     args = parser.parse_args()
 
-    paths = run_acquire(args.index, args.output_dir, args.max_workers)
-    print(f"Downloaded {len(paths)} files to {args.output_dir}")
+    try:
+        paths = run_acquire(
+            index_path=args.index_path,
+            output_dir=args.output_dir,
+            min_year=args.min_year,
+            max_workers=args.workers,
+        )
+        print(f"Acquired {len(paths)} files.")
+        sys.exit(0)
+    except Exception as exc:
+        logger.error("Acquire failed", extra={"error": str(exc)})
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
