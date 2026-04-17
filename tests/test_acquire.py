@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,359 +10,406 @@ import pandas as pd
 import pytest
 
 from kgs_pipeline.acquire import (
-    DownloadError,
+    AcquireConfig,
+    AcquireSummary,
     download_lease_file,
     extract_lease_id,
     load_lease_index,
     parse_download_link,
     run_acquire,
+    validate_raw_files,
 )
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-MONTH_SAVE_HTML = """
-<html><body>
-<a href="https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt">Download</a>
-</body></html>
-"""
-
-FILE_CONTENT = b"LEASE_KID,MONTH-YEAR\n1001,1-2024\n"
-
-
-def _make_index_csv(tmp_path: Path, rows: list[dict]) -> str:
-    df = pd.DataFrame(rows)
-    fpath = tmp_path / "index.txt"
-    df.to_csv(fpath, index=False)
-    return str(fpath)
-
-
-# ---------------------------------------------------------------------------
-# Task A-02: load_lease_index
+# Fixtures
 # ---------------------------------------------------------------------------
 
 
-class TestLoadLeaseIndex:
-    def test_filters_year_and_invalid_components(self, tmp_path: Path) -> None:
-        rows = [
-            {"MONTH-YEAR": "1-2024", "URL": "https://example.com?f_lc=1"},
-            {"MONTH-YEAR": "6-2023", "URL": "https://example.com?f_lc=2"},
-            {"MONTH-YEAR": "3-2022", "URL": "https://example.com?f_lc=3"},
-            {"MONTH-YEAR": "3-2025", "URL": "https://example.com?f_lc=4"},
-            {"MONTH-YEAR": "-1-1965", "URL": "https://example.com?f_lc=5"},
-            {"MONTH-YEAR": "0-1966", "URL": "https://example.com?f_lc=6"},
+@pytest.fixture()
+def sample_index_csv(tmp_path: Path) -> Path:
+    """Create a minimal lease index CSV for testing."""
+    content = (
+        "LEASE_KID,LEASE,URL,MONTH-YEAR\n"
+        "1001,Alpha,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001,1-2024\n"
+        "1002,Beta,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1002,3-2025\n"
+        "1003,Gamma,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1003,6-2023\n"
+        "1004,Delta,https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001,2-2022\n"
+    )
+    p = tmp_path / "index.txt"
+    p.write_text(content, encoding="utf-8")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Task 01: load_lease_index
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_load_lease_index_year_filter(sample_index_csv: Path) -> None:
+    """Only rows with year >= 2024 are returned."""
+    df = load_lease_index(sample_index_csv, min_year=2024)
+    years = df["MONTH-YEAR"].str.split("-").str[-1].astype(int)
+    assert (years >= 2024).all()
+    assert len(df) == 2  # rows 1-2024 and 3-2025
+
+
+@pytest.mark.unit
+def test_load_lease_index_non_numeric_year(tmp_path: Path) -> None:
+    """Rows with non-numeric year parts are dropped before filter."""
+    content = (
+        "LEASE_KID,LEASE,URL,MONTH-YEAR\n"
+        "1001,Alpha,https://chasm.kgs.ku.edu/?f_lc=1001,-1-1965\n"
+        "1002,Beta,https://chasm.kgs.ku.edu/?f_lc=1002,0-1966\n"
+        "1003,Gamma,https://chasm.kgs.ku.edu/?f_lc=1003,1-2024\n"
+    )
+    p = tmp_path / "idx.txt"
+    p.write_text(content, encoding="utf-8")
+    df = load_lease_index(p, min_year=2024)
+    assert len(df) == 1
+
+
+@pytest.mark.unit
+def test_load_lease_index_url_deduplication(sample_index_csv: Path) -> None:
+    """Multiple rows sharing the same URL are deduplicated to one row per URL."""
+    df = load_lease_index(sample_index_csv, min_year=2024)
+    assert df["URL"].nunique() == len(df)
+
+
+@pytest.mark.unit
+def test_load_lease_index_file_not_found(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load_lease_index(tmp_path / "nonexistent.txt", min_year=2024)
+
+
+@pytest.mark.unit
+def test_load_lease_index_missing_url_column(tmp_path: Path) -> None:
+    content = "LEASE_KID,MONTH-YEAR\n1001,1-2024\n"
+    p = tmp_path / "idx.txt"
+    p.write_text(content)
+    with pytest.raises(ValueError, match="URL"):
+        load_lease_index(p, min_year=2024)
+
+
+@pytest.mark.unit
+def test_load_lease_index_missing_month_year_column(tmp_path: Path) -> None:
+    content = "LEASE_KID,URL\n1001,https://example.com/?f_lc=1\n"
+    p = tmp_path / "idx.txt"
+    p.write_text(content)
+    with pytest.raises(ValueError, match="MONTH-YEAR"):
+        load_lease_index(p, min_year=2024)
+
+
+# ---------------------------------------------------------------------------
+# Task 02: extract_lease_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_extract_lease_id_basic() -> None:
+    url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839"
+    assert extract_lease_id(url) == "1001135839"
+
+
+@pytest.mark.unit
+def test_extract_lease_id_no_param() -> None:
+    with pytest.raises(ValueError, match="f_lc"):
+        extract_lease_id("https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?other=123")
+
+
+@pytest.mark.unit
+def test_extract_lease_id_multiple_params() -> None:
+    url = "https://chasm.kgs.ku.edu/?other=abc&f_lc=9876&extra=1"
+    assert extract_lease_id(url) == "9876"
+
+
+# ---------------------------------------------------------------------------
+# Task 03: parse_download_link
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_parse_download_link_absolute_url() -> None:
+    html = (
+        '<html><body>'
+        '<a href="https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download'
+        '?p_file_name=lp564.txt">Download</a>'
+        '</body></html>'
+    )
+    result = parse_download_link(html, "https://chasm.kgs.ku.edu/ords/")
+    assert "anon_blobber.download" in result
+    assert result.startswith("https://")
+
+
+@pytest.mark.unit
+def test_parse_download_link_relative_url() -> None:
+    html = (
+        '<html><body>'
+        '<a href="/ords/anon_blobber.download?p_file_name=lp001.txt">Download</a>'
+        '</body></html>'
+    )
+    base = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=999"
+    result = parse_download_link(html, base)
+    assert result.startswith("https://")
+    assert "anon_blobber.download" in result
+
+
+@pytest.mark.unit
+def test_parse_download_link_no_anchor() -> None:
+    html = "<html><body><p>No links here</p></body></html>"
+    with pytest.raises(ValueError):
+        parse_download_link(html, "https://example.com")
+
+
+# ---------------------------------------------------------------------------
+# Task 04: download_lease_file
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_download_lease_file_success(tmp_path: Path) -> None:
+    """Successful two-step download saves file and returns its path."""
+    html_content = (
+        '<a href="https://chasm.kgs.ku.edu/ords/anon_blobber.download'
+        '?p_file_name=lp564.txt">Download</a>'
+    )
+    file_content = b"LEASE_KID,MONTH-YEAR\n1001,1-2024\n"
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.status_code = 200
+    mock_session.get.return_value.raise_for_status = MagicMock()
+
+    responses = [
+        MagicMock(status_code=200, text=html_content, raise_for_status=MagicMock()),
+        MagicMock(status_code=200, content=file_content, raise_for_status=MagicMock()),
+    ]
+    mock_session.get.side_effect = responses
+
+    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
+    result = download_lease_file(
+        lease_url=lease_url,
+        output_dir=tmp_path,
+        session=mock_session,
+        sleep_seconds=0,
+    )
+    assert result is not None
+    assert result.exists()
+    assert result.name == "lp564.txt"
+
+
+@pytest.mark.unit
+def test_download_lease_file_already_exists(tmp_path: Path) -> None:
+    """If the file already exists, no HTTP requests are made."""
+    existing = tmp_path / "lp564.txt"
+    existing.write_text("existing content")
+
+    html_content = (
+        '<a href="https://chasm.kgs.ku.edu/ords/anon_blobber.download'
+        '?p_file_name=lp564.txt">Download</a>'
+    )
+
+    mock_session = MagicMock()
+    responses = [
+        MagicMock(status_code=200, text=html_content, raise_for_status=MagicMock()),
+    ]
+    mock_session.get.side_effect = responses
+
+    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
+    result = download_lease_file(
+        lease_url=lease_url,
+        output_dir=tmp_path,
+        session=mock_session,
+        sleep_seconds=0,
+    )
+    # Should return existing path after fetching MonthSave page (to get filename)
+    assert result == existing
+    # Only one request (MonthSave page), not the download request
+    assert mock_session.get.call_count == 1
+
+
+@pytest.mark.unit
+def test_download_lease_file_request_exception(tmp_path: Path) -> None:
+    """RequestException on MonthSave request → returns None."""
+    import requests
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = requests.RequestException("connection error")
+
+    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
+    result = download_lease_file(
+        lease_url=lease_url,
+        output_dir=tmp_path,
+        session=mock_session,
+        sleep_seconds=0,
+    )
+    assert result is None
+    assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.unit
+def test_download_lease_file_no_download_link(tmp_path: Path) -> None:
+    """ValueError from parse_download_link → returns None."""
+    mock_session = MagicMock()
+    mock_session.get.return_value = MagicMock(
+        status_code=200,
+        text="<html><body>No link</body></html>",
+        raise_for_status=MagicMock(),
+    )
+
+    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
+    result = download_lease_file(
+        lease_url=lease_url,
+        output_dir=tmp_path,
+        session=mock_session,
+        sleep_seconds=0,
+    )
+    assert result is None
+
+
+@pytest.mark.unit
+def test_download_lease_file_empty_response(tmp_path: Path) -> None:
+    """0-byte download response → returns None, no tmp file left."""
+    html_content = (
+        '<a href="https://chasm.kgs.ku.edu/ords/anon_blobber.download'
+        '?p_file_name=lp564.txt">Download</a>'
+    )
+    mock_session = MagicMock()
+    responses = [
+        MagicMock(status_code=200, text=html_content, raise_for_status=MagicMock()),
+        MagicMock(status_code=200, content=b"", raise_for_status=MagicMock()),
+    ]
+    mock_session.get.side_effect = responses
+
+    lease_url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
+    result = download_lease_file(
+        lease_url=lease_url,
+        output_dir=tmp_path,
+        session=mock_session,
+        sleep_seconds=0,
+    )
+    assert result is None
+    assert not any(tmp_path.glob("*.tmp"))
+
+
+# ---------------------------------------------------------------------------
+# Task 05: run_acquire
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_run_acquire_all_success(tmp_path: Path, sample_index_csv: Path) -> None:
+    """3 leases downloaded → AcquireSummary.downloaded == 3, failed == 0."""
+    with patch("kgs_pipeline.acquire._download_worker") as mock_worker:
+        mock_worker.side_effect = [
+            tmp_path / "lp001.txt",
+            tmp_path / "lp002.txt",
         ]
-        fpath = _make_index_csv(tmp_path, rows)
-        urls = load_lease_index(fpath, 2024)
-        assert set(urls) == {
-            "https://example.com?f_lc=1",
-            "https://example.com?f_lc=4",
-        }
+        # Create fake downloaded files so the summary works
+        (tmp_path / "lp001.txt").write_text("header\nrow1\n")
+        (tmp_path / "lp002.txt").write_text("header\nrow2\n")
 
-    def test_deduplication(self, tmp_path: Path) -> None:
-        rows = [
-            {"MONTH-YEAR": "1-2024", "URL": "https://example.com?f_lc=42"},
-            {"MONTH-YEAR": "2-2024", "URL": "https://example.com?f_lc=42"},
-            {"MONTH-YEAR": "3-2024", "URL": "https://example.com?f_lc=42"},
-        ]
-        fpath = _make_index_csv(tmp_path, rows)
-        urls = load_lease_index(fpath, 2024)
-        assert urls == ["https://example.com?f_lc=42"]
+        config = AcquireConfig(
+            index_path=sample_index_csv,
+            output_dir=tmp_path,
+            min_year=2024,
+            max_workers=2,
+        )
+        summary = run_acquire(config)
 
-    def test_file_not_found(self) -> None:
-        with pytest.raises(FileNotFoundError):
-            load_lease_index("/nonexistent/path.txt", 2024)
-
-    def test_missing_url_column(self, tmp_path: Path) -> None:
-        rows = [{"MONTH-YEAR": "1-2024", "OTHER": "x"}]
-        fpath = _make_index_csv(tmp_path, rows)
-        with pytest.raises(KeyError, match="URL"):
-            load_lease_index(fpath, 2024)
-
-    def test_missing_month_year_column(self, tmp_path: Path) -> None:
-        rows = [{"URL": "https://example.com", "OTHER": "x"}]
-        fpath = _make_index_csv(tmp_path, rows)
-        with pytest.raises(KeyError, match="MONTH-YEAR"):
-            load_lease_index(fpath, 2024)
+    assert summary.failed == 0
+    assert summary.total == 2  # rows with year >= 2024
 
 
-# ---------------------------------------------------------------------------
-# Task A-03: extract_lease_id
-# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_run_acquire_one_failure(tmp_path: Path, sample_index_csv: Path) -> None:
+    """One None result → failed == 1."""
+    with patch("kgs_pipeline.acquire._download_worker") as mock_worker:
+        mock_worker.side_effect = [tmp_path / "lp001.txt", None]
+        (tmp_path / "lp001.txt").write_text("header\nrow1\n")
+
+        config = AcquireConfig(
+            index_path=sample_index_csv,
+            output_dir=tmp_path,
+            min_year=2024,
+        )
+        summary = run_acquire(config)
+
+    assert summary.failed == 1
+    assert summary.downloaded == 1
 
 
-class TestExtractLeaseId:
-    def test_valid_url(self) -> None:
-        url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839"
-        assert extract_lease_id(url) == "1001135839"
+@pytest.mark.unit
+def test_run_acquire_all_fail_raises(tmp_path: Path, sample_index_csv: Path) -> None:
+    """All downloads None → RuntimeError raised."""
+    with patch("kgs_pipeline.acquire._download_worker") as mock_worker:
+        mock_worker.side_effect = [None, None]
 
-    def test_missing_f_lc(self) -> None:
-        url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?other=123"
-        with pytest.raises(ValueError):
-            extract_lease_id(url)
-
-    def test_empty_f_lc(self) -> None:
-        url = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc="
-        with pytest.raises(ValueError):
-            extract_lease_id(url)
-
-
-# ---------------------------------------------------------------------------
-# Task A-04: parse_download_link
-# ---------------------------------------------------------------------------
-
-
-class TestParseDownloadLink:
-    def test_valid_html(self) -> None:
-        href = parse_download_link(MONTH_SAVE_HTML)
-        assert "anon_blobber.download" in href
-        assert "lp564.txt" in href
-
-    def test_no_download_link(self) -> None:
-        html = "<html><body><a href='https://example.com'>nope</a></body></html>"
-        with pytest.raises(DownloadError):
-            parse_download_link(html)
-
-    def test_empty_string(self) -> None:
-        with pytest.raises(DownloadError):
-            parse_download_link("")
-
-
-# ---------------------------------------------------------------------------
-# Task A-05: download_lease_file
-# ---------------------------------------------------------------------------
-
-
-class TestDownloadLeaseFile:
-    LEASE_URL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=564"
-    MONTH_SAVE_BASE = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave"
-
-    def _mock_responses(self) -> tuple[MagicMock, MagicMock]:
-        ms_resp = MagicMock()
-        ms_resp.text = MONTH_SAVE_HTML
-        ms_resp.raise_for_status = MagicMock()
-
-        dl_resp = MagicMock()
-        dl_resp.content = FILE_CONTENT
-        dl_resp.raise_for_status = MagicMock()
-        return ms_resp, dl_resp
-
-    def test_successful_download(self, tmp_path: Path) -> None:
-        ms_resp, dl_resp = self._mock_responses()
-        with patch("kgs_pipeline.acquire.requests.get", side_effect=[ms_resp, dl_resp]):
-            result = download_lease_file(self.LEASE_URL, str(tmp_path), self.MONTH_SAVE_BASE, 0.0)
-        assert result is not None
-        assert result.exists()
-        assert result.stat().st_size > 0
-
-    def test_idempotency_skips_existing(self, tmp_path: Path) -> None:
-        # Pre-create the file
-        existing = tmp_path / "lp564.txt"
-        existing.write_bytes(FILE_CONTENT)
-        ms_resp = MagicMock()
-        ms_resp.text = MONTH_SAVE_HTML
-        ms_resp.raise_for_status = MagicMock()
-        with patch("kgs_pipeline.acquire.requests.get", return_value=ms_resp) as mock_get:
-            result = download_lease_file(self.LEASE_URL, str(tmp_path), self.MONTH_SAVE_BASE, 0.0)
-            mock_get.assert_not_called()
-        assert result == existing
-
-    def test_network_error_returns_none(self, tmp_path: Path) -> None:
-        import requests as req_lib
-
-        with patch(
-            "kgs_pipeline.acquire.requests.get",
-            side_effect=req_lib.RequestException("timeout"),
-        ):
-            result = download_lease_file(self.LEASE_URL, str(tmp_path), self.MONTH_SAVE_BASE, 0.0)
-        assert result is None
-        assert list(tmp_path.glob("*.txt")) == []
-
-    def test_download_error_returns_none(self, tmp_path: Path) -> None:
-        ms_resp = MagicMock()
-        ms_resp.text = "<html><body>no link here</body></html>"
-        ms_resp.raise_for_status = MagicMock()
-        with patch("kgs_pipeline.acquire.requests.get", return_value=ms_resp):
-            result = download_lease_file(self.LEASE_URL, str(tmp_path), self.MONTH_SAVE_BASE, 0.0)
-        assert result is None
-
-    def test_zero_byte_file_deleted(self, tmp_path: Path) -> None:
-        ms_resp, dl_resp = self._mock_responses()
-        dl_resp.content = b""  # empty content
-        with patch("kgs_pipeline.acquire.requests.get", side_effect=[ms_resp, dl_resp]):
-            result = download_lease_file(self.LEASE_URL, str(tmp_path), self.MONTH_SAVE_BASE, 0.0)
-        assert result is None
-        assert not (tmp_path / "lp564.txt").exists()
-
-
-# ---------------------------------------------------------------------------
-# Task A-06: run_acquire
-# ---------------------------------------------------------------------------
-
-
-class TestRunAcquire:
-    def _config(self, tmp_path: Path, index_path: str) -> dict:
-        return {
-            "lease_index": index_path,
-            "raw_dir": str(tmp_path / "raw"),
-            "month_save_url": "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave",
-            "min_year": 2024,
-            "max_workers": 2,
-            "sleep_seconds": 0.0,
-        }
-
-    def _make_index(self, tmp_path: Path, n: int = 3) -> str:
-        rows = [
-            {"MONTH-YEAR": "1-2024", "URL": f"https://example.com?f_lc={i}"}
-            for i in range(1, n + 1)
-        ]
-        df = pd.DataFrame(rows)
-        fpath = tmp_path / "index.txt"
-        df.to_csv(fpath, index=False)
-        return str(fpath)
-
-    def test_returns_three_paths(self, tmp_path: Path) -> None:
-        index_path = self._make_index(tmp_path)
-        config = self._config(tmp_path, index_path)
-
-        side_effects = [Path(config["raw_dir"]) / f"lp{i}.txt" for i in range(1, 4)]
-
-        with patch("kgs_pipeline.acquire.download_lease_file", side_effect=side_effects):
-            with patch(
-                "kgs_pipeline.acquire.load_lease_index",
-                return_value=[f"https://example.com?f_lc={i}" for i in range(1, 4)],
-            ):
-                result = run_acquire(config)
-
-        assert len(result) == 3
-
-    def test_filters_none_results(self, tmp_path: Path) -> None:
-        index_path = self._make_index(tmp_path)
-        config = self._config(tmp_path, index_path)
-        urls = [f"https://example.com?f_lc={i}" for i in range(1, 4)]
-        side_effects = [
-            Path(config["raw_dir"]) / "lp1.txt",
-            None,
-            Path(config["raw_dir"]) / "lp3.txt",
-        ]
-
-        with patch("kgs_pipeline.acquire.download_lease_file", side_effect=side_effects):
-            with patch("kgs_pipeline.acquire.load_lease_index", return_value=urls):
-                result = run_acquire(config)
-
-        assert len(result) == 2
-
-    def test_creates_raw_dir(self, tmp_path: Path) -> None:
-        index_path = self._make_index(tmp_path, n=1)
-        config = self._config(tmp_path, index_path)
-        raw_dir = Path(config["raw_dir"])
-        assert not raw_dir.exists()
-
-        with patch("kgs_pipeline.acquire.download_lease_file", return_value=None):
-            with patch(
-                "kgs_pipeline.acquire.load_lease_index", return_value=["https://example.com?f_lc=1"]
-            ):
-                run_acquire(config)
-
-        assert raw_dir.exists()
-
-    def test_uses_threaded_scheduler(self, tmp_path: Path) -> None:
-        index_path = self._make_index(tmp_path, n=1)
-        config = self._config(tmp_path, index_path)
-
-        with patch(
-            "kgs_pipeline.acquire.load_lease_index", return_value=["https://example.com?f_lc=1"]
-        ):
-            with patch("kgs_pipeline.acquire.dask.compute") as mock_compute:
-                mock_compute.return_value = (None,)
-                run_acquire(config)
-                _, kwargs = mock_compute.call_args
-                assert kwargs.get("scheduler") == "threads"
-
-
-# ---------------------------------------------------------------------------
-# Task A-07: Integration tests
-# ---------------------------------------------------------------------------
-
-
-class TestAcquireIntegration:
-    MONTH_SAVE_BASE = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave"
-
-    def _setup(self, tmp_path: Path) -> tuple[dict, list[str]]:
-        urls = [
-            f"https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc={i}" for i in [564, 565, 566]
-        ]
-        rows = [{"MONTH-YEAR": "1-2024", "URL": u} for u in urls]
-        df = pd.DataFrame(rows)
-        idx_path = tmp_path / "index.txt"
-        df.to_csv(idx_path, index=False)
-
-        config = {
-            "lease_index": str(idx_path),
-            "raw_dir": str(tmp_path / "raw"),
-            "month_save_url": self.MONTH_SAVE_BASE,
-            "min_year": 2024,
-            "max_workers": 2,
-            "sleep_seconds": 0.0,
-        }
-        return config, urls
-
-    def _make_mock_get(self, lease_ids: list[str]) -> MagicMock:
-        def side_effect(url: str, **kwargs) -> MagicMock:
-            resp = MagicMock()
-            resp.raise_for_status = MagicMock()
-            if "MonthSave" in url:
-                for lid in lease_ids:
-                    if f"f_lc={lid}" in url:
-                        resp.text = (
-                            f'<html><body><a href="https://chasm.kgs.ku.edu/ords/'
-                            f'qualified.anon_blobber.download?p_file_name=lp{lid}.txt">'
-                            f"Download</a></body></html>"
-                        )
-                        return resp
-                resp.text = "<html></html>"
-            else:
-                resp.content = b"LEASE_KID,MONTH-YEAR\n1001,1-2024\nmore data\n"
-            return resp
-
-        return MagicMock(side_effect=side_effect)
-
-    def test_idempotency_tr20(self, tmp_path: Path) -> None:
-        config, _ = self._setup(tmp_path)
-        mock_get = self._make_mock_get(["564", "565", "566"])
-        with patch("kgs_pipeline.acquire.requests.get", mock_get):
-            first = run_acquire(config)
-        with patch("kgs_pipeline.acquire.requests.get", mock_get):
-            second = run_acquire(config)
-
-        raw_dir = Path(config["raw_dir"])
-        files_first = set(f.name for f in raw_dir.glob("*.txt"))
-        files_second = set(f.name for f in raw_dir.glob("*.txt"))
-        assert files_first == files_second
-        assert len(first) == len(second)
-
-    def test_file_size_positive_tr21a(self, tmp_path: Path) -> None:
-        config, _ = self._setup(tmp_path)
-        mock_get = self._make_mock_get(["564", "565", "566"])
-        with patch("kgs_pipeline.acquire.requests.get", mock_get):
+        config = AcquireConfig(
+            index_path=sample_index_csv,
+            output_dir=tmp_path,
+            min_year=2024,
+        )
+        with pytest.raises(RuntimeError):
             run_acquire(config)
-        for f in Path(config["raw_dir"]).glob("*.txt"):
-            assert f.stat().st_size > 0, f"{f.name} is zero bytes"
 
-    def test_utf8_readability_tr21b(self, tmp_path: Path) -> None:
-        config, _ = self._setup(tmp_path)
-        mock_get = self._make_mock_get(["564", "565", "566"])
-        with patch("kgs_pipeline.acquire.requests.get", mock_get):
-            run_acquire(config)
-        for f in Path(config["raw_dir"]).glob("*.txt"):
-            f.read_text(encoding="utf-8")  # should not raise
 
-    def test_minimum_row_count_tr21c(self, tmp_path: Path) -> None:
-        config, _ = self._setup(tmp_path)
-        mock_get = self._make_mock_get(["564", "565", "566"])
-        with patch("kgs_pipeline.acquire.requests.get", mock_get):
-            run_acquire(config)
-        for f in Path(config["raw_dir"]).glob("*.txt"):
-            lines = f.read_text(encoding="utf-8").splitlines()
-            assert len(lines) > 1, f"{f.name} has only {len(lines)} line(s)"
+# ---------------------------------------------------------------------------
+# Task 06: AcquireConfig and AcquireSummary dataclasses
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_acquire_config_defaults(tmp_path: Path) -> None:
+    config = AcquireConfig(index_path=tmp_path / "idx.txt", output_dir=tmp_path)
+    assert config.min_year == 2024
+    assert config.max_workers == 5
+    assert config.sleep_seconds == 0.5
+
+
+@pytest.mark.unit
+def test_acquire_summary_attributes(tmp_path: Path) -> None:
+    summary = AcquireSummary(total=10, downloaded=8, skipped=1, failed=1, output_dir=tmp_path)
+    assert summary.total == 10
+    assert summary.downloaded == 8
+    assert summary.skipped == 1
+    assert summary.failed == 1
+    assert summary.output_dir == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# Task 07: validate_raw_files
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_validate_raw_files_valid(tmp_path: Path) -> None:
+    (tmp_path / "lp001.txt").write_text("LEASE_KID,MONTH-YEAR\n1001,1-2024\n", encoding="utf-8")
+    failures = validate_raw_files(tmp_path)
+    assert failures == []
+
+
+@pytest.mark.unit
+def test_validate_raw_files_empty_file(tmp_path: Path) -> None:
+    (tmp_path / "lp001.txt").write_bytes(b"")
+    failures = validate_raw_files(tmp_path)
+    assert "lp001.txt" in failures
+
+
+@pytest.mark.unit
+def test_validate_raw_files_invalid_utf8(tmp_path: Path) -> None:
+    (tmp_path / "lp001.txt").write_bytes(b"\xff\xfe invalid bytes")
+    failures = validate_raw_files(tmp_path)
+    assert "lp001.txt" in failures
+
+
+@pytest.mark.unit
+def test_validate_raw_files_only_header(tmp_path: Path) -> None:
+    (tmp_path / "lp001.txt").write_text("LEASE_KID,MONTH-YEAR\n", encoding="utf-8")
+    failures = validate_raw_files(tmp_path)
+    assert "lp001.txt" in failures
+
+
+@pytest.mark.unit
+def test_validate_raw_files_directory_not_found(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        validate_raw_files(tmp_path / "nonexistent")

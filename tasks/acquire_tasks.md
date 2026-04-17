@@ -1,113 +1,409 @@
 # Acquire Stage — Task Specifications
 
-## Overview
+## Context and Design Decisions
 
-The acquire stage downloads raw KGS oil and gas lease production files from the KGS
-public data portal and delivers them to `data/raw/` for the ingest stage. The stage
-reads a lease index file (`data/external/oil_leases_2020_present.txt`), filters to
-leases active in 2024 or later, deduplicates by URL, and executes a three-step
-download workflow for each lease in parallel using Dask's threaded scheduler (I/O-bound
-workload per ADR-001). A 0.5-second sleep per worker prevents overloading the KGS
-server. Maximum concurrency is 5 workers.
+The acquire stage downloads raw KGS lease production files from the KGS public portal
+and saves them to `data/raw/`. It is I/O-bound and must use Dask's threaded scheduler
+(not the distributed scheduler) for parallel downloads. Browser automation tools are
+prohibited; only standard HTTP request and HTML parsing libraries are permitted.
 
-## Architecture constraints (from ADRs)
+**Key ADRs governing this stage:**
+- ADR-001: Use Dask threaded scheduler for I/O-bound acquire (not distributed)
+- ADR-006: Dual-channel logging — log to both console and file; read log config from config.yaml
+- ADR-007: HTTP acquisition uses standard requests + BeautifulSoup only
 
-- **ADR-001**: Acquire is I/O-bound — use Dask threaded scheduler, not distributed.
-- **ADR-005**: Task graph must remain lazy until the final write/download operation.
-- **ADR-006**: All log output must go to both console and log file. Log configuration
-  is read from `config.yaml` — do not configure log handlers inside acquire functions.
-- **ADR-007**: HTTP acquisition uses `requests` and `BeautifulSoup` only — no browser
-  automation.
-- **H1 (stage manifest)**: Scheduler choice must match the I/O-bound workload.
-- **H2 (stage manifest)**: A failed download must not produce a file that appears valid
-  — a partial or empty file is worse than no file.
+**Shared state hazards (from stage manifest):**
+- H1: Acquire is I/O-bound — the threaded scheduler must be used, not the distributed scheduler
+- H2: A failed download must not produce a file that appears valid — file existence alone is not proof of validity
 
-## Data flow
+**Package name:** `kgs_pipeline`
+**Module path:** `kgs_pipeline/acquire.py`
 
-```
-data/external/oil_leases_2020_present.txt
-  → filter to year >= 2024, deduplicate by URL
-  → for each unique URL: extract lease_id → fetch MonthSave page → parse download link → download file
-  → data/raw/<filename>.txt   (e.g. lp564.txt)
-```
+**Input:**
+- `data/external/oil_leases_2020_present.txt` — lease index file (CSV format, quoted fields)
+- `config.yaml` — acquire settings (base URLs, output paths, worker counts, rate-limit)
 
-## Download workflow (per lease)
-
-1. Extract the lease ID from the URL column value.
-   - URL format: `https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=<LEASE_ID>`
-   - Parse lease ID as the value of query parameter `f_lc`.
-2. Make an HTTP GET request to the MonthSave endpoint:
-   `https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=<LEASE_ID>`
-3. Parse the HTML response with BeautifulSoup to find the anchor tag whose `href`
-   contains the string `"anon_blobber.download"`. Extract that full URL.
-4. Make an HTTP GET request to the download URL and save the raw response content to
-   `data/raw/<p_file_name>` where `p_file_name` is the value of the `p_file_name`
-   query parameter in the download URL (e.g. `lp564.txt`).
-5. After saving, verify the file is non-empty (size > 0 bytes). If empty, delete the
-   file and log a warning — do not leave a zero-byte file on disk.
-
-## Filtering and deduplication rules (from task-writer-kgs.md)
-
-- Read `data/external/oil_leases_2020_present.txt` as a delimiter-separated file.
-- Parse the `MONTH-YEAR` column (format `"M-YYYY"`, e.g. `"1-2024"`): split on `"-"`,
-  take the last element as year string. Drop rows where the year string is not numeric
-  (e.g. `"-1-1965"`, `"0-1966"`). Drop rows where the numeric year < 2024.
-- After filtering, deduplicate the remaining rows by the `URL` column — the index
-  contains one row per month per lease, so deduplication is required before downloading.
-- The result is the set of unique lease URLs to download.
-
-## Idempotency requirement
-
-Before downloading a file, check whether `data/raw/<p_file_name>` already exists and
-is non-empty. If it does, skip the download and log an info message. This ensures
-running the acquire stage twice does not duplicate or corrupt files (TR-20).
+**Output:**
+- Raw lease production text files saved to `data/raw/` (e.g. `lp564.txt`)
 
 ---
 
-## Task A-01: Project scaffolding and configuration
+## Data Source Description
 
-**Module:** `kgs_pipeline/__init__.py`, `config.yaml`, `pyproject.toml`, `Makefile`,
-`.gitignore`, `logs/` directory (created at runtime, not committed)
+The lease index file (`data/external/oil_leases_2020_present.txt`) has these columns
+(from `references/kgs_archives_data_dictionary.csv`):
 
-**Description:** Set up the installable package, configuration file, Makefile targets,
-and `.gitignore`. This task establishes the foundational build environment that all
-subsequent tasks depend on.
+| Column | dtype | nullable | Description |
+|---|---|---|---|
+| LEASE_KID | int | no | Unique lease ID assigned by KGS |
+| LEASE | string | yes | Lease name |
+| DOR_CODE | int | yes | Kansas Dept of Revenue ID |
+| API_NUMBER | string | yes | Well API numbers linked to lease |
+| FIELD | string | yes | Oil and gas field name |
+| PRODUCING_ZONE | string | yes | Producing formation |
+| OPERATOR | string | yes | Lease operator name |
+| COUNTY | string | yes | County where lease is located |
+| TOWNSHIP | int | yes | PLSS township number |
+| TWN_DIR | categorical | yes | Township direction (S\|N) |
+| RANGE | int | yes | PLSS range number |
+| RANGE_DIR | categorical | yes | Range direction (E\|W) |
+| SECTION | int | yes | PLSS section (1–36) |
+| SPOT | string | yes | Legal quarter description |
+| LATITUDE | float | yes | NAD 1927 latitude |
+| LONGITUDE | float | yes | NAD 1927 longitude |
+| MONTH-YEAR | string | no | Format "M-YYYY" (e.g. "1-2024") |
+| PRODUCT | categorical | no | O = oil, G = gas |
+| WELLS | int | yes | Number of contributing wells |
+| PRODUCTION | float | yes | Barrels (oil) or MCF (gas) |
+| URL | string | yes | URL to main lease production page |
 
-### `pyproject.toml` requirements
+The URL column contains lease page URLs of the form:
+`https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=<LEASE_KID>`
 
-- Build backend must be explicitly declared (not relying on setuptools defaults).
-- Package name: `kgs-pipeline` (importable as `kgs_pipeline`).
-- Python version constraint: `>=3.11`.
-- Runtime dependencies must include at minimum: `dask[distributed]`, `pandas`,
-  `pyarrow`, `requests`, `beautifulsoup4`, `pyyaml`, `bokeh` (Dask dashboard,
-  required at runtime per build-env-manifest).
-- Development dependencies must include: `pytest`, `pytest-mock`, `ruff`, `mypy`,
-  `pandas-stubs`, `types-requests`, `types-beautifulsoup4`.
-- Register a CLI entry point: command name `cogcc-pipeline` (or `kgs-pipeline`) mapped
-  to `kgs_pipeline.pipeline:main`.
+---
 
-### `config.yaml` requirements
+## Download Workflow (per lease)
 
-Top-level sections as specified in the build-env-manifest:
+1. Extract lease ID from URL: parse the `f_lc` query parameter value
+2. Construct MonthSave URL: `https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=<lease_id>`
+3. HTTP GET request to MonthSave URL; parse HTML with BeautifulSoup to find the anchor
+   tag whose `href` contains `anon_blobber.download`
+4. Extract the `p_file_name` query parameter from the download href to determine
+   the output filename (e.g. `lp564.txt`)
+5. HTTP GET request to the download URL; save response content to `data/raw/<p_file_name>`
+6. Sleep 0.5 seconds per worker after each download to rate-limit server load
+
+**Filtering before constructing the download list:**
+- Filter the lease index to rows where the year component of MONTH-YEAR >= 2024
+- Extract year by splitting MONTH-YEAR on "-" and taking the last element
+- After filtering, deduplicate by URL — the index has one row per month per lease,
+  not one row per lease
+- Only the deduplicated URL list is passed to the download scheduler
+
+---
+
+## Task 01: Implement lease index loader
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `load_lease_index(index_path: str | Path, min_year: int) -> pd.DataFrame`
+
+**Description:**
+Read the lease index CSV file into a pandas DataFrame. Apply the year filter and URL
+deduplication required before constructing the download list.
+
+**Steps:**
+- Read the file at `index_path` using pandas; file is quoted CSV format
+- Parse MONTH-YEAR column by splitting on "-" and taking the last element to extract year
+- Drop rows where the extracted year is not numeric (e.g. "-1-1965", "0-1966")
+- Drop rows where the integer year < `min_year`
+- Deduplicate by URL column — retain one row per unique URL
+- Return the deduplicated DataFrame
+
+**Error handling:**
+- If `index_path` does not exist, raise `FileNotFoundError` with a descriptive message
+- If the URL column is absent from the file, raise `ValueError` naming the missing column
+- If MONTH-YEAR column is absent, raise `ValueError` naming the missing column
+
+**Dependencies:** pandas, pathlib
+
+**Test cases:**
+- Given a sample index with rows for years 2022, 2023, and 2024 with `min_year=2024`,
+  assert only 2024 rows are returned
+- Given rows where MONTH-YEAR has non-numeric year parts (e.g. "-1-1965"), assert those
+  rows are dropped before the year filter is applied
+- Given a sample where multiple rows share the same URL (simulating multiple months for
+  one lease), assert the output has one row per unique URL
+- Given a path to a nonexistent file, assert `FileNotFoundError` is raised
+- Given a file missing the URL column, assert `ValueError` is raised
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 02: Implement lease ID extractor
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `extract_lease_id(url: str) -> str`
+
+**Description:**
+Parse the KGS lease page URL and extract the `f_lc` query parameter value (lease ID).
+
+**Steps:**
+- Parse the URL using `urllib.parse.urlparse` and `urllib.parse.parse_qs`
+- Extract the `f_lc` query parameter value
+- Return it as a string
+
+**Error handling:**
+- If the `f_lc` parameter is absent from the URL, raise `ValueError` with a message
+  that includes the offending URL
+
+**Dependencies:** urllib.parse (stdlib)
+
+**Test cases:**
+- Given `"https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839"`,
+  assert the return value is `"1001135839"`
+- Given a URL with no `f_lc` parameter, assert `ValueError` is raised
+- Given a URL with multiple query parameters where `f_lc` is not first, assert the
+  correct value is still returned
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 03: Implement MonthSave page parser
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `parse_download_link(html_content: str, base_url: str) -> str`
+
+**Description:**
+Parse the HTML content of a KGS MonthSave page and extract the absolute download URL
+from the anchor tag whose `href` contains `"anon_blobber.download"`.
+
+**Steps:**
+- Parse `html_content` using BeautifulSoup
+- Find the first anchor (`<a>`) tag whose `href` attribute contains the string
+  `"anon_blobber.download"`
+- If the href is relative, construct the absolute URL by combining with `base_url`
+- Extract the `p_file_name` query parameter from the download URL
+- Return the complete absolute download URL as a string
+
+**Error handling:**
+- If no matching anchor tag is found, raise `ValueError` with a message that includes
+  the first 200 characters of `html_content` for diagnosis
+
+**Dependencies:** beautifulsoup4, urllib.parse (stdlib)
+
+**Test cases:**
+- Given HTML containing an anchor with `href="https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"`,
+  assert the return value is that full URL
+- Given HTML containing an anchor with a relative href that includes `anon_blobber.download`,
+  assert the return value is the absolute URL constructed from `base_url`
+- Given HTML with no anchor containing `anon_blobber.download`, assert `ValueError` is raised
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 04: Implement single-file downloader
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `download_lease_file(lease_url: str, output_dir: Path, session: requests.Session) -> Path | None`
+
+**Description:**
+Execute the full two-step download workflow for a single lease URL: fetch the MonthSave
+page, parse the download link, download the file, and save it to disk. Return the path
+to the saved file, or `None` if the download was skipped (file already exists) or failed.
+
+**Steps:**
+- Extract lease ID from `lease_url` using `extract_lease_id`
+- Construct MonthSave URL from the lease ID
+- If the output file already exists in `output_dir` (determined after parsing the
+  download link from a HEAD or partial GET), skip the download and return the existing
+  path without making additional requests — idempotency requirement (TR-20)
+- HTTP GET the MonthSave page URL using `session`
+- Parse the HTML response with `parse_download_link` to obtain the file download URL
+- Extract the output filename from the `p_file_name` parameter of the download URL
+- If a file with that name already exists in `output_dir`, return its path immediately
+  without downloading again (TR-20)
+- HTTP GET the download URL using `session`
+- Write the response content to `output_dir / <filename>` atomically: write to a
+  `.tmp` file first, then rename to the final filename on success
+- If the downloaded file is 0 bytes, delete it and return `None` (TR-21, H2)
+- Sleep 0.5 seconds after a successful download
+- Return the `Path` to the saved file
+
+**Error handling:**
+- On any `requests.RequestException` (timeout, connection error, HTTP error), log a
+  warning with the lease URL and the exception, delete any partial `.tmp` file, and
+  return `None`
+- On `ValueError` from `parse_download_link` (no download link found), log a warning
+  and return `None`
+- Do not raise exceptions to the caller — all error paths return `None`
+
+**Dependencies:** requests, pathlib, time (stdlib), logging (stdlib)
+
+**Test cases (use `unittest.mock.patch` to mock HTTP calls):**
+- Given a successful two-step fetch that returns valid HTML and file content, assert
+  the file is saved to `output_dir` and the returned path exists
+- Given that the target file already exists in `output_dir`, assert no HTTP requests
+  are made and the existing path is returned (TR-20a, TR-20b, TR-20c)
+- Given a `requests.RequestException` on the MonthSave request, assert `None` is
+  returned and no file is created
+- Given a successful MonthSave response but `ValueError` from `parse_download_link`,
+  assert `None` is returned
+- Given a download response with 0-byte content, assert `None` is returned and the
+  `.tmp` file is not left on disk
+- Given a network error on the file download request (after MonthSave succeeds), assert
+  the `.tmp` file is cleaned up and `None` is returned
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 05: Implement parallel download orchestrator
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `run_acquire(config: AcquireConfig) -> AcquireSummary`
+
+**Description:**
+Orchestrate parallel downloads of all filtered lease files using Dask's threaded
+scheduler. Rate-limit to a maximum of 5 concurrent workers. Return a summary of
+the run results.
+
+**Steps:**
+- Load the lease index using `load_lease_index` with `min_year` from config
+- Extract the list of unique lease URLs from the filtered index
+- Log the total count of leases to download
+- Create a `requests.Session` configured with the retry settings from config
+- Build a Dask bag from the list of lease URLs
+- Map `download_lease_file` over the bag using Dask's threaded scheduler with at
+  most `config.max_workers` (capped at 5) threads
+- Call `.compute()` once to execute all downloads
+- Collect results: count of files downloaded, count skipped (already existed),
+  count failed (returned `None` after a new attempt)
+- Log a summary: total URLs, downloaded, skipped, failed
+- Return an `AcquireSummary` dataclass with: `total`, `downloaded`, `skipped`, `failed`,
+  `output_dir`
+
+**Scheduler requirement (ADR-001, H1):**
+- Must use Dask threaded scheduler (`scheduler="threads"`) — not the distributed
+  scheduler, not synchronous, not multiprocessing
+
+**Error handling:**
+- If `output_dir` does not exist, create it before dispatching downloads
+- If all downloads fail, log an error and raise `RuntimeError` naming the output dir
+  and the failure count
+
+**Dependencies:** dask, requests, dataclasses (stdlib), logging (stdlib), pathlib
+
+**Test cases (use `unittest.mock.patch` to mock `download_lease_file`):**
+- Given a list of 3 lease URLs with mocked `download_lease_file` returning a valid
+  path for each, assert `AcquireSummary.downloaded == 3` and `failed == 0`
+- Given a list of 3 URLs where one returns `None` (failed), assert
+  `AcquireSummary.failed == 1` and `downloaded == 2`
+- Given a list where all files already exist (mocked to return existing paths without
+  downloading), assert `skipped == total` and `downloaded == 0` (TR-20a)
+- Assert the Dask scheduler used is `"threads"` and not `"processes"` or `"synchronous"`
+- Given all downloads returning `None`, assert `RuntimeError` is raised
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 06: Implement AcquireConfig and AcquireSummary dataclasses
+
+**Module:** `kgs_pipeline/acquire.py`
+**Classes:** `AcquireConfig`, `AcquireSummary`
+
+**Description:**
+Define the configuration and result dataclasses used by the acquire stage.
+
+**`AcquireConfig` fields:**
+- `index_path: Path` — path to the lease index file
+- `output_dir: Path` — directory for raw downloaded files
+- `min_year: int` — minimum year to include (default 2024)
+- `max_workers: int` — maximum parallel download threads (capped at 5)
+- `request_timeout: int` — HTTP request timeout in seconds
+- `monthsave_base_url: str` — base URL for MonthSave page requests
+- `sleep_seconds: float` — seconds to sleep per worker after each download (default 0.5)
+
+**`AcquireSummary` fields:**
+- `total: int` — total number of lease URLs processed
+- `downloaded: int` — number of new files successfully downloaded
+- `skipped: int` — number of files skipped because they already existed
+- `failed: int` — number of URLs where download returned `None` after a new attempt
+- `output_dir: Path` — directory where files were saved
+
+**Design notes:**
+- Both classes must use `@dataclass` decorator
+- All fields must have type annotations
+- `AcquireConfig` must provide sensible defaults for optional fields
+
+**Test cases:**
+- Assert `AcquireConfig` can be instantiated with only required fields, with optional
+  fields taking their defaults
+- Assert `AcquireSummary` fields are readable as attributes after construction
+
+**Definition of done:** Classes are implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 07: Validate downloaded files
+
+**Module:** `kgs_pipeline/acquire.py`
+**Function:** `validate_raw_files(output_dir: Path) -> list[str]`
+
+**Description:**
+After all downloads complete, validate every file in `output_dir` for basic integrity.
+Return a list of filenames that fail validation (empty list if all pass).
+
+**Validation rules (TR-21):**
+- File size must be greater than 0 bytes
+- File must be readable as UTF-8 text without `UnicodeDecodeError`
+- File must contain at least one data row beyond the header line (i.e., at least 2 lines)
+
+**Steps:**
+- Iterate over all `.txt` files in `output_dir`
+- For each file apply the three validation rules above
+- Collect the names of files that fail any rule
+- Log a warning for each failing file with the reason
+- Return the list of failing filenames
+
+**Error handling:**
+- If `output_dir` does not exist, raise `FileNotFoundError`
+- Individual file read errors (other than `UnicodeDecodeError`) are caught, logged as
+  warnings, and the filename is added to the failures list
+
+**Test cases (TR-21a, TR-21b, TR-21c):**
+- Given a directory containing one valid file (> 0 bytes, valid UTF-8, multiple lines),
+  assert the returned list is empty
+- Given a directory containing one 0-byte file, assert that filename appears in the
+  returned list
+- Given a directory containing a file with invalid UTF-8 bytes, assert that filename
+  appears in the returned list
+- Given a directory containing a file with only a header line and no data rows, assert
+  that filename appears in the returned list
+- Given a nonexistent directory, assert `FileNotFoundError` is raised
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task 08: Build environment and configuration setup for acquire
+
+**Files:**
+- `kgs_pipeline/__init__.py` — package init (may be empty)
+- `config.yaml` — pipeline-wide configuration file
+- `pyproject.toml` — package configuration with entry point
+- `Makefile` — build targets
+- `requirements.txt` — runtime and dev dependencies
+- `.gitignore` — version control exclusions
+
+**Description:**
+Establish the full build environment, package entry point, and configuration structure
+required by the build-env-manifest.
+
+**`config.yaml` structure (acquire section):**
 ```
 acquire:
-  lease_index: data/external/oil_leases_2020_present.txt
-  raw_dir: data/raw
-  month_save_url: https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave
-  download_base_url: https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download
+  index_path: data/external/oil_leases_2020_present.txt
+  output_dir: data/raw
   min_year: 2024
   max_workers: 5
+  request_timeout: 30
+  monthsave_base_url: https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave
   sleep_seconds: 0.5
 ingest:
-  raw_dir: data/raw
-  interim_dir: data/interim
-  data_dictionary: references/kgs_monthly_data_dictionary.csv
-transform:
-  interim_dir: data/interim
-  processed_dir: data/processed/transform
-features:
-  processed_dir: data/processed/transform
-  output_dir: data/processed/features
+  input_dir: data/raw
+  output_dir: data/interim
+  output_filename: raw_combined
 dask:
   scheduler: local
   n_workers: 4
@@ -119,348 +415,35 @@ logging:
   level: INFO
 ```
 
-### `Makefile` requirements
+**`pyproject.toml` requirements:**
+- Build backend must be explicitly declared (e.g. `hatchling` or `setuptools` with
+  `[build-system]` table)
+- Package must be pip-installable in editable mode (`pip install -e .`)
+- Entry point `cogcc-pipeline` (or `kgs-pipeline`) registered under `[project.scripts]`
+  pointing to the pipeline entry point function in `kgs_pipeline/pipeline.py`
 
-- `env` target: create a Python virtual environment.
-- `install` target: bootstrap pip then install all dependencies (runtime + dev) using
-  `pip install -e ".[dev]"`.
-- `acquire` target: invoke the pipeline entry point for the acquire stage only.
-- `ingest` target: invoke the pipeline entry point for the ingest stage only.
-- `transform` target: invoke the pipeline entry point for the transform stage only.
-- `features` target: invoke the pipeline entry point for the features stage only.
-- `pipeline` target: invoke the pipeline entry point for all four stages in sequence;
-  must depend on the individual stage targets in order.
+**`Makefile` targets:**
+- `venv` — create a clean virtual environment
+- `install` — bootstrap the package installer then install all dependencies in editable mode
+- `acquire` — invoke the acquire stage independently
+- `ingest` — invoke the ingest stage independently
+- `transform` — invoke the transform stage independently
+- `features` — invoke the features stage independently
+- `pipeline` — invoke the pipeline entry point for all stages in sequence (must not
+  both chain stage targets as dependencies AND invoke the entry point — pick one approach)
 
-### `.gitignore` requirements
+**`.gitignore` must exclude:**
+- `data/` directory
+- `logs/` directory
+- `large_tool_results/`
+- `conversation_history/`
 
-Must exclude: `data/`, `logs/`, `large_tool_results/`, `conversation_history/`,
-`.venv/`, `__pycache__/`, `*.egg-info/`, `.DS_Store`.
+**Test cases:**
+- Assert `pip install -e .` succeeds without errors
+- Assert the registered CLI entry point is callable and prints help without error
+- Assert `config.yaml` loads without YAML parse errors and all required top-level keys
+  are present
 
-**Definition of done:** `pyproject.toml`, `config.yaml`, `Makefile`, `.gitignore`
-exist and are syntactically valid; `pip install -e ".[dev]"` succeeds; `kgs-pipeline
---help` (or equivalent entry point) is callable; ruff and mypy report no errors on
-the empty `kgs_pipeline/__init__.py`; `requirements.txt` updated with all third-party
+**Definition of done:** All files created, package installs cleanly, entry point is
+callable, ruff and mypy report no errors, requirements.txt updated with all third-party
 packages imported in this task.
-
----
-
-## Task A-02: Lease index loader
-
-**Module:** `kgs_pipeline/acquire.py`
-**Function:** `load_lease_index(index_path: str, min_year: int) -> list[str]`
-
-**Description:** Load the KGS lease index file, filter to leases active in the target
-year range, deduplicate by URL, and return a list of unique lease URLs to download.
-
-### Input
-
-- `index_path`: path to `data/external/oil_leases_2020_present.txt`
-- `min_year`: integer minimum year (e.g. `2024`)
-
-### Processing logic (pseudo-code)
-
-```
-read the index file as a tab- or comma-separated DataFrame
-for each row:
-    split MONTH-YEAR on "-" and take the last element as year_str
-    if year_str is not numeric → skip row
-    if int(year_str) < min_year → skip row
-deduplicate the surviving rows by URL column
-return the list of unique URL values (as strings), dropping any null URL values
-```
-
-### Output
-
-`list[str]` — unique, non-null lease URLs for leases active in year >= `min_year`.
-
-### Error handling
-
-- If `index_path` does not exist, raise `FileNotFoundError` with a descriptive message.
-- If the `URL` column is absent from the file, raise `KeyError` with a descriptive message.
-- If the `MONTH-YEAR` column is absent from the file, raise `KeyError` with a
-  descriptive message.
-- Log the count of raw rows, rows surviving the year filter, and unique URLs after
-  deduplication at INFO level.
-
-### Test cases (in `tests/test_acquire.py`)
-
-- **Given** a synthetic index DataFrame with rows spanning years 2022–2025 (some with
-  non-numeric year components like `"-1-1965"` and `"0-1966"`), **assert** that only
-  URLs for rows with a numeric year component >= 2024 are returned.
-- **Given** a synthetic index with 3 rows for the same URL (one per month, all 2024),
-  **assert** that only 1 URL is returned (deduplication).
-- **Given** an index file that does not exist, **assert** `FileNotFoundError` is raised.
-- **Given** a file missing the `URL` column, **assert** `KeyError` is raised.
-- **Given** a file missing the `MONTH-YEAR` column, **assert** `KeyError` is raised.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, `requirements.txt` updated with all third-party packages imported
-in this task.
-
----
-
-## Task A-03: Lease ID extractor
-
-**Module:** `kgs_pipeline/acquire.py`
-**Function:** `extract_lease_id(url: str) -> str`
-
-**Description:** Parse a KGS lease URL and return the lease ID (`f_lc` query parameter
-value).
-
-### Input
-
-- `url`: a URL string of the form
-  `https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=<LEASE_ID>`
-
-### Processing logic (pseudo-code)
-
-```
-parse the URL using urllib.parse.urlparse and urllib.parse.parse_qs
-extract the value of query parameter "f_lc"
-return as a string
-```
-
-### Output
-
-`str` — the lease ID string (e.g. `"1001135839"`).
-
-### Error handling
-
-- If the `f_lc` parameter is absent from the URL, raise `ValueError` with a
-  descriptive message including the offending URL.
-
-### Test cases (in `tests/test_acquire.py`)
-
-- **Given** `https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839`,
-  **assert** the function returns `"1001135839"`.
-- **Given** a URL with no `f_lc` parameter, **assert** `ValueError` is raised.
-- **Given** a URL with an empty `f_lc` value, **assert** `ValueError` is raised.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, `requirements.txt` updated with all third-party packages imported
-in this task.
-
----
-
-## Task A-04: MonthSave page parser
-
-**Module:** `kgs_pipeline/acquire.py`
-**Function:** `parse_download_link(html_content: str) -> str`
-
-**Description:** Parse the HTML response from the KGS MonthSave page and return the
-full download URL for the lease production data file.
-
-### Input
-
-- `html_content`: raw HTML string from the MonthSave page for a given lease.
-
-### Processing logic (pseudo-code)
-
-```
-parse html_content with BeautifulSoup
-find all anchor tags whose href attribute contains "anon_blobber.download"
-if none found → raise DownloadError
-return the href attribute of the first matching anchor tag as a string
-```
-
-### Output
-
-`str` — the full download URL (e.g.
-`"https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download?p_file_name=lp564.txt"`).
-
-### Custom exception
-
-Define `DownloadError(Exception)` in `kgs_pipeline/acquire.py`. This exception is
-raised whenever a download step fails and cannot be recovered from.
-
-### Error handling
-
-- If no anchor tag with `"anon_blobber.download"` in its href is found, raise
-  `DownloadError` with a descriptive message.
-- If `html_content` is empty or not parseable as HTML, raise `DownloadError`.
-
-### Test cases (in `tests/test_acquire.py`)
-
-- **Given** HTML containing one anchor with
-  `href="...anon_blobber.download?p_file_name=lp564.txt"`, **assert** the full href
-  is returned verbatim.
-- **Given** HTML with no `anon_blobber.download` link, **assert** `DownloadError`
-  is raised.
-- **Given** an empty string as `html_content`, **assert** `DownloadError` is raised.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, `requirements.txt` updated with all third-party packages imported
-in this task.
-
----
-
-## Task A-05: Single-file downloader
-
-**Module:** `kgs_pipeline/acquire.py`
-**Function:** `download_lease_file(lease_url: str, raw_dir: str, month_save_base: str, sleep_seconds: float) -> Path | None`
-
-**Description:** Execute the full three-step download workflow for a single lease URL:
-fetch the MonthSave page, parse the download link, download and save the file.
-Returns the `Path` to the saved file, or `None` if the download was skipped
-(file already exists) or failed non-fatally.
-
-### Input
-
-- `lease_url`: the lease's main URL from the index file.
-- `raw_dir`: directory where the downloaded file should be saved (`data/raw/`).
-- `month_save_base`: the MonthSave base URL from config.
-- `sleep_seconds`: seconds to sleep after the download to rate-limit requests.
-
-### Processing logic (pseudo-code)
-
-```
-lease_id = extract_lease_id(lease_url)
-month_save_url = construct MonthSave URL using month_save_base and lease_id
-response = HTTP GET to month_save_url (with timeout)
-parse download link from response HTML using parse_download_link
-extract p_file_name from the download URL query string
-output_path = raw_dir / p_file_name
-
-if output_path already exists and size > 0:
-    log INFO "skipping <p_file_name>, already downloaded"
-    return output_path
-
-HTTP GET to the download URL (with timeout, stream=True)
-write response content to output_path
-sleep sleep_seconds
-verify output_path size > 0 bytes; if not → delete file and log warning → return None
-return output_path
-```
-
-### Output
-
-`Path | None` — path to the downloaded file, or `None` on failure/empty file.
-
-### Error handling
-
-- Catch `requests.RequestException` for both HTTP GET calls; log a warning with the
-  lease URL and error message; return `None`.
-- Catch `DownloadError` (from `parse_download_link`); log a warning; return `None`.
-- Never raise an unhandled exception — a single failed download must not abort the
-  parallel batch.
-- A zero-byte file must be deleted and logged as a warning (H2 stage manifest).
-
-### Test cases (in `tests/test_acquire.py`)
-
-- **Given** mocked HTTP responses returning valid MonthSave HTML and file content,
-  **assert** a non-empty file is created at `raw_dir/<p_file_name>` and the Path is
-  returned (use `tmp_path` pytest fixture for `raw_dir`).
-- **Given** the target file already exists and is non-empty, **assert** no HTTP
-  requests are made and the existing file path is returned unchanged (idempotency,
-  TR-20a and TR-20b).
-- **Given** a network error on the MonthSave GET, **assert** `None` is returned and
-  no file is created.
-- **Given** a `DownloadError` from `parse_download_link`, **assert** `None` is
-  returned and no file is created.
-- **Given** a successful download that produces a 0-byte file, **assert** the file
-  is deleted and `None` is returned.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, `requirements.txt` updated with all third-party packages imported
-in this task.
-
----
-
-## Task A-06: Parallel acquire runner
-
-**Module:** `kgs_pipeline/acquire.py`
-**Function:** `run_acquire(config: dict) -> list[Path]`
-
-**Description:** Orchestrate the full acquire stage: load the lease index, build the
-download task graph using Dask's threaded scheduler (I/O-bound per ADR-001), and
-execute all downloads in parallel with a maximum of `max_workers` concurrent workers.
-Returns a list of successfully downloaded file paths.
-
-### Input
-
-- `config`: the `acquire` section of `config.yaml` as a Python dict, with keys:
-  `lease_index`, `raw_dir`, `month_save_url`, `min_year`, `max_workers`,
-  `sleep_seconds`.
-
-### Processing logic (pseudo-code)
-
-```
-lease_urls = load_lease_index(config["lease_index"], config["min_year"])
-log INFO "Found <N> unique lease URLs to process"
-
-ensure raw_dir exists (create if absent)
-
-build a Dask delayed task for each lease_url:
-    delayed(download_lease_file)(url, raw_dir, month_save_url, sleep_seconds)
-
-compute all delayed tasks using Dask threaded scheduler with num_workers=max_workers
-collect results, filter out None values
-log INFO "Downloaded <M> of <N> lease files successfully"
-return list of successful Paths
-```
-
-### Dask scheduler constraint (ADR-001)
-
-Use `dask.compute(*tasks, scheduler="threads", num_workers=max_workers)` — never use
-the distributed scheduler in the acquire stage.
-
-### Output
-
-`list[Path]` — paths of all successfully downloaded files.
-
-### Error handling
-
-- If `load_lease_index` raises, let the exception propagate — it is a fatal error
-  that should stop the acquire stage.
-- Individual download failures are non-fatal (handled in `download_lease_file`) and
-  result in `None` entries that are filtered from the return list.
-- Log a summary of successes and failures at INFO level after the compute call.
-
-### Test cases (in `tests/test_acquire.py`)
-
-- **Given** a mocked `load_lease_index` returning 3 URLs and a mocked
-  `download_lease_file` returning a valid `Path` for each, **assert** `run_acquire`
-  returns a list of 3 Paths.
-- **Given** one of the 3 mocked downloads returns `None` (failure), **assert** the
-  return list contains only 2 Paths.
-- **Given** `raw_dir` does not exist, **assert** it is created before any download
-  is attempted.
-- **Assert** that the Dask threaded scheduler is used (not distributed) — this can be
-  tested by mocking `dask.compute` and inspecting the `scheduler` keyword argument.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, `requirements.txt` updated with all third-party packages imported
-in this task.
-
----
-
-## Task A-07: Acquire stage integration tests
-
-**Module:** `tests/test_acquire.py`
-
-**Description:** Integration-level tests validating the complete acquire workflow
-against mocked HTTP endpoints. All external HTTP calls must be mocked — no real
-network calls in tests.
-
-### Test cases
-
-- **TR-20 (Acquire idempotency):**
-  - Run `run_acquire` with mocked downloads producing 3 files in `tmp_path/raw/`.
-  - Run `run_acquire` a second time on the same `tmp_path/raw/`.
-  - Assert the file count is the same (3, not 6).
-  - Assert file contents are identical between runs.
-  - Assert no exception is raised on the second run.
-
-- **TR-21a (File size check):**
-  - After a mocked acquire run, assert every file in `raw_dir` has size > 0 bytes.
-
-- **TR-21b (UTF-8 readability):**
-  - After a mocked acquire run, assert every file in `raw_dir` is readable as UTF-8
-    text without a `UnicodeDecodeError`.
-
-- **TR-21c (Minimum row count):**
-  - After a mocked acquire run where mock file content includes a header and at least
-    one data row, assert each file contains more than 1 line.
-
-**Definition of done:** All integration test cases pass, ruff and mypy report no
-errors, `requirements.txt` updated with all third-party packages imported in this task.

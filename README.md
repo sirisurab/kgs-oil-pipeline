@@ -1,61 +1,89 @@
-# KGS Oil & Gas Production Data Pipeline
+# KGS Pipeline
 
-End-to-end pipeline for acquiring, ingesting, transforming, and feature-engineering
-Kansas Geological Survey (KGS) oil and gas lease production data (2024 onward).
+End-to-end pipeline for downloading, ingesting, cleaning, and feature-engineering
+Kansas Geological Survey (KGS) oil and gas production data.
 
-## Components
+## Stages
 
-| Module | Description |
-|--------|-------------|
-| `kgs_pipeline/config.py` | Configuration dataclass with env-var overrides |
-| `kgs_pipeline/logging_utils.py` | JSON-structured logging factory |
-| `kgs_pipeline/acquire.py` | Download KGS lease data files in parallel via Dask |
-| `kgs_pipeline/ingest.py` | Load raw files into Dask DataFrames; write interim Parquet |
-| `kgs_pipeline/transform.py` | Clean, standardise, pivot, and deduplicate data |
-| `kgs_pipeline/features.py` | Feature engineering (GOR, cumulative, decline rate, rolling, lag) |
-| `kgs_pipeline/pipeline.py` | Top-level orchestrator CLI |
+| Stage | Description |
+|---|---|
+| **acquire** | Download raw KGS lease production `.txt` files from the KGS portal |
+| **ingest** | Load raw files, enforce canonical schema, write interim Parquet |
+| **transform** | Derive `production_date`, validate bounds, deduplicate, cast categoricals |
+| **features** | Compute ML features (cumulative production, GOR, decline rate, rolling averages, etc.) |
 
 ## Setup
 
 ```bash
-make env
-make install
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e .
+pip install -r requirements.txt
 ```
 
-## Run Tests
+## Configuration
+
+All settings live in `config.yaml`. Key sections:
+
+- `acquire` — lease index path, output directory, worker count
+- `ingest` / `transform` / `features` — input/output directories
+- `dask` — scheduler settings (local cluster by default)
+- `logging` — log file path and level
+
+## Usage
+
+Run all stages:
 
 ```bash
-make test
+kgs-pipeline
 ```
 
-## Run the Full Pipeline
+Run specific stages:
 
 ```bash
-kgs-pipeline \
-  --index-path data/external/oil_leases_2020_present.txt \
-  --raw-dir data/raw \
-  --interim-dir data/interim \
-  --processed-dir data/processed \
-  --features-dir data/features \
-  --min-year 2024 \
-  --workers 5
+kgs-pipeline --stages acquire ingest
+kgs-pipeline --stages transform features
 ```
 
-## Run Individual Stages
+Or via Makefile targets:
 
 ```bash
-kgs-acquire  --min-year 2024 --workers 5
-kgs-ingest   --min-year 2024
-kgs-transform
-kgs-features
+make pipeline   # all stages
+make acquire    # acquire only
+make ingest     # ingest only
+make transform  # transform only
+make features   # features only
 ```
 
-## Data Directories
+## Running Tests
 
-| Path | Description |
-|------|-------------|
-| `data/external/` | KGS lease index file |
-| `data/raw/` | Downloaded raw lease `.txt` files |
-| `data/interim/` | Consolidated interim Parquet files |
-| `data/processed/` | Cleaned wide-format Parquet files |
-| `data/features/` | ML-ready feature Parquet files + `manifest.json` |
+```bash
+pytest tests/
+```
+
+Run only unit tests (no network or data files required):
+
+```bash
+pytest tests/ -m unit
+```
+
+## Data directories
+
+| Directory | Contents |
+|---|---|
+| `data/external/` | Lease index file (`oil_leases_2020_present.txt`) |
+| `data/raw/` | Downloaded raw `.txt` files from KGS |
+| `data/interim/` | Parquet after ingest |
+| `data/interim/transformed/` | Parquet after transform |
+| `data/processed/` | ML-ready features Parquet + feature manifest |
+
+## Output files
+
+- `data/processed/feature_manifest.json` — feature column names and encoding maps
+- `data/processed/pipeline_report.json` — per-stage timing and run summary
+- `logs/pipeline.log` — full log output
+
+## Schema reference
+
+The canonical schema is defined in `references/kgs_monthly_data_dictionary.csv`.

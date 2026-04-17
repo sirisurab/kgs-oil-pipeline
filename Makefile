@@ -1,23 +1,28 @@
-.PHONY: env install acquire ingest transform features pipeline
+.PHONY: venv install acquire ingest transform features pipeline
 
-env:
-	python3 -m venv .venv
+PYTHON := python3
+VENV := .venv
+PIP := $(VENV)/bin/pip
 
-install:
-	pip install --upgrade pip
-	pip install -e ".[dev]"
+venv:
+	$(PYTHON) -m venv $(VENV)
+
+install: venv
+	$(PIP) install --upgrade pip
+	$(PIP) install -e ".[dev]" || $(PIP) install -e .
+	$(PIP) install -r requirements.txt
 
 acquire:
-	kgs-pipeline --stages acquire
+	$(VENV)/bin/kgs-pipeline --stages acquire
 
 ingest:
-	kgs-pipeline --stages ingest
+	$(VENV)/bin/kgs-pipeline --stages ingest
 
 transform:
-	kgs-pipeline --stages transform
+	$(VENV)/bin/kgs-pipeline --stages transform
 
 features:
-	kgs-pipeline --stages features
+	$(VENV)/bin/kgs-pipeline --stages features
 
 pipeline:
-	kgs-pipeline --stages acquire ingest transform features
+	$(VENV)/bin/kgs-pipeline
