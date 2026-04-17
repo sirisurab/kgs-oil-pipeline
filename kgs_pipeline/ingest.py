@@ -189,17 +189,6 @@ def read_raw_file(file_path: str, data_dict: dict[str, dict]) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def _build_meta(data_dict: dict[str, dict]) -> pd.DataFrame:
-    """Build the canonical empty meta DataFrame for Dask from_delayed."""
-    schema: dict[str, object] = {}
-    for col_name, spec in data_dict.items():
-        schema[col_name] = pd.Series(
-            dtype=resolve_pandas_dtype(spec["dtype"], spec["nullable"], spec["categories"])  # type: ignore[call-overload]
-        )
-    schema["source_file"] = pd.Series(dtype=pd.StringDtype())
-    return pd.DataFrame(schema)
-
-
 def _filter_year_partition(partition: pd.DataFrame) -> pd.DataFrame:
     """Partition-level year filter (used in map_partitions for reliability)."""
     return _filter_year(partition, min_year=2024)
@@ -217,12 +206,13 @@ def run_ingest(config: dict) -> dd.DataFrame:
 
     dict_path = config["data_dictionary"]
     data_dict = load_data_dictionary(dict_path)
-    meta = _build_meta(data_dict)
 
     raw_files = sorted(glob_module.glob(os.path.join(raw_dir, "*.txt")))
     if not raw_files:
-        logger.warning("No .txt files found in %s — returning empty DataFrame", raw_dir)
-        return dd.from_pandas(meta, npartitions=1)
+        raise FileNotFoundError(f"No .txt files found in {raw_dir}")
+
+    # Derive meta from the actual reader function — single source of truth
+    meta = read_raw_file(raw_files[0], data_dict).iloc[0:0]
 
     delayed_frames = []
     for fpath in raw_files:

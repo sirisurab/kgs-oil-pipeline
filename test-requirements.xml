@@ -213,4 +213,17 @@
 			renamed in any sampled partition.
 		</description>
 	</test-requirement>
+	<test-requirement id="TR-23" stages="transform, features" type="technical">
+		<n>map_partitions meta schema consistency</n>
+		<description>For every map_partitions call in the transform and features stages, verify
+		that the meta= argument matches the actual function output in column names, column order,
+		and dtypes. The recommended approach is to call the function on an empty DataFrame
+		matching the input schema (ddf._meta.copy()) and assert that the resulting column list
+		and dtypes match what map_partitions receives as meta. Any divergence — even a reordered
+		column list with identical names — will cause a Dask metadata mismatch error at compute
+		time on real data. Test each stage function (e.g. add_rolling_features,
+		add_cumulative_production, add_decline_rate) independently with a synthetic empty
+		DataFrame to catch regressions when functions are modified.
+		</description>
+	</test-requirement>
 </test-requirements>

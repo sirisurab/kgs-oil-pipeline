@@ -19,5 +19,5 @@ transform:
 features:
 	kgs-pipeline --stages features
 
-pipeline: acquire ingest transform features
+pipeline:
 	kgs-pipeline --stages acquire ingest transform features

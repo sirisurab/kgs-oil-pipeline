@@ -1,86 +1,5 @@
 
-## Eval Run at 2026-04-01 10:46:09
-
-**Status:** ❌ FAILED
-
-### Failures:
-- **Linting:**
-```
-Linting failed. Fix these errors:
-F841 Local variable `enc_ddf` is assigned to but never used
-   --> tests/test_features.py:599:5
-    |
-597 |     )
-598 |     ddf = dd.from_pandas(df, npartitions=1)
-599 |     enc_ddf = encode_categoricals(ddf)
-    |     ^^^^^^^
-600 |
-601 |     # Introduce unseen value in a new partition
-    |
-help: Remove assignment to unused variable `enc_ddf`
-
-Found 1 error.
-No fixes available (1 hidden fix can be enabled with the `--unsafe-fixes` option).
-
-```
-
-- **Type check:**
-```
-Type check failed. Fix these errors:
-/kgs_pipeline/transform.py:10: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/ingest.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:12: error: Cannot find implementation or library stub for module named "sklearn.preprocessing"  [import-not-found]
-/kgs_pipeline/acquire.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/acquire.py:11: note: Hint: "python3 -m pip install pandas-stubs"
-/kgs_pipeline/acquire.py:11: note: (or run "mypy --install-types" to install all missing stub packages)
-/kgs_pipeline/acquire.py:11: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
-/kgs_pipeline/acquire.py:12: error: Library stubs not installed for "requests"  [import-untyped]
-/kgs_pipeline/acquire.py:12: note: Hint: "python3 -m pip install types-requests"
-/tests/test_transform.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_ingest.py:6: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_features.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_acquire.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-Found 10 errors in 8 files (checked 13 source files)
-
-```
-
-- **Unit Tests:**
-```
-Unit Tests failed. Fix these errors:
-Running teardown with pytest sessionfinish...
-
-==================================== ERRORS ====================================
-___________________ ERROR collecting tests/test_features.py ____________________
-ImportError while importing test module '/tests/test_features.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-../../../miniconda3/envs/dapi/lib/python3.12/importlib/__init__.py:90: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tests/test_features.py:10: in <module>
-    from kgs_pipeline.features import (
-kgs_pipeline/features.py:12: in <module>
-    from sklearn.preprocessing import LabelEncoder
-E   ModuleNotFoundError: No module named 'sklearn'
-___________________ ERROR collecting tests/test_transform.py ___________________
-tests/test_transform.py:10: in <module>
-    from kgs_pipeline.transform import (
-kgs_pipeline/transform.py:226: in <module>
-    def _parse_month_year(val: object) -> pd.Timestamp | pd.NaT:  # type: ignore[valid-type]
-                                          ^^^^^^^^^^^^^^^^^^^^^
-E   TypeError: unsupported operand type(s) for |: 'type' and 'NaTType'
-=========================== short test summary info ============================
-ERROR tests/test_features.py
-ERROR tests/test_transform.py - TypeError: unsupported operand type(s) for |:...
-!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
-2 errors in 5.11s
-
-```
-
----
-
-## Eval Run at 2026-04-01 10:54:02
+## Eval Run at 2026-04-16 18:26:55
 
 **Status:** ❌ FAILED
 
@@ -88,723 +7,245 @@ ERROR tests/test_transform.py - TypeError: unsupported operand type(s) for |:...
 - **Type check:**
 ```
 Type check failed. Fix these errors:
-/kgs_pipeline/transform.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/ingest.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:14: error: Cannot find implementation or library stub for module named "sklearn.preprocessing"  [import-not-found]
-/kgs_pipeline/acquire.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/acquire.py:11: note: Hint: "python3 -m pip install pandas-stubs"
-/kgs_pipeline/acquire.py:11: note: (or run "mypy --install-types" to install all missing stub packages)
-/kgs_pipeline/acquire.py:11: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
-/kgs_pipeline/acquire.py:12: error: Library stubs not installed for "requests"  [import-untyped]
-/kgs_pipeline/acquire.py:12: note: Hint: "python3 -m pip install types-requests"
-/tests/test_transform.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_ingest.py:6: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_features.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_acquire.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-Found 10 errors in 8 files (checked 13 source files)
+/kgs_pipeline/transform.py:88: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "None"  [call-overload]
+/kgs_pipeline/transform.py:88: note: Possible overload variants:
+/kgs_pipeline/transform.py:88: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
+/kgs_pipeline/transform.py:88: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
+/kgs_pipeline/ingest.py:151: error: No overload variant of "astype" of "Series" matches argument type "object"  [call-overload]
+/kgs_pipeline/ingest.py:151: note: Possible overload variants:
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[builtins.bool] | Literal['bool'] | BooleanDtype | Literal['boolean'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['bool[pyarrow]', 'boolean[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[bool]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['int', 'Int8', 'Int16', 'Int32', 'Int64', 'b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'i8', 'int64', 'int_', 'q', 'longlong', 'p', 'intp', 'int8[pyarrow]', 'int16[pyarrow]', 'int32[pyarrow]', 'int64[pyarrow]', 'UInt8', 'UInt16', 'UInt32', 'UInt64', 'B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'u8', 'uint', 'uint64', 'Q', 'ulonglong', 'P', 'uintp', 'uint8[pyarrow]', 'uint16[pyarrow]', 'uint32[pyarrow]', 'uint64[pyarrow]'] | type[int] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | <14 more items>, copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[int]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[str] | Literal['str'] | StringDtype[None] | Literal['string'] | StringDtype[Literal['python']] | Literal['string[python]'] | Literal['U', 'str_', 'unicode'] | type[str_] | StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[str]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[bytes] | Literal['bytes'] | Literal['S', 'bytes_'] | type[bytes_] | Literal['binary[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[bytes]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[float] | Literal['float'] | Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['float[pyarrow]', 'double[pyarrow]', 'float16[pyarrow]', 'float32[pyarrow]', 'float64[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[float]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[complex] | Literal['complex'] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[complex]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]', 'duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]', 'timedelta64[Y]', 'timedelta64[M]', 'timedelta64[W]', 'timedelta64[D]', 'timedelta64[h]', 'timedelta64[m]', 'timedelta64[μs]', 'timedelta64[ps]', 'timedelta64[fs]', 'timedelta64[as]', 'm8[Y]', 'm8[M]', 'm8[W]', 'm8[D]', 'm8[h]', 'm8[m]', 'm8[μs]', 'm8[ps]', 'm8[fs]', 'm8[as]', '<m8[Y]', '<m8[M]', '<m8[W]', '<m8[D]', '<m8[h]', '<m8[m]', '<m8[μs]', '<m8[ps]', '<m8[fs]', '<m8[as]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[Timedelta]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]', 'datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]', 'date32[pyarrow]', 'date64[pyarrow]', 'timestamp[s][pyarrow]', 'timestamp[ms][pyarrow]', 'timestamp[us][pyarrow]', 'timestamp[ns][pyarrow]', 'datetime64[Y]', 'datetime64[M]', 'datetime64[W]', 'datetime64[D]', 'datetime64[h]', 'datetime64[m]', 'datetime64[μs]', 'datetime64[ps]', 'datetime64[fs]', 'datetime64[as]', 'M8[Y]', 'M8[M]', 'M8[W]', 'M8[D]', 'M8[h]', 'M8[m]', 'M8[μs]', 'M8[ps]', 'M8[fs]', 'M8[as]', '<M8[Y]', '<M8[M]', '<M8[W]', '<M8[D]', '<M8[h]', '<M8[m]', '<M8[μs]', '<M8[ps]', '<M8[fs]', '<M8[as]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[Timestamp]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: CategoricalDtype | Literal['category'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[CategoricalDtype]
+/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['object', 'object_', 'O', 'V', 'void'] | type[object] | type[object_] | type[void] | ExtensionDtype | dtype[generic[Any]], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[Any]
+/kgs_pipeline/ingest.py:166: error: No overload variant of "array" matches argument types "list[NAType]", "object"  [call-overload]
+/kgs_pipeline/ingest.py:166: note: Possible overload variants:
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[Just[float]], dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void], copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[NAType | None], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[Timedelta] | Series[Timedelta] | TimedeltaArray | TimedeltaIndex | ndarray[tuple[int], dtype[timedelta64[timedelta | int | None]]], dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] | None = ..., copy: bool = ...) -> TimedeltaArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | Just[float] | NAType | None], dtype: BooleanDtype | Literal['boolean'], copy: bool = ...) -> BooleanArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | NAType | None], dtype: None = ..., copy: bool = ...) -> BooleanArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | BooleanArray, dtype: BooleanDtype | Literal['boolean'] | None = ..., copy: bool = ...) -> BooleanArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[float | integer[Any] | NAType | None], dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype, copy: bool = ...) -> IntegerArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[int | integer[Any] | NAType | None], dtype: None = ..., copy: bool = ...) -> IntegerArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: ndarray[tuple[Any, ...], dtype[integer[Any]]] | IntegerArray, dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype | None = ..., copy: bool = ...) -> IntegerArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[float | floating[Any] | NAType | None] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None, ...] | MutableSequence[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[Any]] | DatetimeArray, dtype: DatetimeTZDtype | Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | dtype[datetime64[date | int | None]] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'], copy: bool = ...) -> DatetimeArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[datetime | NaTType | None] | Sequence[datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, dtype: None = ..., copy: bool = ...) -> DatetimeArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Never], copy: bool = ...) -> BaseStringArray[None]
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ...) -> ArrowStringArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['python']] | Literal['string[python]'], copy: bool = ...) -> StringArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[None] | Literal['string'], copy: bool = ...) -> BaseStringArray[None]
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[str | str_ | NAType | None, ...] | MutableSequence[str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[str_]] | BaseStringArray[None], dtype: None = ..., copy: bool = ...) -> BaseStringArray[None]
+/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: None = ..., copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:166: note:     def array(data: ndarray[tuple[Any, ...], dtype[Any]] | NumpyExtensionArray | RangeIndex, dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:173: error: No overload variant of "array" matches argument types "list[NAType]", "object"  [call-overload]
+/kgs_pipeline/ingest.py:173: note: Possible overload variants:
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[Just[float]], dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void], copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[NAType | None], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[Timedelta] | Series[Timedelta] | TimedeltaArray | TimedeltaIndex | ndarray[tuple[int], dtype[timedelta64[timedelta | int | None]]], dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] | None = ..., copy: bool = ...) -> TimedeltaArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | Just[float] | NAType | None], dtype: BooleanDtype | Literal['boolean'], copy: bool = ...) -> BooleanArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | NAType | None], dtype: None = ..., copy: bool = ...) -> BooleanArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | BooleanArray, dtype: BooleanDtype | Literal['boolean'] | None = ..., copy: bool = ...) -> BooleanArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[float | integer[Any] | NAType | None], dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype, copy: bool = ...) -> IntegerArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[int | integer[Any] | NAType | None], dtype: None = ..., copy: bool = ...) -> IntegerArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: ndarray[tuple[Any, ...], dtype[integer[Any]]] | IntegerArray, dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype | None = ..., copy: bool = ...) -> IntegerArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[float | floating[Any] | NAType | None] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None, ...] | MutableSequence[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[Any]] | DatetimeArray, dtype: DatetimeTZDtype | Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | dtype[datetime64[date | int | None]] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'], copy: bool = ...) -> DatetimeArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[datetime | NaTType | None] | Sequence[datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, dtype: None = ..., copy: bool = ...) -> DatetimeArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Never], copy: bool = ...) -> BaseStringArray[None]
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ...) -> ArrowStringArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['python']] | Literal['string[python]'], copy: bool = ...) -> StringArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[None] | Literal['string'], copy: bool = ...) -> BaseStringArray[None]
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[str | str_ | NAType | None, ...] | MutableSequence[str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[str_]] | BaseStringArray[None], dtype: None = ..., copy: bool = ...) -> BaseStringArray[None]
+/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: None = ..., copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:173: note:     def array(data: ndarray[tuple[Any, ...], dtype[Any]] | NumpyExtensionArray | RangeIndex, dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
+/kgs_pipeline/ingest.py:196: error: No overload variant of "Series" matches argument type "object"  [call-overload]
+/kgs_pipeline/ingest.py:196: note: Possible overload variants:
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[Never], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Any]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[list[str]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[list[str]]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[str], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: ExtensionDtype | str | dtype[generic[Any]] | type[complex] | type[bool] | type[object] | type[str] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[str]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: DatetimeIndex | Sequence[datetime64[date | int | None] | datetime | date] | dict[HashableT1, datetime64[date | int | None] | datetime | date] | datetime64[date | int | None] | datetime | date, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'] | Literal['date32[pyarrow]', 'date64[pyarrow]', 'timestamp[s][pyarrow]', 'timestamp[ms][pyarrow]', 'timestamp[us][pyarrow]', 'timestamp[ns][pyarrow]'] = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Timestamp]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[datetime | timedelta64[timedelta | int | None]] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., *, dtype: Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'] | Literal['date32[pyarrow]', 'date64[pyarrow]', 'timestamp[s][pyarrow]', 'timestamp[ms][pyarrow]', 'timestamp[us][pyarrow]', 'timestamp[ns][pyarrow]'], name: Hashable = ..., copy: bool | None = ...) -> Series[Timestamp]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | dict[str, ndarray[tuple[Any, ...], dtype[Any]]] | SequenceNotStr[Any], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., *, dtype: CategoricalDtype | Literal['category'], name: Hashable = ..., copy: bool | None = ...) -> Series[CategoricalDtype]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: PeriodIndex | Sequence[Period], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: PeriodDtype = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Period]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[BaseOffset], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: PeriodDtype = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[BaseOffset]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: TimedeltaIndex | Sequence[timedelta64[timedelta | int | None] | timedelta] | dict[HashableT1, timedelta64[timedelta | int | None] | timedelta] | timedelta64[timedelta | int | None] | timedelta, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Timedelta]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, OrderableT: int | float | Timestamp | Timedelta] Series(data: IntervalIndex[Interval[OrderableT]] | Interval[OrderableT] | Sequence[Interval[OrderableT]] | dict[Hashable, Interval[OrderableT]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['Interval'] = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Interval[OrderableT]]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[builtins.bool | numpy.bool[builtins.bool]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['bool', 'boolean', '?', 'b1', 'bool_', 'bool[pyarrow]', 'boolean[pyarrow]'] | type[builtins.bool] | BooleanDtype | type[numpy.bool[builtins.bool]] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[bool]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[int | integer[Any]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['int', 'Int8', 'Int16', 'Int32', 'Int64', 'b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'i8', 'int64', 'int_', 'q', 'longlong', 'p', 'intp', 'int8[pyarrow]', 'int16[pyarrow]', 'int32[pyarrow]', 'int64[pyarrow]', 'UInt8', 'UInt16', 'UInt32', 'UInt64', 'B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'u8', 'uint', 'uint64', 'Q', 'ulonglong', 'P', 'uintp', 'uint8[pyarrow]', 'uint16[pyarrow]', 'uint32[pyarrow]', 'uint64[pyarrow]'] | type[int] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | <14 more items> | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[int]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[float | floating[Any]] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[float]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any], index: None = ..., *, dtype: type[float] | Literal['float'] | Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['float[pyarrow]', 'double[pyarrow]', 'float16[pyarrow]', 'float32[pyarrow]', 'float64[pyarrow]'], name: Hashable = ..., copy: bool | None = ...) -> Series[float]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any], dtype: type[float] | Literal['float'] | Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['float[pyarrow]', 'double[pyarrow]', 'float16[pyarrow]', 'float32[pyarrow]', 'float64[pyarrow]'], name: Hashable = ..., copy: bool | None = ...) -> Series[float]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: str | bytes | date | datetime | timedelta | <16 more items> | None, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., *, dtype: type[S1], name: Hashable = ..., copy: bool | None = ...) -> Series[S1]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: S1 | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | dict[str, ndarray[tuple[Any, ...], dtype[Any]]] | Sequence[S1] | IndexOpsMixin[S1, Any] | dict[HashableT1, S1] | KeysView[S1] | ValuesView[S1], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: ExtensionDtype | str | dtype[generic[Any]] | type[complex] | type[bool] | type[object] | type[str] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[S1]
+/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: str | bytes | date | datetime | timedelta | <19 more items> | None = ..., index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: ExtensionDtype | str | dtype[generic[Any]] | type[complex] | type[bool] | type[object] | type[str] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Any]
+/kgs_pipeline/pipeline.py:146: error: "object" has no attribute "close"  [attr-defined]
+/kgs_pipeline/pipeline.py:146: note: Error code "attr-defined" not covered by "type: ignore" comment
+/tests/test_features.py:354: error: Argument "oil_vals" to "_make_pivoted_partition" has incompatible type "list[int]"; expected "list[float] | None"  [arg-type]
+/tests/test_features.py:354: note: "list" is invariant -- see https://mypy.readthedocs.io/en/stable/common_issues.html#variance
+/tests/test_features.py:354: note: Consider using "Sequence" instead, which is covariant
+/tests/test_features.py:361: error: Argument "oil_vals" to "_make_pivoted_partition" has incompatible type "list[int]"; expected "list[float] | None"  [arg-type]
+/tests/test_features.py:361: note: "list" is invariant -- see https://mypy.readthedocs.io/en/stable/common_issues.html#variance
+/tests/test_features.py:361: note: Consider using "Sequence" instead, which is covariant
+Found 8 errors in 4 files (checked 11 source files)
 
 ```
 
 - **Unit Tests:**
 ```
 Unit Tests failed. Fix these errors:
-...............................F..................................FFFF.. [ 45%]
-.....FFFFFFFFF.......FF.................................F............... [ 91%]
-............s.                                                           [100%]Running teardown with pytest sessionfinish...
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/sirisurab/projects/dapi_poc/kgs
+configfile: pytest.ini
+plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, asyncio-1.3.0, rerunfailures-16.1, deepeval-3.9.6, langsmith-0.7.30
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 125 items
+
+tests/test_acquire.py ............F...........                           [ 19%]
+tests/test_features.py ................................................. [ 58%]
+                                                                         [ 58%]
+tests/test_ingest.py ..........F...........F                             [ 76%]
+tests/test_transform.py .............................                    [100%]Running teardown with pytest sessionfinish...
+
 
 =================================== FAILURES ===================================
-_____________________ test_compute_cumulative_shutin_flat ______________________
-tests/test_features.py:224: in test_compute_cumulative_shutin_flat
-    df["oil_bbl"] = [100.0, 150.0, 0.0, 200.0]
-    ^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4672: in __setitem__
-    self._set_item(key, value)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4872: in _set_item
-    value, refs = self._sanitize_column(value)
-                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:5742: in _sanitize_column
-    com.require_length_match(value, self.index)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/common.py:601: in require_length_match
-    raise ValueError(
-E   ValueError: Length of values (4) does not match length of index (3)
-_________________ test_encode_categoricals_product_two_values __________________
-tests/test_features.py:557: in test_encode_categoricals_product_two_values
-    result = encode_categoricals(ddf).compute()
-             ^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:379: in encode_categoricals
-    raise ImportError("scikit-learn is required. Install with: pip install scikit-learn")
-E   ImportError: scikit-learn is required. Install with: pip install scikit-learn
-__________________ test_encode_categoricals_county_int_dtype ___________________
-tests/test_features.py:571: in test_encode_categoricals_county_int_dtype
-    result = encode_categoricals(ddf).compute()
-             ^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:379: in encode_categoricals
-    raise ImportError("scikit-learn is required. Install with: pip install scikit-learn")
-E   ImportError: scikit-learn is required. Install with: pip install scikit-learn
-________________ test_encode_categoricals_original_col_retained ________________
-tests/test_features.py:585: in test_encode_categoricals_original_col_retained
-    result = encode_categoricals(ddf).compute()
-             ^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:379: in encode_categoricals
-    raise ImportError("scikit-learn is required. Install with: pip install scikit-learn")
-E   ImportError: scikit-learn is required. Install with: pip install scikit-learn
-____________________ test_encode_categoricals_unseen_value _____________________
-tests/test_features.py:599: in test_encode_categoricals_unseen_value
-    encode_categoricals(ddf)
-kgs_pipeline/features.py:379: in encode_categoricals
-    raise ImportError("scikit-learn is required. Install with: pip install scikit-learn")
-E   ImportError: scikit-learn is required. Install with: pip install scikit-learn
-______________________ test_run_features_returns_dask_df _______________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
+____________ TestDownloadLeaseFile.test_idempotency_skips_existing _____________
+tests/test_acquire.py:163: in test_idempotency_skips_existing
+    result = download_lease_file(self.LEASE_URL, str(tmp_path), self.MONTH_SAVE_BASE, 0.0)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/acquire.py:127: in download_lease_file
+    download_url = parse_download_link(ms_response.text)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/acquire.py:87: in parse_download_link
+    soup = BeautifulSoup(html_content, "html.parser")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/__init__.py:470: in __init__
+    ) in self.builder.prepare_markup(
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/builder/_htmlparser.py:407: in prepare_markup
+    dammit = UnicodeDammit(
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/dammit.py:811: in __init__
+    for encoding in self.detector.encodings:
+                    ^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/dammit.py:623: in encodings
+    self.declared_encoding = self.find_declared_encoding(
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/dammit.py:722: in find_declared_encoding
+    declared_encoding_match = xml_re.search(markup, endpos=xml_endpos)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: expected string or bytes-like object, got 'MagicMock'
+_____________ TestReadRawFile.test_correct_dtypes_and_source_file ______________
+tests/test_ingest.py:156: in test_correct_dtypes_and_source_file
+    assert df["LEASE_KID"].dtype == pd.Int64Dtype()
+E   AssertionError: assert dtype('int64') == Int64Dtype()
+E    +  where dtype('int64') = 0    1001135839\nName: LEASE_KID, dtype: int64.dtype
+E    +  and   Int64Dtype() = <class 'pandas.Int64Dtype'>()
+E    +    where <class 'pandas.Int64Dtype'> = pd.Int64Dtype
+_____________________ TestRunIngest.test_dtype_validation ______________________
+tests/test_ingest.py:293: in test_dtype_validation
+    assert result["LEASE_KID"].dtype == pd.Int64Dtype()
+E   AssertionError: assert dtype('int64') == Int64Dtype()
+E    +  where dtype('int64') = 0    1001\n0    1002\nName: LEASE_KID, dtype: int64.dtype
+E    +  and   Int64Dtype() = <class 'pandas.Int64Dtype'>()
+E    +    where <class 'pandas.Int64Dtype'> = pd.Int64Dtype
+----------------------------- Captured stdout call -----------------------------
+2026-04-16 18:26:48,506 INFO kgs_pipeline.ingest — Ingest complete: 10 partitions written to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-11/test_dtype_validation0/interim
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:244 Ingest complete: 10 partitions written to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-11/test_dtype_validation0/interim
+=============================== warnings summary ===============================
+tests/test_transform.py::TestCleanCategoricals::test_invalid_product_replaced_with_na
+  /tests/test_transform.py:183: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
+    part = _make_partition(**{"PRODUCT": pd.Categorical(["X"], categories=["O", "G"])})
 
-The above exception was the direct cause of the following exception:
-tests/test_features.py:714: in test_run_features_returns_dask_df
-    ddf = run_features(str(clean), str(out))
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-_____________________ test_run_features_all_schema_columns _____________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:721: in test_run_features_all_schema_columns
-    ddf = run_features(str(clean), str(out))
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-____________________ test_run_features_no_negative_oil_bbl _____________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:730: in test_run_features_no_negative_oil_bbl
-    ddf = run_features(str(clean), str(out))
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-_____________________ test_run_features_cum_oil_monotonic ______________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:738: in test_run_features_cum_oil_monotonic
-    ddf = run_features(str(clean), str(out))
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-______________________ test_run_features_parquet_readable ______________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:749: in test_run_features_parquet_readable
-    run_features(str(clean), str(out))
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-_____________ test_run_features_schema_stability_across_partitions _____________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:757: in test_run_features_schema_stability_across_partitions
-    run_features(str(clean), str(out))
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-_____________________ test_run_features_output_file_count ______________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:768: in test_run_features_output_file_count
-    run_features(str(clean), str(out))
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-_________________________ test_feature_column_presence _________________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:782: in test_feature_column_presence
-    ddf = run_features(str(clean), str(out))
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-_________________________ test_cumulative_monotonicity _________________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:792: in test_cumulative_monotonicity
-    ddf = run_features(str(clean), str(out))
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-___________________ test_schema_stability_across_partitions ____________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:864: in test_schema_stability_across_partitions
-    run_features(str(clean), str(out))
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-_____________________________ test_lazy_evaluation _____________________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
-
-The above exception was the direct cause of the following exception:
-tests/test_features.py:877: in test_lazy_evaluation
-    ddf = run_features(str(clean), str(out))
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:493: in run_features
-    .apply(compute_per_lease_features)
-     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1650: in apply
-    return self._python_apply_general(f, self._obj_with_exclusions)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/groupby.py:1687: in _python_apply_general
-    values, mutated = self._grouper.apply_groupwise(f, data)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/groupby/ops.py:1035: in apply_groupwise
-    res = f(group)
-          ^^^^^^^^
-kgs_pipeline/features.py:425: in compute_per_lease_features
-    lease_id = df["LEASE_KID"].iloc[0] if len(df) > 0 else "unknown"
-               ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
-______________________ test_remove_duplicates_removes_one ______________________
-tests/test_transform.py:241: in test_remove_duplicates_removes_one
-    assert len(result) == 4
-E   assert 3 == 4
-E    +  where 3 = len(  LEASE_KID    LEASE DOR_CODE API_NUMBER  ... PRODUCT WELLS PRODUCTION source_file\n0        L0  Lease 0      123      ...0    test.txt\n2        L2  Lease 2      123      API-2  ...       O   2.0      300.0    test.txt\n\n[3 rows x 21 columns])
-Test tests/test_transform.py::test_sort_stability was skipped. Reason: 
-('/tests/test_transform.py', 566, 
-'Skipped: Not enough partitions for sort stability test')
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
-FAILED tests/test_features.py::test_compute_cumulative_shutin_flat - ValueErr...
-FAILED tests/test_features.py::test_encode_categoricals_product_two_values - ...
-FAILED tests/test_features.py::test_encode_categoricals_county_int_dtype - Im...
-FAILED tests/test_features.py::test_encode_categoricals_original_col_retained
-FAILED tests/test_features.py::test_encode_categoricals_unseen_value - Import...
-FAILED tests/test_features.py::test_run_features_returns_dask_df - KeyError: ...
-FAILED tests/test_features.py::test_run_features_all_schema_columns - KeyErro...
-FAILED tests/test_features.py::test_run_features_no_negative_oil_bbl - KeyErr...
-FAILED tests/test_features.py::test_run_features_cum_oil_monotonic - KeyError...
-FAILED tests/test_features.py::test_run_features_parquet_readable - KeyError:...
-FAILED tests/test_features.py::test_run_features_schema_stability_across_partitions
-FAILED tests/test_features.py::test_run_features_output_file_count - KeyError...
-FAILED tests/test_features.py::test_feature_column_presence - KeyError: 'LEAS...
-FAILED tests/test_features.py::test_cumulative_monotonicity - KeyError: 'LEAS...
-FAILED tests/test_features.py::test_schema_stability_across_partitions - KeyE...
-FAILED tests/test_features.py::test_lazy_evaluation - KeyError: 'LEASE_KID'
-FAILED tests/test_transform.py::test_remove_duplicates_removes_one - assert 3...
-17 failed, 140 passed, 1 skipped in 18.50s
+FAILED tests/test_acquire.py::TestDownloadLeaseFile::test_idempotency_skips_existing
+FAILED tests/test_ingest.py::TestReadRawFile::test_correct_dtypes_and_source_file
+FAILED tests/test_ingest.py::TestRunIngest::test_dtype_validation - Assertion...
+================== 3 failed, 122 passed, 1 warning in 20.48s ===================
 
 ```
 
 ---
 
-## Eval Run at 2026-04-01 11:00:33
+## Eval Run at 2026-04-16 18:53:08
 
 **Status:** ❌ FAILED
 
 ### Failures:
-- **Type check:**
-```
-Type check failed. Fix these errors:
-/kgs_pipeline/transform.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/ingest.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:14: error: Cannot find implementation or library stub for module named "sklearn.preprocessing"  [import-not-found]
-/kgs_pipeline/acquire.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/acquire.py:11: note: Hint: "python3 -m pip install pandas-stubs"
-/kgs_pipeline/acquire.py:11: note: (or run "mypy --install-types" to install all missing stub packages)
-/kgs_pipeline/acquire.py:11: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
-/kgs_pipeline/acquire.py:12: error: Library stubs not installed for "requests"  [import-untyped]
-/kgs_pipeline/acquire.py:12: note: Hint: "python3 -m pip install types-requests"
-/tests/test_transform.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_ingest.py:6: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_features.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_acquire.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-Found 10 errors in 8 files (checked 13 source files)
-
-```
-
 - **Unit Tests:**
 ```
 Unit Tests failed. Fix these errors:
-ERROR: /pyproject.toml: Invalid initial character for a key part (at line 42, column 19)
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/sirisurab/projects/dapi_poc/kgs
+configfile: pytest.ini
+plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, asyncio-1.3.0, rerunfailures-16.1, deepeval-3.9.6, langsmith-0.7.30
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 125 items
 
+tests/test_acquire.py ............F...........                           [ 19%]
+tests/test_features.py ................................................. [ 58%]
+                                                                         [ 58%]
+tests/test_ingest.py ....F..................                             [ 76%]
+tests/test_transform.py .............................                    [100%]Running teardown with pytest sessionfinish...
 
-```
-
----
-
-## Eval Run at 2026-04-01 11:05:17
-
-**Status:** ❌ FAILED
-
-### Failures:
-- **Type check:**
-```
-Type check failed. Fix these errors:
-/kgs_pipeline/transform.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/ingest.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:14: error: Cannot find implementation or library stub for module named "sklearn.preprocessing"  [import-not-found]
-/kgs_pipeline/acquire.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/acquire.py:11: note: Hint: "python3 -m pip install pandas-stubs"
-/kgs_pipeline/acquire.py:11: note: (or run "mypy --install-types" to install all missing stub packages)
-/kgs_pipeline/acquire.py:11: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
-/kgs_pipeline/acquire.py:12: error: Library stubs not installed for "requests"  [import-untyped]
-/kgs_pipeline/acquire.py:12: note: Hint: "python3 -m pip install types-requests"
-/tests/test_transform.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_ingest.py:6: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_features.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_acquire.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-Found 10 errors in 8 files (checked 13 source files)
-
-```
-
-- **Unit Tests:**
-```
-Unit Tests failed. Fix these errors:
-........................................................................ [ 45%]
-......F.F...FF..........................................F............... [ 91%]
-............s.                                                           [100%]Running teardown with pytest sessionfinish...
 
 =================================== FAILURES ===================================
-_____________________ test_run_features_all_schema_columns _____________________
-tests/test_features.py:723: in test_run_features_all_schema_columns
-    assert col in cols, f"Missing schema column: {col}"
-E   AssertionError: Missing schema column: LEASE_KID
-E   assert 'LEASE_KID' in ['production_date', 'oil_bbl', 'COUNTY', 'PRODUCING_ZONE', 'OPERATOR', 'LEASE', ...]
------------------------------ Captured stderr call -----------------------------
-2026-04-01 11:05:03 | kgs_pipeline.features | INFO | Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_run_features_all_schema_c0/features
------------------------------- Captured log call -------------------------------
-INFO     kgs_pipeline.features:features.py:516 Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_run_features_all_schema_c0/features
-_____________________ test_run_features_cum_oil_monotonic ______________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
+____________ TestDownloadLeaseFile.test_idempotency_skips_existing _____________
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:910: in assert_not_called
+    raise AssertionError(msg)
+E   AssertionError: Expected 'get' to not have been called. Called 1 times.
+E   Calls: [call('https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=564', timeout=30)].
 
-The above exception was the direct cause of the following exception:
-tests/test_features.py:739: in test_run_features_cum_oil_monotonic
-    for lease_id in result["LEASE_KID"].unique():
-                    ^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
------------------------------ Captured stderr call -----------------------------
-2026-04-01 11:05:04 | kgs_pipeline.features | INFO | Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_run_features_cum_oil_mono0/features
------------------------------- Captured log call -------------------------------
-INFO     kgs_pipeline.features:features.py:516 Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_run_features_cum_oil_mono0/features
-_________________________ test_feature_column_presence _________________________
-tests/test_features.py:784: in test_feature_column_presence
-    assert col in cols, f"[TR-19] Missing column: {col}"
-E   AssertionError: [TR-19] Missing column: LEASE_KID
-E   assert 'LEASE_KID' in ['production_date', 'oil_bbl', 'COUNTY', 'PRODUCING_ZONE', 'OPERATOR', 'LEASE', ...]
------------------------------ Captured stderr call -----------------------------
-2026-04-01 11:05:06 | kgs_pipeline.features | INFO | Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_feature_column_presence0/features_presence
------------------------------- Captured log call -------------------------------
-INFO     kgs_pipeline.features:features.py:516 Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_feature_column_presence0/features_presence
-_________________________ test_cumulative_monotonicity _________________________
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3641: in get_loc
-    return self._engine.get_loc(casted_key)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-pandas/_libs/hashtable_class_helper.pxi:7676: in pandas._libs.hashtable.PyObjectHashTable.get_item
-    ???
-E   KeyError: 'LEASE_KID'
+During handling of the above exception, another exception occurred:
+tests/test_acquire.py:167: in test_idempotency_skips_existing
+    mock_get.assert_not_called()
+E   AssertionError: Expected 'get' to not have been called. Called 1 times.
+E   Calls: [call('https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=564', timeout=30)].
+E   
+E   pytest introspection follows:
+E   
+E   Args:
+E   assert ('https://cha...ve?f_lc=564',) == ()
+E     
+E     Left contains one more item: 'https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=564'
+E     Use -v to get more diff
+E   Kwargs:
+E   assert {'timeout': 30} == {}
+E     
+E     Left contains 1 more item:
+E     {'timeout': 30}
+E     Use -v to get more diff
+_________________ TestResolvePandasDtype.test_int_not_nullable _________________
+tests/test_ingest.py:118: in test_int_not_nullable
+    assert result == np.dtype("int64")
+E   AssertionError: assert Int64Dtype() == dtype('int64')
+E    +  where dtype('int64') = <class 'numpy.dtype'>('int64')
+E    +    where <class 'numpy.dtype'> = np.dtype
+=============================== warnings summary ===============================
+tests/test_transform.py::TestCleanCategoricals::test_invalid_product_replaced_with_na
+  /tests/test_transform.py:183: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
+    part = _make_partition(**{"PRODUCT": pd.Categorical(["X"], categories=["O", "G"])})
 
-The above exception was the direct cause of the following exception:
-tests/test_features.py:793: in test_cumulative_monotonicity
-    for lid in result["LEASE_KID"].unique():
-               ^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/frame.py:4378: in __getitem__
-    indexer = self.columns.get_loc(key)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/indexes/base.py:3648: in get_loc
-    raise KeyError(key) from err
-E   KeyError: 'LEASE_KID'
------------------------------ Captured stderr call -----------------------------
-2026-04-01 11:05:06 | kgs_pipeline.features | INFO | Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_cumulative_monotonicity0/features_mono
------------------------------- Captured log call -------------------------------
-INFO     kgs_pipeline.features:features.py:516 Features stage complete. Output: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-1/test_cumulative_monotonicity0/features_mono
-______________________ test_remove_duplicates_removes_one ______________________
-tests/test_transform.py:241: in test_remove_duplicates_removes_one
-    assert len(result) == 4
-E   assert 3 == 4
-E    +  where 3 = len(  LEASE_KID    LEASE DOR_CODE API_NUMBER  ... PRODUCT WELLS PRODUCTION source_file\n0        L0  Lease 0      123      ...0    test.txt\n2        L2  Lease 2      123      API-2  ...       O   2.0      300.0    test.txt\n\n[3 rows x 21 columns])
-Test tests/test_transform.py::test_sort_stability was skipped. Reason: 
-('/tests/test_transform.py', 566, 
-'Skipped: Not enough partitions for sort stability test')
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
-FAILED tests/test_features.py::test_run_features_all_schema_columns - Asserti...
-FAILED tests/test_features.py::test_run_features_cum_oil_monotonic - KeyError...
-FAILED tests/test_features.py::test_feature_column_presence - AssertionError:...
-FAILED tests/test_features.py::test_cumulative_monotonicity - KeyError: 'LEAS...
-FAILED tests/test_transform.py::test_remove_duplicates_removes_one - assert 3...
-5 failed, 152 passed, 1 skipped in 16.02s
+FAILED tests/test_acquire.py::TestDownloadLeaseFile::test_idempotency_skips_existing
+FAILED tests/test_ingest.py::TestResolvePandasDtype::test_int_not_nullable - ...
+================== 2 failed, 123 passed, 1 warning in 19.58s ===================
 
 ```
 
 ---
 
-## Eval Run at 2026-04-01 11:12:00
-
-**Status:** ❌ FAILED
-
-### Failures:
-- **Type check:**
-```
-Type check failed. Fix these errors:
-/kgs_pipeline/transform.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/ingest.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/features.py:14: error: Cannot find implementation or library stub for module named "sklearn.preprocessing"  [import-not-found]
-/kgs_pipeline/acquire.py:11: error: Library stubs not installed for "pandas"  [import-untyped]
-/kgs_pipeline/acquire.py:11: note: Hint: "python3 -m pip install pandas-stubs"
-/kgs_pipeline/acquire.py:11: note: (or run "mypy --install-types" to install all missing stub packages)
-/kgs_pipeline/acquire.py:11: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
-/kgs_pipeline/acquire.py:12: error: Library stubs not installed for "requests"  [import-untyped]
-/kgs_pipeline/acquire.py:12: note: Hint: "python3 -m pip install types-requests"
-/tests/test_transform.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_ingest.py:6: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_features.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-/tests/test_acquire.py:7: error: Library stubs not installed for "pandas"  [import-untyped]
-Found 10 errors in 8 files (checked 13 source files)
-
-```
-
----
-
-## Eval Run at 2026-04-01 11:16:03
+## Eval Run at 2026-04-16 19:00:05
 
 **Status:** ✅ PASSED
 
