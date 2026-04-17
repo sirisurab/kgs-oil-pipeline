@@ -1,698 +1,411 @@
-"""Tests for kgs_pipeline.transform module."""
+"""Tests for kgs_pipeline/transform.py."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import dask.dataframe as dd
-import pandas as pd  # type: ignore[import-untyped]
+import numpy as np
+import pandas as pd
 import pytest
 
 from kgs_pipeline.transform import (
+    add_production_date,
+    clean_categoricals,
+    clean_physical_bounds,
     deduplicate,
-    flag_outliers,
-    parse_production_date,
-    pivot_products,
-    read_interim,
     run_transform,
-    sort_by_well_date,
-    standardise_columns,
-    write_processed_parquet,
+    set_entity_index,
 )
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _make_interim_df(rows: list[dict] | None = None) -> pd.DataFrame:
-    """Build a minimal interim-schema DataFrame."""
-    defaults = {
-        "LEASE_KID": "1",
-        "LEASE": "L1",
-        "DOR_CODE": "DC",
-        "API_NUMBER": "API001",
-        "FIELD": "F",
-        "PRODUCING_ZONE": "Z",
-        "OPERATOR": "OP",
-        "COUNTY": "ALLEN",
-        "TOWNSHIP": "T",
-        "TWN_DIR": "N",
-        "RANGE": "R",
-        "RANGE_DIR": "E",
-        "SECTION": "1",
-        "SPOT": "NE",
-        "LATITUDE": 38.0,
-        "LONGITUDE": -97.0,
-        "MONTH_YEAR": "1-2024",
-        "PRODUCT": "O",
-        "WELLS": 1.0,
-        "PRODUCTION": 100.0,
-        "source_file": "test.txt",
-    }
-    if rows is None:
-        rows = [defaults]
-    else:
-        rows = [{**defaults, **r} for r in rows]
-    return pd.DataFrame(rows)
+CANONICAL_SCHEMA: dict[str, object] = {
+    "LEASE_KID": pd.array([], dtype=pd.Int64Dtype()),
+    "LEASE": pd.array([], dtype=pd.StringDtype()),
+    "DOR_CODE": pd.array([], dtype=pd.Int64Dtype()),
+    "API_NUMBER": pd.array([], dtype=pd.StringDtype()),
+    "FIELD": pd.array([], dtype=pd.StringDtype()),
+    "PRODUCING_ZONE": pd.array([], dtype=pd.StringDtype()),
+    "OPERATOR": pd.array([], dtype=pd.StringDtype()),
+    "COUNTY": pd.array([], dtype=pd.StringDtype()),
+    "TOWNSHIP": pd.array([], dtype=pd.Int64Dtype()),
+    "TWN_DIR": pd.Categorical([], categories=["S", "N"]),
+    "RANGE": pd.array([], dtype=pd.Int64Dtype()),
+    "RANGE_DIR": pd.Categorical([], categories=["E", "W"]),
+    "SECTION": pd.array([], dtype=pd.Int64Dtype()),
+    "SPOT": pd.array([], dtype=pd.StringDtype()),
+    "LATITUDE": pd.array([], dtype=np.float64),
+    "LONGITUDE": pd.array([], dtype=np.float64),
+    "MONTH-YEAR": pd.array([], dtype=pd.StringDtype()),
+    "PRODUCT": pd.Categorical([], categories=["O", "G"]),
+    "WELLS": pd.array([], dtype=pd.Int64Dtype()),
+    "PRODUCTION": pd.array([], dtype=np.float64),
+    "URL": pd.array([], dtype=pd.StringDtype()),
+    "source_file": pd.array([], dtype=pd.StringDtype()),
+}
 
 
-def _dask(df: pd.DataFrame) -> dd.DataFrame:
-    return dd.from_pandas(df, npartitions=1)
+def _empty_meta() -> pd.DataFrame:
+    return pd.DataFrame({k: v for k, v in CANONICAL_SCHEMA.items()})
 
 
-def _make_wide_df(rows: list[dict] | None = None) -> pd.DataFrame:
-    defaults = {
-        "lease_kid": "1",
-        "lease_name": "L1",
-        "api_number": "API001",
-        "operator": "OP",
-        "county": "ALLEN",
-        "field": "F",
-        "producing_zone": "Z",
-        "well_count": 1.0,
-        "latitude": 38.0,
-        "longitude": -97.0,
-        "oil_bbl": 100.0,
-        "gas_mcf": 0.0,
-        "production_date": pd.Timestamp("2024-01-01"),
-        "source_file": "test.txt",
-    }
-    if rows is None:
-        rows = [defaults]
-    else:
-        rows = [{**defaults, **r} for r in rows]
-    return pd.DataFrame(rows)
-
-
-# ---------------------------------------------------------------------------
-# Task 01: read_interim
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_read_interim_returns_dask(tmp_path: Path) -> None:
-    df = pd.DataFrame({"col": [1, 2]})
-    df.to_parquet(tmp_path / "part.parquet", index=False)
-    result = read_interim(str(tmp_path))
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_read_interim_return_type_is_dask(tmp_path: Path) -> None:
-    """TR-17."""
-    df = pd.DataFrame({"col": [1]})
-    df.to_parquet(tmp_path / "p.parquet", index=False)
-    result = read_interim(str(tmp_path))
-    assert isinstance(result, dd.DataFrame)
-    assert not isinstance(result, pd.DataFrame)
-
-
-@pytest.mark.unit
-def test_read_interim_npartitions_capped(tmp_path: Path) -> None:
-    df = pd.DataFrame({"col": range(10)})
-    for i in range(5):
-        df.to_parquet(tmp_path / f"part{i}.parquet", index=False)
-    result = read_interim(str(tmp_path))
-    assert result.npartitions <= 50
-
-
-@pytest.mark.unit
-def test_read_interim_missing_dir() -> None:
-    with pytest.raises(FileNotFoundError):
-        read_interim("/nonexistent/path")
-
-
-# ---------------------------------------------------------------------------
-# Task 02: parse_production_date
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_parse_production_date_filters_nonmonthly() -> None:
-    df = _make_interim_df(
-        [
-            {"MONTH_YEAR": "1-2024"},
-            {"MONTH_YEAR": "0-2024"},
-            {"MONTH_YEAR": "-1-2024"},
-            {"MONTH_YEAR": "12-2024"},
-        ]
-    )
-    ddf = _dask(df)
-    result = parse_production_date(ddf).compute()
-    assert len(result) == 2
-    assert "production_date" in result.columns
-    assert pd.api.types.is_datetime64_any_dtype(result["production_date"])
-
-
-@pytest.mark.unit
-def test_parse_production_date_correct_date() -> None:
-    df = _make_interim_df([{"MONTH_YEAR": "6-2024"}])
-    result = parse_production_date(_dask(df)).compute()
-    assert result["production_date"].iloc[0] == pd.Timestamp("2024-06-01")
-
-
-@pytest.mark.unit
-def test_parse_production_date_unparseable_dropped() -> None:
-    df = _make_interim_df([{"MONTH_YEAR": "abc-2024"}, {"MONTH_YEAR": "3-2024"}])
-    result = parse_production_date(_dask(df)).compute()
-    assert len(result) == 1
-
-
-@pytest.mark.unit
-def test_parse_production_date_no_month_year_column() -> None:
-    df = _make_interim_df([{"MONTH_YEAR": "1-2024"}])
-    result = parse_production_date(_dask(df)).compute()
-    assert "MONTH_YEAR" not in result.columns
-
-
-@pytest.mark.unit
-def test_parse_production_date_returns_dask() -> None:
-    df = _make_interim_df()
-    result = parse_production_date(_dask(df))
-    assert isinstance(result, dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 03: standardise_columns
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_standardise_columns_renames() -> None:
-    df = _make_interim_df()
-    df["production_date"] = pd.Timestamp("2024-01-01")
-    df = df.drop(columns=["MONTH_YEAR"])
-    result = standardise_columns(_dask(df)).compute()
-    assert "lease_kid" in result.columns
-    assert "operator" in result.columns
-    assert "county" in result.columns
-    assert "production" in result.columns
-    assert "well_count" in result.columns
-
-
-@pytest.mark.unit
-def test_standardise_columns_production_coerced() -> None:
-    df = _make_interim_df([{"PRODUCTION": "abc"}])
-    df["production_date"] = pd.Timestamp("2024-01-01")
-    df = df.drop(columns=["MONTH_YEAR"])
-    result = standardise_columns(_dask(df)).compute()
-    assert pd.isna(result["production"].iloc[0])
-
-
-@pytest.mark.unit
-def test_standardise_columns_returns_dask() -> None:
-    df = _make_interim_df()
-    result = standardise_columns(_dask(df))
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_standardise_columns_drops_dor_code() -> None:
-    df = _make_interim_df()
-    result = standardise_columns(_dask(df)).compute()
-    assert "DOR_CODE" not in result.columns
-
-
-# ---------------------------------------------------------------------------
-# Task 04: deduplicate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_deduplicate_removes_duplicates() -> None:
+def _make_partition(**overrides: object) -> pd.DataFrame:
     base = {
-        "lease_kid": pd.array(["1"] * 10, dtype=pd.StringDtype()),
-        "product": pd.array(["O"] * 10, dtype=pd.StringDtype()),
-        "production_date": [pd.Timestamp("2024-01-01")] * 7 + [pd.Timestamp("2024-02-01")] * 3,
-        "oil_bbl": [100.0] * 10,
+        "LEASE_KID": pd.array([1001], dtype=pd.Int64Dtype()),
+        "LEASE": pd.array(["TEST"], dtype=pd.StringDtype()),
+        "DOR_CODE": pd.array([pd.NA], dtype=pd.Int64Dtype()),
+        "API_NUMBER": pd.array(["15-001-00001"], dtype=pd.StringDtype()),
+        "FIELD": pd.array(["FIELD1"], dtype=pd.StringDtype()),
+        "PRODUCING_ZONE": pd.array(["Zone1"], dtype=pd.StringDtype()),
+        "OPERATOR": pd.array(["OP1"], dtype=pd.StringDtype()),
+        "COUNTY": pd.array(["Nemaha"], dtype=pd.StringDtype()),
+        "TOWNSHIP": pd.array([1], dtype=pd.Int64Dtype()),
+        "TWN_DIR": pd.Categorical(["S"], categories=["S", "N"]),
+        "RANGE": pd.array([14], dtype=pd.Int64Dtype()),
+        "RANGE_DIR": pd.Categorical(["E"], categories=["E", "W"]),
+        "SECTION": pd.array([1], dtype=pd.Int64Dtype()),
+        "SPOT": pd.array(["NENENE"], dtype=pd.StringDtype()),
+        "LATITUDE": [39.999519],
+        "LONGITUDE": [-95.78905],
+        "MONTH-YEAR": pd.array(["1-2024"], dtype=pd.StringDtype()),
+        "PRODUCT": pd.Categorical(["O"], categories=["O", "G"]),
+        "WELLS": pd.array([2], dtype=pd.Int64Dtype()),
+        "PRODUCTION": [161.8],
+        "URL": pd.array(["https://example.com"], dtype=pd.StringDtype()),
+        "source_file": pd.array(["lp1.txt"], dtype=pd.StringDtype()),
     }
-    df = pd.DataFrame(base)
-    result = deduplicate(_dask(df)).compute()
-    # 7 dupes of jan → 1, 3 dupes of feb → 1 → 2 rows
-    assert len(result) == 2
+    base.update(overrides)
+    return pd.DataFrame(base)
 
 
-@pytest.mark.unit
-def test_deduplicate_no_change_if_unique() -> None:
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["1", "2"], dtype=pd.StringDtype()),
-            "product": pd.array(["O", "G"], dtype=pd.StringDtype()),
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
-            "oil_bbl": [100.0, 200.0],
-        }
-    )
-    result = deduplicate(_dask(df)).compute()
-    assert len(result) == 2
+def _write_interim(tmp_path: Path, rows: list[dict]) -> str:
+    """Write synthetic interim Parquet for run_transform tests."""
+    frames = []
+    for row in rows:
+        part = pd.DataFrame({
+            "LEASE_KID": pd.array([row.get("LEASE_KID", 1001)], dtype=pd.Int64Dtype()),
+            "LEASE": pd.array([row.get("LEASE", "TEST")], dtype=pd.StringDtype()),
+            "DOR_CODE": pd.array([pd.NA], dtype=pd.Int64Dtype()),
+            "API_NUMBER": pd.array([row.get("API_NUMBER", "15-001")], dtype=pd.StringDtype()),
+            "FIELD": pd.array([row.get("FIELD", "F1")], dtype=pd.StringDtype()),
+            "PRODUCING_ZONE": pd.array([row.get("PRODUCING_ZONE", "Z1")], dtype=pd.StringDtype()),
+            "OPERATOR": pd.array([row.get("OPERATOR", "OP1")], dtype=pd.StringDtype()),
+            "COUNTY": pd.array([row.get("COUNTY", "Nemaha")], dtype=pd.StringDtype()),
+            "TOWNSHIP": pd.array([1], dtype=pd.Int64Dtype()),
+            "TWN_DIR": pd.Categorical([row.get("TWN_DIR", "S")], categories=["S", "N"]),
+            "RANGE": pd.array([14], dtype=pd.Int64Dtype()),
+            "RANGE_DIR": pd.Categorical([row.get("RANGE_DIR", "E")], categories=["E", "W"]),
+            "SECTION": pd.array([1], dtype=pd.Int64Dtype()),
+            "SPOT": pd.array(["NENENE"], dtype=pd.StringDtype()),
+            "LATITUDE": [row.get("LATITUDE", 39.9)],
+            "LONGITUDE": [row.get("LONGITUDE", -95.8)],
+            "MONTH-YEAR": pd.array([row.get("MONTH-YEAR", "1-2024")], dtype=pd.StringDtype()),
+            "PRODUCT": pd.Categorical(
+                [row.get("PRODUCT", "O")], categories=["O", "G"]
+            ),
+            "WELLS": pd.array([2], dtype=pd.Int64Dtype()),
+            "PRODUCTION": [float(row.get("PRODUCTION", 100.0))],
+            "URL": pd.array([row.get("URL", "https://example.com")], dtype=pd.StringDtype()),
+            "source_file": pd.array([row.get("source_file", "lp1.txt")], dtype=pd.StringDtype()),
+        })
+        frames.append(part)
 
-
-@pytest.mark.unit
-def test_deduplicate_returns_dask() -> None:
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["1"], dtype=pd.StringDtype()),
-            "product": pd.array(["O"], dtype=pd.StringDtype()),
-            "production_date": [pd.Timestamp("2024-01-01")],
-        }
-    )
-    result = deduplicate(_dask(df))
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_tr15a_dedup_count_lte_original() -> None:
-    """TR-15a: deduplicated count <= original count."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["1"] * 5, dtype=pd.StringDtype()),
-            "product": pd.array(["O"] * 5, dtype=pd.StringDtype()),
-            "production_date": [pd.Timestamp("2024-01-01")] * 3 + [pd.Timestamp("2024-02-01")] * 2,
-            "val": range(5),
-        }
-    )
-    result = deduplicate(_dask(df)).compute()
-    assert len(result) <= 5
-
-
-@pytest.mark.unit
-def test_tr15b_dedup_idempotent() -> None:
-    """TR-15b: running deduplication twice yields same result."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["1", "1"], dtype=pd.StringDtype()),
-            "product": pd.array(["O", "O"], dtype=pd.StringDtype()),
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-01")],
-            "val": [1, 2],
-        }
-    )
-    ddf = _dask(df)
-    r1 = deduplicate(ddf).compute()
-    ddf2 = dd.from_pandas(r1, npartitions=1)
-    r2 = deduplicate(ddf2).compute()
-    assert r1.shape == r2.shape
+    combined = pd.concat(frames, ignore_index=True)
+    interim_dir = str(tmp_path / "interim")
+    Path(interim_dir).mkdir(parents=True, exist_ok=True)
+    ddf = dd.from_pandas(combined, npartitions=1)
+    ddf.to_parquet(interim_dir, engine="pyarrow", write_index=False, overwrite=True)
+    return interim_dir
 
 
 # ---------------------------------------------------------------------------
-# Task 05: pivot_products
+# Task T-01: add_production_date
 # ---------------------------------------------------------------------------
 
+class TestAddProductionDate:
+    def test_january_2024(self) -> None:
+        part = _make_partition(**{"MONTH-YEAR": pd.array(["1-2024"], dtype=pd.StringDtype())})
+        result = add_production_date(part)
+        assert result["production_date"].iloc[0] == pd.Timestamp("2024-01-01")
 
-@pytest.mark.unit
-def test_pivot_products_oil_and_gas() -> None:
-    df = pd.DataFrame(
-        [
-            {
-                "lease_kid": "1",
-                "production_date": pd.Timestamp("2024-01-01"),
-                "api_number": "A",
-                "operator": "OP",
-                "county": "C",
-                "field": "F",
-                "producing_zone": "Z",
-                "well_count": 1.0,
-                "latitude": 38.0,
-                "longitude": -97.0,
-                "source_file": "t.txt",
-                "product": "O",
-                "production": 100.0,
-                "lease_name": "L",
-            },
-            {
-                "lease_kid": "1",
-                "production_date": pd.Timestamp("2024-01-01"),
-                "api_number": "A",
-                "operator": "OP",
-                "county": "C",
-                "field": "F",
-                "producing_zone": "Z",
-                "well_count": 1.0,
-                "latitude": 38.0,
-                "longitude": -97.0,
-                "source_file": "t.txt",
-                "product": "G",
-                "production": 500.0,
-                "lease_name": "L",
-            },
-        ]
-    )
-    result = pivot_products(_dask(df)).compute()
-    assert len(result) == 1
-    assert result["oil_bbl"].iloc[0] == 100.0
-    assert result["gas_mcf"].iloc[0] == 500.0
+    def test_december_2024(self) -> None:
+        part = _make_partition(**{"MONTH-YEAR": pd.array(["12-2024"], dtype=pd.StringDtype())})
+        result = add_production_date(part)
+        assert result["production_date"].iloc[0] == pd.Timestamp("2024-12-01")
 
+    def test_yearly_marker_dropped(self) -> None:
+        part = _make_partition(**{"MONTH-YEAR": pd.array(["0-2024"], dtype=pd.StringDtype())})
+        result = add_production_date(part)
+        assert len(result) == 0
 
-@pytest.mark.unit
-def test_pivot_products_oil_only_gas_zero() -> None:
-    df = pd.DataFrame(
-        [
-            {
-                "lease_kid": "1",
-                "production_date": pd.Timestamp("2024-01-01"),
-                "api_number": "A",
-                "operator": "OP",
-                "county": "C",
-                "field": "F",
-                "producing_zone": "Z",
-                "well_count": 1.0,
-                "latitude": 38.0,
-                "longitude": -97.0,
-                "source_file": "t.txt",
-                "product": "O",
-                "production": 200.0,
-                "lease_name": "L",
-            },
-        ]
-    )
-    result = pivot_products(_dask(df)).compute()
-    assert result["oil_bbl"].iloc[0] == 200.0
-    assert result["gas_mcf"].iloc[0] == 0.0
+    def test_cumulative_marker_dropped(self) -> None:
+        rows = pd.DataFrame({
+            **{k: [v.iloc[0], v.iloc[0]] if hasattr(v, "iloc") else [v[0], v[0]]
+               for k, v in _make_partition().items()},
+        })
+        rows["MONTH-YEAR"] = pd.array(["-1-2024", "3-2024"], dtype=pd.StringDtype())
+        result = add_production_date(rows)
+        assert len(result) == 1
+        assert result["production_date"].iloc[0] == pd.Timestamp("2024-03-01")
 
+    def test_non_numeric_dropped(self) -> None:
+        part = _make_partition(**{"MONTH-YEAR": pd.array(["abc-2024"], dtype=pd.StringDtype())})
+        result = add_production_date(part)
+        assert len(result) == 0
 
-@pytest.mark.unit
-def test_tr05_zero_production_not_nan() -> None:
-    """TR-05: zero production must remain 0.0, not NaN."""
-    df = pd.DataFrame(
-        [
-            {
-                "lease_kid": "1",
-                "production_date": pd.Timestamp("2024-01-01"),
-                "api_number": "A",
-                "operator": "OP",
-                "county": "C",
-                "field": "F",
-                "producing_zone": "Z",
-                "well_count": 1.0,
-                "latitude": 38.0,
-                "longitude": -97.0,
-                "source_file": "t.txt",
-                "product": "O",
-                "production": 0.0,
-                "lease_name": "L",
-            },
-        ]
-    )
-    result = pivot_products(_dask(df)).compute()
-    assert result["oil_bbl"].iloc[0] == 0.0
-    assert not pd.isna(result["oil_bbl"].iloc[0])
-
-
-@pytest.mark.unit
-def test_pivot_products_drops_product_column() -> None:
-    df = pd.DataFrame(
-        [
-            {
-                "lease_kid": "1",
-                "production_date": pd.Timestamp("2024-01-01"),
-                "api_number": "A",
-                "operator": "OP",
-                "county": "C",
-                "field": "F",
-                "producing_zone": "Z",
-                "well_count": 1.0,
-                "latitude": 38.0,
-                "longitude": -97.0,
-                "source_file": "t.txt",
-                "product": "O",
-                "production": 100.0,
-                "lease_name": "L",
-            },
-        ]
-    )
-    result = pivot_products(_dask(df)).compute()
-    assert "product" not in result.columns
-    assert "production" not in result.columns
-
-
-@pytest.mark.unit
-def test_pivot_products_returns_dask() -> None:
-    df = pd.DataFrame(
-        [
-            {
-                "lease_kid": "1",
-                "production_date": pd.Timestamp("2024-01-01"),
-                "api_number": "A",
-                "operator": "OP",
-                "county": "C",
-                "field": "F",
-                "producing_zone": "Z",
-                "well_count": 1.0,
-                "latitude": 38.0,
-                "longitude": -97.0,
-                "source_file": "t.txt",
-                "product": "O",
-                "production": 100.0,
-                "lease_name": "L",
-            },
-        ]
-    )
-    result = pivot_products(_dask(df))
-    assert isinstance(result, dd.DataFrame)
+    def test_meta_consistency_tr23(self) -> None:
+        meta = add_production_date(_empty_meta())
+        assert "production_date" in meta.columns
+        assert meta["production_date"].dtype == np.dtype("datetime64[ns]")
 
 
 # ---------------------------------------------------------------------------
-# Task 06: flag_outliers
+# Task T-02: clean_categoricals
 # ---------------------------------------------------------------------------
 
+class TestCleanCategoricals:
+    CAT_COLS = {"PRODUCT": ["O", "G"], "TWN_DIR": ["S", "N"], "RANGE_DIR": ["E", "W"]}
 
-@pytest.mark.unit
-def test_tr01_negative_production_flagged() -> None:
-    """TR-01: negative oil_bbl → has_negative_production=True, row retained."""
-    df = _make_wide_df([{"oil_bbl": -5.0}])
-    result = flag_outliers(_dask(df)).compute()
-    assert result["has_negative_production"].iloc[0]
-    assert len(result) == 1
+    def test_invalid_product_replaced_with_na(self) -> None:
+        part = _make_partition(
+            **{"PRODUCT": pd.Categorical(["X"], categories=["O", "G"])}
+        )
+        result = clean_categoricals(part, self.CAT_COLS)
+        assert result["PRODUCT"].isna().all()
+        assert isinstance(result["PRODUCT"].dtype, pd.CategoricalDtype)
 
+    def test_valid_values_retained(self) -> None:
+        rows = pd.DataFrame({
+            **{k: [v.iloc[0], v.iloc[0]] if hasattr(v, "iloc") else [v[0], v[0]]
+               for k, v in _make_partition().items()},
+        })
+        rows["PRODUCT"] = pd.Categorical(["O", "G"], categories=["O", "G"])
+        result = clean_categoricals(rows, self.CAT_COLS)
+        assert list(result["PRODUCT"].dropna()) == ["O", "G"]
+        assert isinstance(result["PRODUCT"].dtype, pd.CategoricalDtype)
 
-@pytest.mark.unit
-def test_tr02_oil_outlier_flagged() -> None:
-    """TR-02: oil_bbl > 50000 → is_outlier=True."""
-    df = _make_wide_df([{"oil_bbl": 100_000.0}])
-    result = flag_outliers(_dask(df)).compute()
-    assert result["is_outlier"].iloc[0]
-
-
-@pytest.mark.unit
-def test_tr02_oil_below_threshold_not_outlier() -> None:
-    df = _make_wide_df([{"oil_bbl": 49_999.0}])
-    result = flag_outliers(_dask(df)).compute()
-    assert not result["is_outlier"].iloc[0]
-
-
-@pytest.mark.unit
-def test_flag_outliers_gas_threshold() -> None:
-    df = _make_wide_df([{"gas_mcf": 600_000.0}])
-    result = flag_outliers(_dask(df)).compute()
-    assert result["is_outlier"].iloc[0]
-
-
-@pytest.mark.unit
-def test_flag_outliers_returns_dask() -> None:
-    df = _make_wide_df()
-    result = flag_outliers(_dask(df))
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_flag_outliers_columns_present() -> None:
-    df = _make_wide_df()
-    result = flag_outliers(_dask(df)).compute()
-    assert "is_outlier" in result.columns
-    assert "has_negative_production" in result.columns
+    def test_meta_consistency_tr23(self) -> None:
+        meta_in = _empty_meta()
+        meta_out = clean_categoricals(meta_in.copy(), self.CAT_COLS)
+        assert isinstance(meta_out["PRODUCT"].dtype, pd.CategoricalDtype)
+        assert isinstance(meta_out["TWN_DIR"].dtype, pd.CategoricalDtype)
 
 
 # ---------------------------------------------------------------------------
-# Task 07: sort_by_well_date
+# Task T-03: clean_physical_bounds
 # ---------------------------------------------------------------------------
 
+class TestCleanPhysicalBounds:
+    def test_negative_production_replaced_tr01(self) -> None:
+        part = _make_partition(**{"PRODUCTION": [-100.0]})
+        result = clean_physical_bounds(part)
+        assert pd.isna(result["PRODUCTION"].iloc[0])
 
-@pytest.mark.unit
-def test_tr16_sort_ascending() -> None:
-    """TR-16: rows sorted ascending by production_date per lease."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["1", "1", "2", "2"], dtype=pd.StringDtype()),
-            "production_date": [
-                pd.Timestamp("2024-03-01"),
-                pd.Timestamp("2024-01-01"),
-                pd.Timestamp("2024-02-01"),
-                pd.Timestamp("2024-04-01"),
-            ],
-            "oil_bbl": [300.0, 100.0, 200.0, 400.0],
-        }
-    )
-    result = sort_by_well_date(_dask(df)).compute()
-    lease1 = result[result["lease_kid"] == "1"]["production_date"].tolist()
-    assert lease1 == sorted(lease1)
+    def test_zero_production_preserved_tr05(self) -> None:
+        part = _make_partition(**{"PRODUCTION": [0.0]})
+        result = clean_physical_bounds(part)
+        assert result["PRODUCTION"].iloc[0] == 0.0
+        assert not pd.isna(result["PRODUCTION"].iloc[0])
 
-
-@pytest.mark.unit
-def test_sort_by_well_date_returns_dask() -> None:
-    df = _make_wide_df()
-    result = sort_by_well_date(_dask(df))
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_tr04_sort_preserves_row_count() -> None:
-    """TR-04: all 12 monthly rows for a lease survive sort."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["1"] * 12, dtype=pd.StringDtype()),
-            "production_date": [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 13)],
-            "oil_bbl": [100.0] * 12,
-        }
-    )
-    result = sort_by_well_date(_dask(df)).compute()
-    assert len(result[result["lease_kid"] == "1"]) == 12
-
-
-# ---------------------------------------------------------------------------
-# Task 08: write_processed_parquet
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_write_processed_parquet_writes(tmp_path: Path) -> None:
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["1"] * 10, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0] * 10,
-            "production_date": [pd.Timestamp("2024-01-01")] * 10,
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=5)
-    out = tmp_path / "processed"
-    count = write_processed_parquet(ddf, str(out))
-    assert count >= 1
-    assert len(list(out.glob("*.parquet"))) == count
-
-
-@pytest.mark.unit
-def test_write_processed_parquet_readable(tmp_path: Path) -> None:
-    """TR-18: written Parquet files are readable by pd.read_parquet."""
-    df = pd.DataFrame({"val": [1, 2, 3]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    out = tmp_path / "p"
-    write_processed_parquet(ddf, str(out))
-    for f in out.glob("*.parquet"):
-        pd.read_parquet(f)
-
-
-@pytest.mark.unit
-def test_write_processed_parquet_count_matches(tmp_path: Path) -> None:
-    df = pd.DataFrame({"val": range(10)})
-    ddf = dd.from_pandas(df, npartitions=5)
-    out = tmp_path / "out"
-    count = write_processed_parquet(ddf, str(out))
-    assert count == len(list(out.glob("*.parquet")))
-
-
-# ---------------------------------------------------------------------------
-# Task 09: run_transform + domain tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_run_transform_calls_stages(tmp_path: Path) -> None:
-    with (
-        patch("kgs_pipeline.transform.read_interim") as m1,
-        patch("kgs_pipeline.transform.parse_production_date") as m2,
-        patch("kgs_pipeline.transform.standardise_columns") as m3,
-        patch("kgs_pipeline.transform.deduplicate") as m4,
-        patch("kgs_pipeline.transform.pivot_products") as m5,
-        patch("kgs_pipeline.transform.flag_outliers") as m6,
-        patch("kgs_pipeline.transform.sort_by_well_date") as m7,
-        patch("kgs_pipeline.transform.write_processed_parquet", return_value=3) as m8,
-    ):
-        mock_ddf = MagicMock()
-        m1.return_value = mock_ddf
-        m2.return_value = mock_ddf
-        m3.return_value = mock_ddf
-        m4.return_value = mock_ddf
-        m5.return_value = mock_ddf
-        m6.return_value = mock_ddf
-        m7.return_value = mock_ddf
-
-        result = run_transform(str(tmp_path), str(tmp_path / "out"))
-        assert result == 3
-        m1.assert_called_once()
-        m2.assert_called_once()
-        m8.assert_called_once()
-
-
-@pytest.mark.unit
-def test_tr01_negative_retained_in_pipeline() -> None:
-    """TR-01: row with oil_bbl=-1 has has_negative_production=True and is retained."""
-    df = _make_wide_df([{"oil_bbl": -1.0, "gas_mcf": 0.0}])
-    result = flag_outliers(_dask(df)).compute()
-    neg_rows = result[result["has_negative_production"]]
-    assert len(neg_rows) == 1
-
-
-@pytest.mark.unit
-def test_tr02_outlier_flag() -> None:
-    """TR-02: oil_bbl=100001 → is_outlier=True."""
-    df = _make_wide_df([{"oil_bbl": 100_001.0}])
-    result = flag_outliers(_dask(df)).compute()
-    assert result["is_outlier"].iloc[0]
-
-
-@pytest.mark.unit
-def test_tr04_well_completeness() -> None:
-    """TR-04: 12 monthly rows survive the parse_production_date step."""
-    df = _make_interim_df([{"MONTH_YEAR": f"{m}-2024"} for m in range(1, 13)])
-    result = parse_production_date(_dask(df)).compute()
-    assert len(result) == 12
-
-
-@pytest.mark.unit
-def test_tr05_zero_production_oil() -> None:
-    """TR-05: production=0.0 for product O → oil_bbl=0.0 (not NaN)."""
-    df = pd.DataFrame(
-        [
-            {
-                "lease_kid": "1",
-                "production_date": pd.Timestamp("2024-01-01"),
-                "api_number": "A",
-                "operator": "OP",
-                "county": "C",
-                "field": "F",
-                "producing_zone": "Z",
-                "well_count": 1.0,
-                "latitude": 38.0,
-                "longitude": -97.0,
-                "source_file": "t.txt",
-                "product": "O",
-                "production": 0.0,
-                "lease_name": "L",
+    def test_high_oil_logged_not_nulled_tr02(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+        part = _make_partition(
+            **{
+                "PRODUCTION": [60000.0],
+                "PRODUCT": pd.Categorical(["O"], categories=["O", "G"]),
             }
+        )
+        with caplog.at_level(logging.WARNING):
+            result = clean_physical_bounds(part)
+        assert result["PRODUCTION"].iloc[0] == 60000.0
+        assert any("50,000" in msg for msg in caplog.messages)
+
+    def test_no_invalid_values_unchanged(self) -> None:
+        part = _make_partition(**{"PRODUCTION": [500.0]})
+        result = clean_physical_bounds(part)
+        assert result["PRODUCTION"].iloc[0] == 500.0
+
+
+# ---------------------------------------------------------------------------
+# Task T-04: deduplicate
+# ---------------------------------------------------------------------------
+
+class TestDeduplicate:
+    def test_three_identical_rows_returns_one_tr15(self) -> None:
+        base = _make_partition()
+        part = pd.concat([base, base, base], ignore_index=True)
+        result = deduplicate(part)
+        assert len(result) == 1
+
+    def test_idempotent_tr15(self) -> None:
+        base = _make_partition()
+        part = pd.concat([base, base], ignore_index=True)
+        first = deduplicate(part)
+        second = deduplicate(first)
+        assert len(first) == len(second)
+
+    def test_no_duplicates_unchanged(self) -> None:
+        rows = []
+        for i in range(3):
+            r = _make_partition(
+                **{"MONTH-YEAR": pd.array([f"{i+1}-2024"], dtype=pd.StringDtype())}
+            )
+            rows.append(r)
+        part = pd.concat(rows, ignore_index=True)
+        result = deduplicate(part)
+        assert len(result) == 3
+
+
+# ---------------------------------------------------------------------------
+# Task T-05: set_entity_index
+# ---------------------------------------------------------------------------
+
+class TestSetEntityIndex:
+    def _make_ddf(self) -> dd.DataFrame:
+        rows = []
+        for month in [3, 1, 2]:
+            r = _make_partition(
+                **{"MONTH-YEAR": pd.array([f"{month}-2024"], dtype=pd.StringDtype())}
+            )
+            r = add_production_date(r)
+            rows.append(r)
+        combined = pd.concat(rows, ignore_index=True)
+        return dd.from_pandas(combined, npartitions=2)
+
+    def test_sort_stability_tr16(self) -> None:
+        ddf = self._make_ddf()
+        result = set_entity_index(ddf)
+        for i in range(result.npartitions):
+            part = result.get_partition(i).compute()
+            if len(part) > 1:
+                dates = part["production_date"].tolist()
+                assert dates == sorted(dates)
+
+    def test_index_is_lease_kid(self) -> None:
+        ddf = self._make_ddf()
+        result = set_entity_index(ddf)
+        assert result.index.name == "LEASE_KID"
+
+
+# ---------------------------------------------------------------------------
+# Task T-06 / T-07: run_transform integration tests
+# ---------------------------------------------------------------------------
+
+class TestRunTransform:
+    def _config(self, tmp_path: Path) -> dict:
+        return {
+            "interim_dir": str(tmp_path / "interim"),
+            "processed_dir": str(tmp_path / "processed"),
+        }
+
+    def test_returns_dask_dataframe_tr17(self, tmp_path: Path) -> None:
+        rows = [{"LEASE_KID": 1001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0}]
+        _write_interim(tmp_path, rows)
+        result = run_transform(self._config(tmp_path))
+        assert isinstance(result, dd.DataFrame)
+        assert not isinstance(result, pd.DataFrame)
+
+    def test_data_cleaning_tr12(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 1001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": -50.0},
+            {"LEASE_KID": 1002, "MONTH-YEAR": "2-2024", "PRODUCT": "G", "PRODUCTION": 200.0},
         ]
-    )
-    result = pivot_products(_dask(df)).compute()
-    assert result["oil_bbl"].iloc[0] == 0.0
-    assert not pd.isna(result["oil_bbl"].iloc[0])
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "processed")).compute()
+        assert (result["PRODUCTION"].dropna() >= 0).all()
+        assert result["production_date"].dtype == np.dtype("datetime64[ns]")
+        assert isinstance(result["PRODUCT"].dtype, pd.CategoricalDtype)
 
+    def test_parquet_readable_tr18(self, tmp_path: Path) -> None:
+        rows = [{"LEASE_KID": 1001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0}]
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        reloaded = dd.read_parquet(str(tmp_path / "processed"))
+        assert isinstance(reloaded, dd.DataFrame)
 
-@pytest.mark.unit
-def test_tr17_all_functions_return_dask() -> None:
-    """TR-17: all transform functions return dask.dataframe.DataFrame."""
-    df_interim = _make_interim_df()
-    ddf_interim = _dask(df_interim)
+    def test_row_count_deduplication_tr15(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 1001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0},
+        ] * 3
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "processed")).compute()
+        assert len(result) <= 3
 
-    r1 = parse_production_date(ddf_interim)
-    assert isinstance(r1, dd.DataFrame)
+    def test_interim_not_exist_raises(self, tmp_path: Path) -> None:
+        config = self._config(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            run_transform(config)
 
-    df_std = _make_interim_df()
-    df_std["production_date"] = pd.Timestamp("2024-01-01")
-    df_std = df_std.drop(columns=["MONTH_YEAR"])
-    r2 = standardise_columns(_dask(df_std))
-    assert isinstance(r2, dd.DataFrame)
+    def test_data_integrity_tr11(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 2001, "MONTH-YEAR": "3-2024", "PRODUCT": "O", "PRODUCTION": 999.0},
+            {"LEASE_KID": 2002, "MONTH-YEAR": "4-2024", "PRODUCT": "G", "PRODUCTION": 1234.5},
+        ]
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "processed")).compute()
+        result_reset = result.reset_index()
+        row_2001 = result_reset[result_reset["LEASE_KID"] == 2001]
+        assert len(row_2001) == 1
+        assert row_2001["PRODUCTION"].iloc[0] == pytest.approx(999.0)
 
-    df_wide = _make_wide_df()
-    r3 = flag_outliers(_dask(df_wide))
-    assert isinstance(r3, dd.DataFrame)
+    def test_schema_dtype_tr12(self, tmp_path: Path) -> None:
+        rows = [{"LEASE_KID": 1001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0}]
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "processed")).compute()
+        assert result.index.name == "LEASE_KID"
+        assert result["production_date"].dtype == np.dtype("datetime64[ns]")
+        assert result["PRODUCTION"].dtype == np.dtype("float64")
 
-    r4 = sort_by_well_date(_dask(df_wide))
-    assert isinstance(r4, dd.DataFrame)
+    def test_well_completeness_tr04(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 3001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0},
+            {"LEASE_KID": 3001, "MONTH-YEAR": "2-2024", "PRODUCT": "O", "PRODUCTION": 110.0},
+            {"LEASE_KID": 3001, "MONTH-YEAR": "3-2024", "PRODUCT": "O", "PRODUCTION": 120.0},
+        ]
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "processed")).compute()
+        result_reset = result.reset_index()
+        lease_rows = result_reset[result_reset["LEASE_KID"] == 3001]
+        assert len(lease_rows) == 3
+
+    def test_zero_production_preserved_tr05(self, tmp_path: Path) -> None:
+        rows = [{"LEASE_KID": 4001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 0.0}]
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "processed")).compute()
+        prod_vals = result["PRODUCTION"].dropna()
+        assert 0.0 in prod_vals.values
+
+    def test_schema_stability_tr14(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 5001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 50.0},
+            {"LEASE_KID": 5002, "MONTH-YEAR": "2-2024", "PRODUCT": "G", "PRODUCTION": 200.0},
+        ]
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        files = list(Path(tmp_path / "processed").glob("*.parquet"))
+        if len(files) >= 2:
+            df1 = pd.read_parquet(files[0])
+            df2 = pd.read_parquet(files[1])
+            assert list(df1.columns) == list(df2.columns)
+
+    def test_sort_stability_tr16(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 6001, "MONTH-YEAR": "3-2024", "PRODUCT": "O", "PRODUCTION": 100.0},
+            {"LEASE_KID": 6001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 80.0},
+            {"LEASE_KID": 6001, "MONTH-YEAR": "2-2024", "PRODUCT": "O", "PRODUCTION": 90.0},
+        ]
+        _write_interim(tmp_path, rows)
+        run_transform(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "processed")).compute()
+        for kid, grp in result.reset_index().groupby("LEASE_KID"):
+            dates = grp["production_date"].tolist()
+            assert dates == sorted(dates)

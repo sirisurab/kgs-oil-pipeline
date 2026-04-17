@@ -1,17 +1,23 @@
-.PHONY: env install test lint typecheck
+.PHONY: env install acquire ingest transform features pipeline
 
 env:
 	python3 -m venv .venv
 
 install:
-	.venv/bin/pip install --upgrade pip setuptools wheel
-	.venv/bin/pip install -e ".[dev]"
+	pip install --upgrade pip
+	pip install -e ".[dev]"
 
-test:
-	pytest tests/ -v
+acquire:
+	kgs-pipeline --stages acquire
 
-lint:
-	ruff check kgs_pipeline/ tests/
+ingest:
+	kgs-pipeline --stages ingest
 
-typecheck:
-	mypy kgs_pipeline/
+transform:
+	kgs-pipeline --stages transform
+
+features:
+	kgs-pipeline --stages features
+
+pipeline: acquire ingest transform features
+	kgs-pipeline --stages acquire ingest transform features

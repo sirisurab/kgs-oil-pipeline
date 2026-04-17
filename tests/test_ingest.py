@@ -1,332 +1,266 @@
-"""Tests for kgs_pipeline.ingest module."""
+"""Tests for kgs_pipeline/ingest.py."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import dask.dataframe as dd
-import pandas as pd  # type: ignore[import-untyped]
+import numpy as np
+import pandas as pd
 import pytest
 
 from kgs_pipeline.ingest import (
-    EXPECTED_COLUMNS,
-    build_dask_dataframe,
-    discover_raw_files,
-    filter_by_year,
+    SchemaError,
+    load_data_dictionary,
     read_raw_file,
+    resolve_pandas_dtype,
     run_ingest,
-    write_interim_parquet,
 )
+
+DICT_PATH = "references/kgs_monthly_data_dictionary.csv"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_CSV_HEADER = (
-    "LEASE KID,LEASE,DOR_CODE,API_NUMBER,FIELD,PRODUCING_ZONE,OPERATOR,"
-    "COUNTY,TOWNSHIP,TWN_DIR,RANGE,RANGE_DIR,SECTION,SPOT,"
-    "LATITUDE,LONGITUDE,MONTH-YEAR,PRODUCT,WELLS,PRODUCTION\n"
-)
+CANONICAL_COLUMNS = [
+    "LEASE_KID", "LEASE", "DOR_CODE", "API_NUMBER", "FIELD", "PRODUCING_ZONE",
+    "OPERATOR", "COUNTY", "TOWNSHIP", "TWN_DIR", "RANGE", "RANGE_DIR", "SECTION",
+    "SPOT", "LATITUDE", "LONGITUDE", "MONTH-YEAR", "PRODUCT", "WELLS",
+    "PRODUCTION", "URL",
+]
+
+_MINIMAL_ROW = {
+    "LEASE_KID": "1001135839",
+    "LEASE": "SNYDER",
+    "DOR_CODE": "122608",
+    "API_NUMBER": "15-131-20143",
+    "FIELD": "KANASKA",
+    "PRODUCING_ZONE": "Lansing Group",
+    "OPERATOR": "Buckeye West, LLC",
+    "COUNTY": "Nemaha",
+    "TOWNSHIP": "1",
+    "TWN_DIR": "S",
+    "RANGE": "14",
+    "RANGE_DIR": "E",
+    "SECTION": "1",
+    "SPOT": "NENENE",
+    "LATITUDE": "39.999519",
+    "LONGITUDE": "-95.78905",
+    "MONTH-YEAR": "1-2024",
+    "PRODUCT": "O",
+    "WELLS": "2",
+    "PRODUCTION": "161.8",
+    "URL": "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839",
+}
 
 
-def _make_csv_row(
-    lease_kid: str = "1",
-    month_year: str = "1-2024",
-    product: str = "O",
-    production: str = "100",
-) -> str:
-    return (
-        f"{lease_kid},LEASE_{lease_kid},DC,API001,FIELD,ZONE,OP,ALLEN,"
-        f"TS,N,R,E,1,NE,38.0,-97.0,{month_year},{product},1,{production}\n"
-    )
-
-
-def _write_raw_file(path: Path, rows: list[str]) -> None:
-    path.write_text(_CSV_HEADER + "".join(rows))
-
-
-# ---------------------------------------------------------------------------
-# Task 01: discover_raw_files
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_discover_raw_files_returns_txt(tmp_path: Path) -> None:
-    for name in ("a.txt", "b.txt", "c.txt", "d.csv"):
-        (tmp_path / name).write_text("data")
-    result = discover_raw_files(str(tmp_path))
-    assert len(result) == 3
-    assert all(p.suffix == ".txt" for p in result)
-
-
-@pytest.mark.unit
-def test_discover_raw_files_excludes_hidden(tmp_path: Path) -> None:
-    (tmp_path / ".hidden.txt").write_text("hidden")
-    (tmp_path / "a.txt").write_text("data")
-    (tmp_path / "b.txt").write_text("data")
-    result = discover_raw_files(str(tmp_path))
-    assert len(result) == 2
-    assert all(not p.name.startswith(".") for p in result)
-
-
-@pytest.mark.unit
-def test_discover_raw_files_missing_dir() -> None:
-    with pytest.raises(FileNotFoundError):
-        discover_raw_files("/nonexistent/path")
-
-
-@pytest.mark.unit
-def test_discover_raw_files_empty_dir(tmp_path: Path) -> None:
-    result = discover_raw_files(str(tmp_path))
-    assert result == []
+def _write_csv(tmp_path: Path, rows: list[dict], name: str = "test.txt") -> str:
+    df = pd.DataFrame(rows)
+    fpath = tmp_path / name
+    df.to_csv(fpath, index=False)
+    return str(fpath)
 
 
 # ---------------------------------------------------------------------------
-# Task 02: read_raw_file
+# Task I-01: load_data_dictionary
 # ---------------------------------------------------------------------------
 
+class TestLoadDataDictionary:
+    def test_lease_kid_spec(self) -> None:
+        dd_dict = load_data_dictionary(DICT_PATH)
+        assert dd_dict["LEASE_KID"]["dtype"] == "int"
+        assert dd_dict["LEASE_KID"]["nullable"] is False
+        assert dd_dict["LEASE_KID"]["categories"] == []
 
-@pytest.mark.unit
-def test_read_raw_file_standard(tmp_path: Path) -> None:
-    f = tmp_path / "lease.txt"
-    _write_raw_file(f, [_make_csv_row() for _ in range(3)])
-    df = read_raw_file(f)
-    assert df.shape[0] == 3
-    assert "LEASE_KID" in df.columns
-    assert "source_file" in df.columns
-    assert "MONTH_YEAR" in df.columns  # normalised from MONTH-YEAR
+    def test_product_spec(self) -> None:
+        dd_dict = load_data_dictionary(DICT_PATH)
+        assert dd_dict["PRODUCT"]["dtype"] == "categorical"
+        assert dd_dict["PRODUCT"]["nullable"] is False
+        assert dd_dict["PRODUCT"]["categories"] == ["O", "G"]
 
+    def test_twn_dir_categories(self) -> None:
+        dd_dict = load_data_dictionary(DICT_PATH)
+        assert dd_dict["TWN_DIR"]["categories"] == ["S", "N"]
 
-@pytest.mark.unit
-def test_read_raw_file_missing_column_filled(tmp_path: Path) -> None:
-    # Write CSV without COUNTY
-    rows_no_county = _CSV_HEADER.replace(",COUNTY", "") + _make_csv_row().replace(",ALLEN", "")
-    f = tmp_path / "lease.txt"
-    f.write_text(rows_no_county)
-    df = read_raw_file(f)
-    assert "COUNTY" in df.columns
-
-
-@pytest.mark.unit
-def test_read_raw_file_latin1_encoding(tmp_path: Path) -> None:
-    content = _CSV_HEADER + _make_csv_row()
-    f = tmp_path / "lease.txt"
-    f.write_bytes(content.encode("latin-1"))
-    df = read_raw_file(f)
-    assert not df.empty
-
-
-@pytest.mark.unit
-def test_read_raw_file_empty_file(tmp_path: Path) -> None:
-    f = tmp_path / "empty.txt"
-    f.write_bytes(b"")
-    df = read_raw_file(f)
-    assert df.empty
-    assert all(col in df.columns for col in EXPECTED_COLUMNS)
-
-
-@pytest.mark.unit
-def test_read_raw_file_parse_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    f = tmp_path / "bad.txt"
-    f.write_text('col1,col2\n"unclosed quote\n')
-    # Should return empty df, not raise
-    df = read_raw_file(f)
-    assert isinstance(df, pd.DataFrame)
+    def test_file_not_found(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            load_data_dictionary("/nonexistent/dict.csv")
 
 
 # ---------------------------------------------------------------------------
-# Task 03: filter_by_year
+# Task I-02: resolve_pandas_dtype
 # ---------------------------------------------------------------------------
 
+class TestResolvePandasDtype:
+    def test_int_not_nullable(self) -> None:
+        result = resolve_pandas_dtype("int", False, [])
+        assert result == np.dtype("int64")
 
-@pytest.mark.unit
-def test_filter_by_year_basic() -> None:
-    data = pd.DataFrame(
-        {
-            "MONTH_YEAR": ["1-2023", "12-2024", "6-2025", "0-2022"],
-            "val": [1, 2, 3, 4],
+    def test_int_nullable(self) -> None:
+        result = resolve_pandas_dtype("int", True, [])
+        assert result == pd.Int64Dtype()
+
+    def test_float(self) -> None:
+        result = resolve_pandas_dtype("float", True, [])
+        assert result == np.dtype("float64")
+
+    def test_string(self) -> None:
+        result = resolve_pandas_dtype("string", True, [])
+        assert isinstance(result, pd.StringDtype)
+
+    def test_categorical(self) -> None:
+        result = resolve_pandas_dtype("categorical", True, ["O", "G"])
+        expected = pd.CategoricalDtype(categories=["O", "G"], ordered=False)
+        assert result == expected
+
+    def test_unknown_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown"):
+            resolve_pandas_dtype("unknown", True, [])
+
+
+# ---------------------------------------------------------------------------
+# Task I-03: read_raw_file
+# ---------------------------------------------------------------------------
+
+class TestReadRawFile:
+    def _data_dict(self) -> dict[str, dict]:
+        return load_data_dictionary(DICT_PATH)
+
+    def test_correct_dtypes_and_source_file(self, tmp_path: Path) -> None:
+        fpath = _write_csv(tmp_path, [_MINIMAL_ROW])
+        data_dict = self._data_dict()
+        df = read_raw_file(fpath, data_dict)
+        assert not df.empty
+        assert df["LEASE_KID"].dtype == pd.Int64Dtype()
+        assert df["PRODUCTION"].dtype == np.dtype("float64")
+        assert df["PRODUCT"].dtype == pd.CategoricalDtype(["O", "G"])
+        assert df["source_file"].dtype == pd.StringDtype()
+        assert df["source_file"].iloc[0] == os.path.basename(fpath)
+
+    def test_year_filter_removes_old_rows(self, tmp_path: Path) -> None:
+        old_row = {**_MINIMAL_ROW, "MONTH-YEAR": "6-2023"}
+        fpath = _write_csv(tmp_path, [old_row])
+        data_dict = self._data_dict()
+        df = read_raw_file(fpath, data_dict)
+        assert df.empty
+
+    def test_missing_non_nullable_raises(self, tmp_path: Path) -> None:
+        row = {k: v for k, v in _MINIMAL_ROW.items() if k != "LEASE_KID"}
+        fpath = _write_csv(tmp_path, [row])
+        data_dict = self._data_dict()
+        with pytest.raises(SchemaError):
+            read_raw_file(fpath, data_dict)
+
+    def test_missing_nullable_column_added_as_na(self, tmp_path: Path) -> None:
+        row = {k: v for k, v in _MINIMAL_ROW.items() if k != "FIELD"}
+        fpath = _write_csv(tmp_path, [row])
+        data_dict = self._data_dict()
+        df = read_raw_file(fpath, data_dict)
+        assert "FIELD" in df.columns
+        assert df["FIELD"].isna().all()
+
+    def test_non_numeric_month_year_dropped(self, tmp_path: Path) -> None:
+        row_invalid = {**_MINIMAL_ROW, "MONTH-YEAR": "-1-1965"}
+        row_valid = {**_MINIMAL_ROW, "MONTH-YEAR": "3-2024"}
+        fpath = _write_csv(tmp_path, [row_invalid, row_valid])
+        data_dict = self._data_dict()
+        df = read_raw_file(fpath, data_dict)
+        assert len(df) == 1
+        assert df["MONTH-YEAR"].iloc[0] == "3-2024"
+
+    def test_latin1_fallback(self, tmp_path: Path) -> None:
+        """File with latin-1 encoding (non-UTF-8 bytes) should be read successfully."""
+        df_in = pd.DataFrame([_MINIMAL_ROW])
+        fpath = tmp_path / "latin.txt"
+        df_in.to_csv(fpath, index=False, encoding="latin-1")
+        data_dict = self._data_dict()
+        df = read_raw_file(str(fpath), data_dict)
+        assert not df.empty
+
+
+# ---------------------------------------------------------------------------
+# Task I-04 / I-05: run_ingest
+# ---------------------------------------------------------------------------
+
+class TestRunIngest:
+    def _config(self, tmp_path: Path) -> dict:
+        return {
+            "raw_dir": str(tmp_path / "raw"),
+            "interim_dir": str(tmp_path / "interim"),
+            "data_dictionary": DICT_PATH,
         }
-    )
-    ddf = dd.from_pandas(data, npartitions=1)
-    result = filter_by_year(ddf, min_year=2024).compute()
-    assert len(result) == 2
 
+    def _write_raw_files(self, tmp_path: Path, n: int = 3) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            row = {**_MINIMAL_ROW, "LEASE_KID": str(1001 + i), "MONTH-YEAR": "1-2024"}
+            df = pd.DataFrame([row])
+            df.to_csv(raw_dir / f"lp{i}.txt", index=False)
 
-@pytest.mark.unit
-def test_filter_by_year_boundary_include() -> None:
-    data = pd.DataFrame({"MONTH_YEAR": ["1-2024"], "val": [1]})
-    ddf = dd.from_pandas(data, npartitions=1)
-    result = filter_by_year(ddf, min_year=2024).compute()
-    assert len(result) == 1
+    def test_returns_dask_dataframe_tr17(self, tmp_path: Path) -> None:
+        self._write_raw_files(tmp_path, n=2)
+        config = self._config(tmp_path)
+        result = run_ingest(config)
+        assert isinstance(result, dd.DataFrame)
+        assert not isinstance(result, pd.DataFrame)
 
+    def test_parquet_readable_tr18(self, tmp_path: Path) -> None:
+        self._write_raw_files(tmp_path, n=3)
+        config = self._config(tmp_path)
+        run_ingest(config)
+        interim_dir = tmp_path / "interim"
+        reloaded = dd.read_parquet(str(interim_dir))
+        assert isinstance(reloaded, dd.DataFrame)
+        assert len(reloaded.compute()) > 0
 
-@pytest.mark.unit
-def test_filter_by_year_boundary_exclude() -> None:
-    data = pd.DataFrame({"MONTH_YEAR": ["12-2023"], "val": [1]})
-    ddf = dd.from_pandas(data, npartitions=1)
-    result = filter_by_year(ddf, min_year=2024).compute()
-    assert len(result) == 0
+    def test_schema_completeness_tr22(self, tmp_path: Path) -> None:
+        self._write_raw_files(tmp_path, n=3)
+        config = self._config(tmp_path)
+        run_ingest(config)
+        interim_dir = tmp_path / "interim"
+        reloaded = dd.read_parquet(str(interim_dir)).compute()
+        expected = [
+            "LEASE_KID", "LEASE", "API_NUMBER", "MONTH-YEAR", "PRODUCT",
+            "PRODUCTION", "WELLS", "OPERATOR", "COUNTY", "source_file",
+        ]
+        for col in expected:
+            assert col in reloaded.columns, f"Missing column: {col}"
 
+    def test_raw_dir_not_exist_raises(self, tmp_path: Path) -> None:
+        config = self._config(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            run_ingest(config)
 
-@pytest.mark.unit
-def test_filter_by_year_null_excluded() -> None:
-    data = pd.DataFrame({"MONTH_YEAR": [None, "1-2024"], "val": [1, 2]})
-    ddf = dd.from_pandas(data, npartitions=1)
-    result = filter_by_year(ddf, min_year=2024).compute()
-    assert len(result) == 1
+    def test_no_txt_files_returns_empty_no_raise(self, tmp_path: Path) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        config = self._config(tmp_path)
+        result = run_ingest(config)
+        assert isinstance(result, dd.DataFrame)
 
+    def test_year_filter_in_output(self, tmp_path: Path) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        rows_mixed = [
+            {**_MINIMAL_ROW, "LEASE_KID": "1001", "MONTH-YEAR": "6-2022"},
+            {**_MINIMAL_ROW, "LEASE_KID": "1001", "MONTH-YEAR": "3-2024"},
+        ]
+        df = pd.DataFrame(rows_mixed)
+        df.to_csv(raw_dir / "lp1.txt", index=False)
+        config = self._config(tmp_path)
+        run_ingest(config)
+        result = dd.read_parquet(str(tmp_path / "interim")).compute()
+        years = result["MONTH-YEAR"].apply(lambda x: int(str(x).split("-")[-1]))
+        assert (years >= 2024).all()
 
-@pytest.mark.unit
-def test_filter_by_year_returns_dask() -> None:
-    data = pd.DataFrame({"MONTH_YEAR": ["1-2024"], "val": [1]})
-    ddf = dd.from_pandas(data, npartitions=1)
-    result = filter_by_year(ddf, min_year=2024)
-    assert isinstance(result, dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 04: build_dask_dataframe
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_build_dask_dataframe_returns_dask(tmp_path: Path) -> None:
-    """TR-17: return type must be dask.dataframe.DataFrame."""
-    files = []
-    for i in range(2):
-        f = tmp_path / f"lease{i}.txt"
-        _write_raw_file(f, [_make_csv_row(month_year="1-2024"), _make_csv_row(month_year="1-2023")])
-        files.append(f)
-    result = build_dask_dataframe(files, min_year=2024)
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_build_dask_dataframe_empty_raises() -> None:
-    with pytest.raises(ValueError):
-        build_dask_dataframe([])
-
-
-@pytest.mark.unit
-def test_build_dask_dataframe_source_file(tmp_path: Path) -> None:
-    f = tmp_path / "lease.txt"
-    _write_raw_file(f, [_make_csv_row()])
-    result = build_dask_dataframe([f])
-    assert "source_file" in result.columns
-
-
-@pytest.mark.unit
-def test_build_dask_dataframe_expected_columns(tmp_path: Path) -> None:
-    files = []
-    for i in range(3):
-        f = tmp_path / f"l{i}.txt"
-        _write_raw_file(f, [_make_csv_row(month_year="6-2024"), _make_csv_row(month_year="6-2023")])
-        files.append(f)
-    result = build_dask_dataframe(files)
-    for col in EXPECTED_COLUMNS:
-        assert col in result.columns
-
-
-# ---------------------------------------------------------------------------
-# Task 05: write_interim_parquet
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_write_interim_parquet_writes_files(tmp_path: Path) -> None:
-    rows = [_make_csv_row(month_year="1-2024") for _ in range(10)]
-    data_rows = []
-    for r in rows:
-        parts = r.strip().split(",")
-        data_rows.append(parts)
-    # Build a minimal Dask df
-    df = pd.DataFrame(
-        {
-            **{
-                col: pd.array(["x"] * 10, dtype=pd.StringDtype())
-                for col in [
-                    "LEASE_KID",
-                    "LEASE",
-                    "DOR_CODE",
-                    "API_NUMBER",
-                    "FIELD",
-                    "PRODUCING_ZONE",
-                    "OPERATOR",
-                    "COUNTY",
-                    "TOWNSHIP",
-                    "TWN_DIR",
-                    "RANGE",
-                    "RANGE_DIR",
-                    "SECTION",
-                    "SPOT",
-                    "MONTH_YEAR",
-                    "PRODUCT",
-                    "source_file",
-                ]
-            },
-            "LATITUDE": [38.0] * 10,
-            "LONGITUDE": [-97.0] * 10,
-            "PRODUCTION": [100.0] * 10,
-            "WELLS": [1.0] * 10,
-        }
-    )
-    ddf = dd.from_pandas(df, npartitions=3)
-    out_dir = tmp_path / "interim"
-    count = write_interim_parquet(ddf, str(out_dir))
-    assert count >= 1
-    assert len(list(out_dir.glob("*.parquet"))) == count
-
-
-@pytest.mark.unit
-def test_write_interim_parquet_creates_dir(tmp_path: Path) -> None:
-    new_dir = tmp_path / "new" / "interim"
-    df = pd.DataFrame({"LEASE_KID": pd.array(["1"], dtype=pd.StringDtype()), "PRODUCTION": [1.0]})
-    ddf = dd.from_pandas(df, npartitions=1)
-    write_interim_parquet(ddf, str(new_dir))
-    assert new_dir.exists()
-
-
-@pytest.mark.unit
-def test_write_interim_parquet_count_matches(tmp_path: Path) -> None:
-    df = pd.DataFrame({"col": pd.array(["a", "b", "c"], dtype=pd.StringDtype())})
-    ddf = dd.from_pandas(df, npartitions=3)
-    out = tmp_path / "out"
-    count = write_interim_parquet(ddf, str(out))
-    assert count == len(list(out.glob("*.parquet")))
-
-
-# ---------------------------------------------------------------------------
-# Task 06: run_ingest orchestrator
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_run_ingest_calls_stages(tmp_path: Path) -> None:
-    with (
-        patch("kgs_pipeline.ingest.discover_raw_files", return_value=[Path("f.txt")]) as m1,
-        patch("kgs_pipeline.ingest.build_dask_dataframe", return_value=MagicMock()) as m2,
-        patch("kgs_pipeline.ingest.write_interim_parquet", return_value=5) as m3,
-    ):
-        result = run_ingest(str(tmp_path), str(tmp_path / "out"))
-        assert result == 5
-        m1.assert_called_once()
-        m2.assert_called_once()
-        m3.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Task 07: TR-17 lazy evaluation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_tr17_build_dask_returns_dask_not_pandas(tmp_path: Path) -> None:
-    files = []
-    for i in range(2):
-        f = tmp_path / f"l{i}.txt"
-        _write_raw_file(f, [_make_csv_row()])
-        files.append(f)
-    result = build_dask_dataframe(files)
-    assert isinstance(result, dd.DataFrame)
-    assert not isinstance(result, pd.DataFrame)
+    def test_dtype_validation(self, tmp_path: Path) -> None:
+        self._write_raw_files(tmp_path, n=2)
+        config = self._config(tmp_path)
+        run_ingest(config)
+        result = dd.read_parquet(str(tmp_path / "interim")).compute()
+        assert result["LEASE_KID"].dtype == pd.Int64Dtype()
+        assert result["PRODUCTION"].dtype == np.dtype("float64")
+        assert hasattr(result["PRODUCT"].dtype, "categories")

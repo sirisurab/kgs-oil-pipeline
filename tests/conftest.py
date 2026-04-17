@@ -1,187 +1,83 @@
-"""Shared pytest fixtures for the KGS pipeline test suite."""
+"""Shared pytest fixtures for kgs_pipeline tests."""
+
+from __future__ import annotations
 
 from pathlib import Path
 
-import dask.dataframe as dd
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 import pytest
 
 
-KGS_COLUMNS = [
-    "LEASE_KID",
-    "LEASE",
-    "DOR_CODE",
-    "API_NUMBER",
-    "FIELD",
-    "PRODUCING_ZONE",
-    "OPERATOR",
-    "COUNTY",
-    "TOWNSHIP",
-    "TWN_DIR",
-    "RANGE",
-    "RANGE_DIR",
-    "SECTION",
-    "SPOT",
-    "LATITUDE",
-    "LONGITUDE",
-    "MONTH_YEAR",
-    "PRODUCT",
-    "WELLS",
-    "PRODUCTION",
-    "source_file",
-]
-
-RAW_CSV_HEADER = (
-    "LEASE KID,LEASE,DOR_CODE,API_NUMBER,FIELD,PRODUCING_ZONE,OPERATOR,COUNTY,"
-    "TOWNSHIP,TWN_DIR,RANGE,RANGE_DIR,SECTION,SPOT,LATITUDE,LONGITUDE,"
-    "MONTH-YEAR,PRODUCT,WELLS,PRODUCTION,URL"
-)
-
-RAW_CSV_ROW_TEMPLATE = (
-    "{lease_kid},TEST LEASE,DOR123,{api},{field},Lansing Group,Test Op LLC,"
-    "{county},1,S,14,E,1,NENENE,38.5,-98.5,"
-    "{month_year},{product},{wells},{production},"
-    "https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc={lease_kid}"
-)
-
-
-def _make_raw_csv_content(n_rows: int = 5, lease_kid: int = 1001, prefix: str = "lp") -> str:
-    """Generate minimal KGS-format CSV content for testing."""
-    rows = [RAW_CSV_HEADER]
-    for i in range(n_rows):
-        rows.append(
-            RAW_CSV_ROW_TEMPLATE.format(
-                lease_kid=lease_kid,
-                api=f"1500100{i:04d}",
-                field="KANASKA",
-                county="Ellis",
-                month_year=f"{i + 1}-2021",
-                product="O",
-                wells=2,
-                production=100 + i * 10,
-            )
-        )
-    return "\n".join(rows) + "\n"
+@pytest.fixture
+def sample_production_df() -> pd.DataFrame:
+    """Minimal production DataFrame matching the ingest schema."""
+    return pd.DataFrame({
+        "LEASE_KID": pd.array([1001, 1001, 1002], dtype="int64"),
+        "LEASE": pd.array(["Lease A", "Lease A", "Lease B"], dtype=pd.StringDtype()),
+        "DOR_CODE": pd.array([100, 100, 200], dtype=pd.Int64Dtype()),
+        "API_NUMBER": pd.array(["15-001", "15-001", "15-002"], dtype=pd.StringDtype()),
+        "FIELD": pd.array(["Field1", "Field1", "Field2"], dtype=pd.StringDtype()),
+        "PRODUCING_ZONE": pd.array(["Lansing", "Lansing", "Herington"], dtype=pd.StringDtype()),
+        "OPERATOR": pd.array(["Op A", "Op A", "Op B"], dtype=pd.StringDtype()),
+        "COUNTY": pd.array(["Douglas", "Douglas", "Ellis"], dtype=pd.StringDtype()),
+        "TOWNSHIP": pd.array([10, 10, 15], dtype=pd.Int64Dtype()),
+        "TWN_DIR": pd.array(["S", "S", "S"], dtype=pd.StringDtype()),
+        "RANGE": pd.array([20, 20, 25], dtype=pd.Int64Dtype()),
+        "RANGE_DIR": pd.array(["W", "W", "W"], dtype=pd.StringDtype()),
+        "SECTION": pd.array([5, 5, 12], dtype=pd.Int64Dtype()),
+        "SPOT": pd.array(["NE", "NE", "SW"], dtype=pd.StringDtype()),
+        "LATITUDE": pd.array([38.5, 38.5, 39.0], dtype=pd.Float64Dtype()),
+        "LONGITUDE": pd.array([-95.5, -95.5, -99.0], dtype=pd.Float64Dtype()),
+        "MONTH-YEAR": pd.array(["1-2024", "2-2024", "1-2024"], dtype=pd.StringDtype()),
+        "PRODUCT": pd.array(["O", "O", "G"], dtype=pd.StringDtype()),
+        "WELLS": pd.array([1, 1, 2], dtype=pd.Int64Dtype()),
+        "PRODUCTION": pd.array([100.0, 200.0, 5000.0], dtype=pd.Float64Dtype()),
+        "source_file": pd.array(["lp1.txt", "lp1.txt", "lp2.txt"], dtype=pd.StringDtype()),
+    })
 
 
 @pytest.fixture
-def raw_csv_content() -> str:
-    """Sample KGS-format CSV content."""
-    return _make_raw_csv_content()
-
-
-@pytest.fixture
-def raw_csv_file(tmp_path: Path) -> Path:
-    """A single valid lp*.txt file in tmp_path."""
-    p = tmp_path / "lp1001.txt"
-    p.write_text(_make_raw_csv_content(lease_kid=1001), encoding="utf-8")
-    return p
-
-
-@pytest.fixture
-def three_raw_csv_files(tmp_path: Path) -> list[Path]:
-    """Three valid lp*.txt files in tmp_path."""
-    paths = []
-    for i, kid in enumerate([1001, 1002, 1003]):
-        p = tmp_path / f"lp{kid}.txt"
-        p.write_text(_make_raw_csv_content(lease_kid=kid), encoding="utf-8")
-        paths.append(p)
-    return sorted(paths)
-
-
-@pytest.fixture
-def sample_interim_df() -> pd.DataFrame:
-    """Sample pandas DataFrame matching the interim Parquet schema."""
-    return pd.DataFrame(
-        {
-            "LEASE_KID": pd.array([1001, 1001, 1002], dtype="int64"),
-            "LEASE": ["TEST LEASE A", "TEST LEASE A", "TEST LEASE B"],
-            "DOR_CODE": ["DOR001", "DOR001", "DOR002"],
-            "API_NUMBER": ["1500112345, 1500167890", "1500112345", "1500299999"],
-            "FIELD": ["KANASKA", "KANASKA", "HUGOTON"],
-            "PRODUCING_ZONE": ["Lansing Group", "Lansing Group", "Hugoton"],
-            "OPERATOR": ["Buckeye West LLC", "Buckeye West LLC", "Pioneer Energy"],
-            "COUNTY": ["Nemaha", "Nemaha", "Stevens"],
-            "TOWNSHIP": ["1", "1", "34"],
-            "TWN_DIR": ["S", "S", "S"],
-            "RANGE": ["14", "14", "37"],
-            "RANGE_DIR": ["E", "E", "W"],
-            "SECTION": ["1", "1", "15"],
-            "SPOT": ["NENENE", "NENENE", "SWNW"],
-            "LATITUDE": [39.999519, 39.999519, 37.012345],
-            "LONGITUDE": [-95.78905, -95.78905, -101.23456],
-            "MONTH_YEAR": ["1-2020", "3-2020", "6-2021"],
-            "PRODUCT": ["O", "O", "G"],
-            "WELLS": pd.array([2, 2, 1], dtype="Int64"),
-            "PRODUCTION": [161.8, 163.74, 500.0],
-            "source_file": ["lp1001", "lp1001", "lp1002"],
-        }
-    )
-
-
-@pytest.fixture
-def sample_interim_ddf(sample_interim_df: pd.DataFrame) -> dd.DataFrame:
-    """Sample Dask DataFrame from the interim schema fixture."""
-    return dd.from_pandas(sample_interim_df, npartitions=1)
-
-
-@pytest.fixture
-def sample_processed_df() -> pd.DataFrame:
-    """Sample pandas DataFrame matching the processed Parquet schema."""
-    return pd.DataFrame(
-        {
-            "well_id": ["1500112345", "1500112345", "1500299999"],
-            "lease_kid": pd.array([1001, 1001, 1002], dtype="int64"),
-            "lease": ["TEST LEASE A", "TEST LEASE A", "TEST LEASE B"],
-            "dor_code": ["DOR001", "DOR001", "DOR002"],
-            "field": ["KANASKA", "KANASKA", "HUGOTON"],
-            "producing_zone": ["Lansing Group", "Lansing Group", "Hugoton"],
-            "operator": ["Buckeye West LLC", "Buckeye West LLC", "Pioneer Energy"],
-            "county": ["Nemaha", "Nemaha", "Stevens"],
-            "township": ["1", "1", "34"],
-            "twn_dir": ["S", "S", "S"],
-            "range_": ["14", "14", "37"],
-            "range_dir": ["E", "E", "W"],
-            "section": ["1", "1", "15"],
-            "spot": ["NENENE", "NENENE", "SWNW"],
-            "latitude": [39.999519, 39.999519, 37.012345],
-            "longitude": [-95.78905, -95.78905, -101.23456],
-            "production_date": pd.to_datetime(["2020-01-01", "2020-03-01", "2021-06-01"]),
-            "product": ["O", "O", "G"],
-            "wells": pd.array([2, 2, 1], dtype="Int64"),
-            "production": [161.8, 163.74, 500.0],
-            "unit": ["BBL", "BBL", "MCF"],
-            "outlier_flag": [False, False, False],
-            "source_file": ["lp1001", "lp1001", "lp1002"],
-        }
-    )
-
-
-@pytest.fixture
-def sample_processed_ddf(sample_processed_df: pd.DataFrame) -> dd.DataFrame:
-    """Sample Dask DataFrame from the processed schema fixture."""
-    return dd.from_pandas(sample_processed_df, npartitions=1)
-
-
-@pytest.fixture
-def well_sequence_df() -> pd.DataFrame:
-    """A single-well oil production sequence for feature testing."""
-    dates = pd.date_range("2020-01-01", periods=12, freq="MS")
-    productions = [100.0, 90.0, 80.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0, 5.0, 0.0]
-    return pd.DataFrame(
-        {
-            "well_id": ["W001"] * 12,
-            "product": ["O"] * 12,
-            "production_date": dates,
-            "production": productions,
-            "unit": ["BBL"] * 12,
-            "lease_kid": pd.array([1001] * 12, dtype="int64"),
-            "operator": ["Test Op"] * 12,
-            "county": ["Ellis"] * 12,
-            "field": ["KANASKA"] * 12,
-            "producing_zone": ["Lansing Group"] * 12,
-            "latitude": [38.5] * 12,
-            "longitude": [-98.5] * 12,
-            "outlier_flag": [False] * 12,
-        }
-    )
+def base_config() -> dict:
+    """Base pipeline configuration for tests."""
+    return {
+        "acquire": {
+            "lease_index_path": "data/external/oil_leases_2020_present.txt",
+            "raw_output_dir": "data/raw",
+            "month_save_url_template": (
+                "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc={lease_id}"
+            ),
+            "min_year": 2024,
+            "max_workers": 5,
+            "worker_sleep_seconds": 0.0,
+            "request_timeout_seconds": 30,
+            "max_retries": 3,
+            "retry_backoff_factor": 1.0,
+        },
+        "ingest": {
+            "raw_input_dir": "data/raw",
+            "interim_output_dir": "data/interim",
+            "file_glob": "*.txt",
+            "min_year": 2024,
+        },
+        "transform": {
+            "interim_input_dir": "data/interim",
+            "processed_output_dir": "data/processed",
+            "max_oil_bbl_per_month": 50000.0,
+            "deduplicate_subset": ["LEASE_KID", "MONTH-YEAR", "PRODUCT"],
+        },
+        "features": {
+            "processed_input_dir": "data/processed",
+            "features_output_dir": "data/features",
+            "rolling_windows": [3, 6],
+            "decline_rate_clip_min": -1.0,
+            "decline_rate_clip_max": 10.0,
+            "oil_outlier_threshold_bbl": 50000.0,
+        },
+        "dask": {
+            "scheduler": "local",
+            "n_workers": 1,
+            "threads_per_worker": 1,
+            "memory_limit": "1GB",
+        },
+        "logging": {"log_file": "logs/pipeline.log", "level": "INFO"},
+    }

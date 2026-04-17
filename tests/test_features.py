@@ -1,877 +1,691 @@
-"""Tests for kgs_pipeline.features module."""
+"""Tests for kgs_pipeline/features.py and kgs_pipeline/pipeline.py."""
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
+import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import dask.dataframe as dd
-import pandas as pd  # type: ignore[import-untyped]
+import numpy as np
+import pandas as pd
 import pytest
 
 from kgs_pipeline.features import (
-    add_water_column,
-    compute_cumulative,
-    compute_decline_rate,
-    compute_gor,
-    compute_rate_features,
-    compute_rolling_and_lag_features,
-    compute_water_cut,
-    read_processed,
+    add_cumulative_production,
+    add_decline_rate,
+    add_lag_features,
+    add_ratio_features,
+    add_rolling_features,
+    pivot_oil_gas,
     run_features,
-    write_features_parquet,
-    write_manifest,
 )
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+REQUIRED_FEATURE_COLS = [
+    "LEASE_KID",
+    "production_date",
+    "oil_bbl",
+    "gas_mcf",
+    "water_bbl",
+    "cum_oil",
+    "cum_gas",
+    "cum_water",
+    "gor",
+    "water_cut",
+    "decline_rate",
+    "oil_roll_3",
+    "oil_roll_6",
+    "gas_roll_3",
+    "gas_roll_6",
+    "water_roll_3",
+    "water_roll_6",
+    "oil_lag_1",
+    "gas_lag_1",
+    "water_lag_1",
+]
 
-def _base_df(n: int = 1, lease_id: str = "L1") -> pd.DataFrame:
+
+def _make_pivoted_partition(
+    lease_id: int = 1001,
+    months: int = 6,
+    oil_vals: list[float] | None = None,
+    gas_vals: list[float] | None = None,
+) -> pd.DataFrame:
+    """Build a pre-pivoted partition (one row per LEASE_KID, production_date)."""
+    if oil_vals is None:
+        oil_vals = [float(100 * (i + 1)) for i in range(months)]
+    if gas_vals is None:
+        gas_vals = [float(500 * (i + 1)) for i in range(months)]
+
+    dates = pd.date_range("2024-01-01", periods=months, freq="MS")
     return pd.DataFrame(
         {
-            "lease_kid": pd.array([lease_id] * n, dtype=pd.StringDtype()),
-            "api_number": pd.array(["A"] * n, dtype=pd.StringDtype()),
-            "lease_name": pd.array(["LN"] * n, dtype=pd.StringDtype()),
-            "operator": pd.array(["OP"] * n, dtype=pd.StringDtype()),
-            "county": pd.array(["C"] * n, dtype=pd.StringDtype()),
-            "field": pd.array(["F"] * n, dtype=pd.StringDtype()),
-            "producing_zone": pd.array(["Z"] * n, dtype=pd.StringDtype()),
-            "production_date": [pd.Timestamp(f"2024-{(i % 12) + 1:02d}-01") for i in range(n)],
-            "oil_bbl": [100.0] * n,
-            "gas_mcf": [500.0] * n,
-            "well_count": [1.0] * n,
-            "latitude": [38.0] * n,
-            "longitude": [-97.0] * n,
-            "is_outlier": [False] * n,
-            "has_negative_production": [False] * n,
-            "source_file": pd.array(["t.txt"] * n, dtype=pd.StringDtype()),
-        }
-    )
-
-
-def _dask(df: pd.DataFrame) -> dd.DataFrame:
-    return dd.from_pandas(df, npartitions=1)
-
-
-# ---------------------------------------------------------------------------
-# Task 01: read_processed
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_read_processed_returns_dask(tmp_path: Path) -> None:
-    df = _base_df()
-    df.to_parquet(tmp_path / "p.parquet", index=False)
-    result = read_processed(str(tmp_path))
-    assert isinstance(result, dd.DataFrame)
-
-
-@pytest.mark.unit
-def test_read_processed_npartitions_capped(tmp_path: Path) -> None:
-    df = _base_df()
-    df.to_parquet(tmp_path / "p.parquet", index=False)
-    result = read_processed(str(tmp_path))
-    assert result.npartitions <= 50
-
-
-@pytest.mark.unit
-def test_read_processed_returns_dask_not_pandas(tmp_path: Path) -> None:
-    """TR-17."""
-    df = _base_df()
-    df.to_parquet(tmp_path / "p.parquet", index=False)
-    result = read_processed(str(tmp_path))
-    assert isinstance(result, dd.DataFrame)
-    assert not isinstance(result, pd.DataFrame)
-
-
-@pytest.mark.unit
-def test_read_processed_missing_dir() -> None:
-    with pytest.raises(FileNotFoundError):
-        read_processed("/nonexistent")
-
-
-# ---------------------------------------------------------------------------
-# Task 02: add_water_column, compute_gor, compute_water_cut
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_add_water_column_all_zero(tmp_path: Path) -> None:
-    df = _base_df(3)
-    result = add_water_column(_dask(df)).compute()
-    assert "water_bbl" in result.columns
-    assert (result["water_bbl"] == 0.0).all()
-    assert result["water_bbl"].dtype == "float64"
-
-
-@pytest.mark.unit
-def test_tr06a_gor_zero_oil() -> None:
-    df = _base_df()
-    df["oil_bbl"] = 0.0
-    df["gas_mcf"] = 500.0
-    result = compute_gor(_dask(df)).compute()
-    assert pd.isna(result["gor"].iloc[0])
-
-
-@pytest.mark.unit
-def test_tr06b_gor_zero_zero() -> None:
-    df = _base_df()
-    df["oil_bbl"] = 0.0
-    df["gas_mcf"] = 0.0
-    result = compute_gor(_dask(df)).compute()
-    assert pd.isna(result["gor"].iloc[0])
-
-
-@pytest.mark.unit
-def test_tr06c_gor_gas_zero() -> None:
-    df = _base_df()
-    df["oil_bbl"] = 100.0
-    df["gas_mcf"] = 0.0
-    result = compute_gor(_dask(df)).compute()
-    assert result["gor"].iloc[0] == 0.0
-
-
-@pytest.mark.unit
-def test_gor_normal() -> None:
-    df = _base_df()
-    df["oil_bbl"] = 100.0
-    df["gas_mcf"] = 500.0
-    result = compute_gor(_dask(df)).compute()
-    assert result["gor"].iloc[0] == pytest.approx(5.0)
-
-
-@pytest.mark.unit
-def test_tr10a_water_cut_no_water() -> None:
-    df = _base_df()
-    df["water_bbl"] = 0.0
-    df["oil_bbl"] = 100.0
-    result = compute_water_cut(_dask(df)).compute()
-    assert result["water_cut"].iloc[0] == 0.0
-
-
-@pytest.mark.unit
-def test_tr10b_water_cut_all_water() -> None:
-    df = _base_df()
-    df["water_bbl"] = 50.0
-    df["oil_bbl"] = 0.0
-    result = compute_water_cut(_dask(df)).compute()
-    assert result["water_cut"].iloc[0] == 1.0
-
-
-@pytest.mark.unit
-def test_tr10_water_cut_both_zero() -> None:
-    df = _base_df()
-    df["water_bbl"] = 0.0
-    df["oil_bbl"] = 0.0
-    result = compute_water_cut(_dask(df)).compute()
-    assert pd.isna(result["water_cut"].iloc[0])
-
-
-@pytest.mark.unit
-def test_water_cut_mixed() -> None:
-    df = _base_df()
-    df["water_bbl"] = 25.0
-    df["oil_bbl"] = 75.0
-    result = compute_water_cut(_dask(df)).compute()
-    assert result["water_cut"].iloc[0] == pytest.approx(0.25)
-
-
-@pytest.mark.unit
-def test_features_functions_return_dask() -> None:
-    """TR-17: all feature functions return Dask DataFrame."""
-    df = _base_df()
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    assert isinstance(add_water_column(_dask(_base_df())), dd.DataFrame)
-    assert isinstance(compute_gor(ddf), dd.DataFrame)
-    assert isinstance(compute_water_cut(ddf), dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 03: compute_cumulative
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_tr03_cumulative_monotonic() -> None:
-    """TR-03: cum_oil = [100, 300, 450, 450, 750] for [100, 200, 150, 0, 300]."""
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 6)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 5, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 200.0, 150.0, 0.0, 300.0],
-            "gas_mcf": [0.0] * 5,
-            "water_bbl": [0.0] * 5,
+            "LEASE_KID": lease_id,
             "production_date": dates,
+            "oil_bbl": pd.array(oil_vals, dtype=np.float64),
+            "gas_mcf": pd.array(gas_vals, dtype=np.float64),
+            "water_bbl": pd.array([0.0] * months, dtype=np.float64),
+            "OPERATOR": "OP1",
+            "COUNTY": "Nemaha",
         }
     )
-    result = compute_cumulative(_dask(df)).compute()
-    result = result.sort_values("production_date")
-    expected = [100.0, 300.0, 450.0, 450.0, 750.0]
-    assert result["cum_oil"].tolist() == pytest.approx(expected)
 
 
-@pytest.mark.unit
-def test_tr08a_cumulative_flat_during_shutin() -> None:
-    """TR-08a: shut-in month has cum_oil == prior cum_oil."""
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 4)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 3, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 0.0, 200.0],
-            "gas_mcf": [0.0] * 3,
-            "water_bbl": [0.0] * 3,
-            "production_date": dates,
-        }
-    )
-    result = compute_cumulative(_dask(df)).compute().sort_values("production_date")
-    vals = result["cum_oil"].tolist()
-    # Month 2 shut-in: cum stays at 100
-    assert vals[1] == pytest.approx(vals[0])
+def _make_transform_output(tmp_path: Path, rows: list[dict]) -> str:
+    """Write synthetic transform-output Parquet (entity-indexed on LEASE_KID)."""
+    frames = []
+    for row in rows:
+        month_year = row.get("MONTH-YEAR", "1-2024")
+        parts = month_year.split("-")
+        m = int(parts[0])
+        y = int(parts[-1])
+        prod_date = pd.Timestamp(year=y, month=m, day=1)
 
+        frame = pd.DataFrame(
+            {
+                "LEASE_KID": pd.array([row.get("LEASE_KID", 1001)], dtype=pd.Int64Dtype()),
+                "production_date": [prod_date],
+                "PRODUCT": pd.Categorical([row.get("PRODUCT", "O")], categories=["O", "G"]),
+                "PRODUCTION": [float(row.get("PRODUCTION", 100.0))],
+                "LEASE": pd.array([row.get("LEASE", "TEST")], dtype=pd.StringDtype()),
+                "OPERATOR": pd.array([row.get("OPERATOR", "OP1")], dtype=pd.StringDtype()),
+                "COUNTY": pd.array([row.get("COUNTY", "Nemaha")], dtype=pd.StringDtype()),
+                "FIELD": pd.array([row.get("FIELD", "F1")], dtype=pd.StringDtype()),
+                "PRODUCING_ZONE": pd.array(
+                    [row.get("PRODUCING_ZONE", "Z1")], dtype=pd.StringDtype()
+                ),
+                "API_NUMBER": pd.array([row.get("API_NUMBER", "15-001")], dtype=pd.StringDtype()),
+                "LATITUDE": [row.get("LATITUDE", 39.9)],
+                "LONGITUDE": [row.get("LONGITUDE", -95.8)],
+                "MONTH-YEAR": pd.array([month_year], dtype=pd.StringDtype()),
+            }
+        )
+        frames.append(frame)
 
-@pytest.mark.unit
-def test_tr08b_leading_zeros_cum_zero() -> None:
-    """TR-08b: leading zero-production months have cum_oil=0.0."""
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 4)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 3, dtype=pd.StringDtype()),
-            "oil_bbl": [0.0, 0.0, 100.0],
-            "gas_mcf": [0.0] * 3,
-            "water_bbl": [0.0] * 3,
-            "production_date": dates,
-        }
-    )
-    result = compute_cumulative(_dask(df)).compute().sort_values("production_date")
-    assert result["cum_oil"].iloc[0] == 0.0
-    assert result["cum_oil"].iloc[1] == 0.0
-
-
-@pytest.mark.unit
-def test_tr08c_cumulative_resumes_after_shutin() -> None:
-    """TR-08c: cumulative resumes correctly after shut-in."""
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 5)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 4, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 0.0, 0.0, 400.0],
-            "gas_mcf": [0.0] * 4,
-            "water_bbl": [0.0] * 4,
-            "production_date": dates,
-        }
-    )
-    result = compute_cumulative(_dask(df)).compute().sort_values("production_date")
-    assert result["cum_oil"].iloc[3] == pytest.approx(500.0)
-
-
-@pytest.mark.unit
-def test_cumulative_per_lease_independent() -> None:
-    """Cumulative is computed independently per lease."""
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 3)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1", "L1", "L2", "L2"], dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 200.0, 50.0, 75.0],
-            "gas_mcf": [0.0] * 4,
-            "water_bbl": [0.0] * 4,
-            "production_date": dates + dates,
-        }
-    )
-    result = compute_cumulative(_dask(df)).compute()
-    l2_max = result[result["lease_kid"] == "L2"]["cum_oil"].max()
-    assert l2_max == pytest.approx(125.0)
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.set_index("LEASE_KID")
+    processed_dir = str(tmp_path / "processed")
+    Path(processed_dir).mkdir(parents=True, exist_ok=True)
+    ddf = dd.from_pandas(combined, npartitions=1)
+    ddf.to_parquet(processed_dir, engine="pyarrow", write_index=True, overwrite=True)
+    return processed_dir
 
 
 # ---------------------------------------------------------------------------
-# Task 04: compute_decline_rate
+# Task F-01: pivot_oil_gas
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_tr07a_decline_clipped_lower() -> None:
-    """TR-07a: decline rate < -1.0 clipped to -1.0."""
-    # Use a case that would produce -2.0 without clipping: 100 → 0 is -1.0
-    # To get < -1.0 we need pct_change < -1, which is impossible with non-negative values
-    # Directly test clipping via a synthetic series
-    from kgs_pipeline.features import _compute_decline_partition
+class TestPivotOilGas:
+    def _make_transform_ddf(self, rows: list[dict]) -> dd.DataFrame:
+        frames = []
+        for row in rows:
+            month_year = row.get("MONTH-YEAR", "1-2024")
+            parts = month_year.split("-")
+            prod_date = pd.Timestamp(year=int(parts[-1]), month=int(parts[0]), day=1)
+            frames.append(
+                pd.DataFrame(
+                    {
+                        "LEASE_KID": pd.array([row["LEASE_KID"]], dtype=pd.Int64Dtype()),
+                        "production_date": [prod_date],
+                        "PRODUCT": pd.Categorical([row["PRODUCT"]], categories=["O", "G"]),
+                        "PRODUCTION": [float(row["PRODUCTION"])],
+                        "OPERATOR": pd.array(["OP1"], dtype=pd.StringDtype()),
+                        "COUNTY": pd.array(["Nemaha"], dtype=pd.StringDtype()),
+                        "MONTH-YEAR": pd.array([month_year], dtype=pd.StringDtype()),
+                    }
+                )
+            )
+        combined = pd.concat(frames, ignore_index=True).set_index("LEASE_KID")
+        return dd.from_pandas(combined, npartitions=1)
 
-    df2 = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 2, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 100.0],
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
-            "gas_mcf": [0.0, 0.0],
-        }
-    )
-    result = _compute_decline_partition(df2.copy())
-    # pct_change on [100, 100] = [NaN, 0.0]
-    assert result["decline_rate"].iloc[1] == pytest.approx(0.0)
-    # Simulate pre-clip extreme value
-    from kgs_pipeline.features import compute_decline_rate
+    def test_oil_and_gas_merged(self) -> None:
+        ddf = self._make_transform_ddf(
+            [
+                {"LEASE_KID": 1001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0},
+                {"LEASE_KID": 1001, "MONTH-YEAR": "1-2024", "PRODUCT": "G", "PRODUCTION": 500.0},
+                {"LEASE_KID": 1001, "MONTH-YEAR": "2-2024", "PRODUCT": "O", "PRODUCTION": 120.0},
+                {"LEASE_KID": 1001, "MONTH-YEAR": "2-2024", "PRODUCT": "G", "PRODUCTION": 600.0},
+            ]
+        )
+        result = pivot_oil_gas(ddf).compute()
+        assert len(result) == 2
+        assert set(result.columns) >= {"oil_bbl", "gas_mcf", "water_bbl"}
 
-    df3 = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 2, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 0.0],
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
-            "gas_mcf": [0.0, 0.0],
-        }
-    )
-    res = compute_decline_rate(_dask(df3)).compute()
-    # pct_change of 0/100 = -1.0, clipped at -1.0
-    val = res.sort_values("production_date")["decline_rate"].iloc[1]
-    assert val >= -1.0
+    def test_oil_only_gas_is_zero(self) -> None:
+        ddf = self._make_transform_ddf(
+            [
+                {"LEASE_KID": 2001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 200.0},
+            ]
+        )
+        result = pivot_oil_gas(ddf).compute()
+        assert result["gas_mcf"].iloc[0] == 0.0
 
+    def test_gas_only_oil_is_zero(self) -> None:
+        ddf = self._make_transform_ddf(
+            [
+                {"LEASE_KID": 3001, "MONTH-YEAR": "1-2024", "PRODUCT": "G", "PRODUCTION": 1000.0},
+            ]
+        )
+        result = pivot_oil_gas(ddf).compute()
+        assert result["oil_bbl"].iloc[0] == 0.0
 
-@pytest.mark.unit
-def test_tr07b_decline_clipped_upper() -> None:
-    """TR-07b: large positive decline clipped at 10.0."""
-    # pct_change from 1 → 100 = 99.0, clipped to 10.0
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 2, dtype=pd.StringDtype()),
-            "oil_bbl": [1.0, 100.0],
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
-            "gas_mcf": [0.0, 0.0],
-        }
-    )
-    result = compute_decline_rate(_dask(df)).compute().sort_values("production_date")
-    assert result["decline_rate"].iloc[1] == pytest.approx(10.0)
-
-
-@pytest.mark.unit
-def test_tr07c_decline_within_bounds() -> None:
-    """TR-07c: 0.5 decline rate unchanged."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 2, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 150.0],
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
-            "gas_mcf": [0.0, 0.0],
-        }
-    )
-    result = compute_decline_rate(_dask(df)).compute().sort_values("production_date")
-    assert result["decline_rate"].iloc[1] == pytest.approx(0.5)
-
-
-@pytest.mark.unit
-def test_tr07d_shutin_then_production_nan() -> None:
-    """TR-07d: prior=0, current>0 → decline_rate=NaN."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 2, dtype=pd.StringDtype()),
-            "oil_bbl": [0.0, 100.0],
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
-            "gas_mcf": [0.0, 0.0],
-        }
-    )
-    result = compute_decline_rate(_dask(df)).compute().sort_values("production_date")
-    assert pd.isna(result["decline_rate"].iloc[1])
-
-
-@pytest.mark.unit
-def test_decline_both_shutin_nan() -> None:
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 2, dtype=pd.StringDtype()),
-            "oil_bbl": [0.0, 0.0],
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
-            "gas_mcf": [0.0, 0.0],
-        }
-    )
-    result = compute_decline_rate(_dask(df)).compute().sort_values("production_date")
-    assert pd.isna(result["decline_rate"].iloc[1])
-
-
-@pytest.mark.unit
-def test_decline_first_row_nan() -> None:
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"], dtype=pd.StringDtype()),
-            "oil_bbl": [100.0],
-            "production_date": [pd.Timestamp("2024-01-01")],
-            "gas_mcf": [0.0],
-        }
-    )
-    result = compute_decline_rate(_dask(df)).compute()
-    assert pd.isna(result["decline_rate"].iloc[0])
-
-
-@pytest.mark.unit
-def test_decline_returns_dask() -> None:
-    df = _base_df()
-    assert isinstance(compute_decline_rate(_dask(df)), dd.DataFrame)
+    def test_water_bbl_is_zero(self) -> None:
+        ddf = self._make_transform_ddf(
+            [
+                {"LEASE_KID": 4001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 50.0},
+            ]
+        )
+        result = pivot_oil_gas(ddf).compute()
+        assert (result["water_bbl"] == 0.0).all()
 
 
 # ---------------------------------------------------------------------------
-# Task 05: compute_rolling_and_lag_features
+# Task F-02: add_cumulative_production
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_tr09a_rolling_3month() -> None:
-    """TR-09a: 3-month rolling average for known sequence."""
-    vals = [100.0, 200.0, 150.0, 300.0, 250.0, 400.0]
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 7)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 6, dtype=pd.StringDtype()),
-            "oil_bbl": vals,
-            "gas_mcf": [0.0] * 6,
-            "water_bbl": [0.0] * 6,
-            "production_date": dates,
+class TestAddCumulativeProduction:
+    def test_monotonicity_tr03(self) -> None:
+        part = _make_pivoted_partition(months=6)
+        result = add_cumulative_production(part)
+        cum = result["cum_oil"].tolist()
+        assert cum == sorted(cum)
+
+    def test_flat_periods_tr08a(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[100, 0, 0, 50], months=4)
+        result = add_cumulative_production(part)
+        assert result["cum_oil"].tolist() == [100, 100, 100, 150]
+
+    def test_zero_at_start_tr08b(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[0, 0, 100], months=3)
+        result = add_cumulative_production(part)
+        assert result["cum_oil"].tolist() == [0, 0, 100]
+
+    def test_resumption_after_shutin_tr08c(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[50, 0, 30], months=3)
+        result = add_cumulative_production(part)
+        assert result["cum_oil"].tolist() == [50, 50, 80]
+
+    def test_meta_consistency_tr23(self) -> None:
+        empty = _make_pivoted_partition(months=0)
+        meta = add_cumulative_production(empty)
+        assert "cum_oil" in meta.columns
+        assert "cum_gas" in meta.columns
+        assert "cum_water" in meta.columns
+
+
+# ---------------------------------------------------------------------------
+# Task F-03: add_ratio_features
+# ---------------------------------------------------------------------------
+
+
+class TestAddRatioFeatures:
+    def _row(self, oil: float, gas: float, water: float = 0.0) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "LEASE_KID": 1001,
+                "production_date": [pd.Timestamp("2024-01-01")],
+                "oil_bbl": pd.array([oil], dtype=np.float64),
+                "gas_mcf": pd.array([gas], dtype=np.float64),
+                "water_bbl": pd.array([water], dtype=np.float64),
+            }
+        )
+
+    def test_gor_zero_oil_nonzero_gas_is_nan_tr06a(self) -> None:
+        result = add_ratio_features(self._row(0, 50))
+        assert math.isnan(result["gor"].iloc[0])
+
+    def test_gor_both_zero_is_nan_tr06b(self) -> None:
+        result = add_ratio_features(self._row(0, 0))
+        assert math.isnan(result["gor"].iloc[0])
+
+    def test_gor_nonzero_oil_zero_gas_tr06c(self) -> None:
+        result = add_ratio_features(self._row(100, 0))
+        assert result["gor"].iloc[0] == 0.0
+
+    def test_gor_formula_tr09d(self) -> None:
+        result = add_ratio_features(self._row(100, 500))
+        assert result["gor"].iloc[0] == pytest.approx(5.0)
+
+    def test_water_cut_zero_water_tr10a(self) -> None:
+        result = add_ratio_features(self._row(200, 0, 0))
+        assert result["water_cut"].iloc[0] == 0.0
+
+    def test_water_cut_zero_oil_tr10b(self) -> None:
+        result = add_ratio_features(self._row(0, 0, 100))
+        assert result["water_cut"].iloc[0] == 1.0
+
+    def test_water_cut_negative_denominator_tr10c(self) -> None:
+        result = add_ratio_features(self._row(-10, 0, 110))
+        wc = result["water_cut"].iloc[0]
+        assert wc < 0.0 or wc > 1.0  # outside [0,1] — not treated as valid
+
+    def test_meta_consistency_tr23(self) -> None:
+        empty = _make_pivoted_partition(months=0)
+        meta = add_ratio_features(empty)
+        assert "gor" in meta.columns
+        assert "water_cut" in meta.columns
+
+
+# ---------------------------------------------------------------------------
+# Task F-04: add_decline_rate
+# ---------------------------------------------------------------------------
+
+
+class TestAddDeclineRate:
+    def _seq(self, oil_vals: list[float]) -> pd.DataFrame:
+        dates = pd.date_range("2024-01-01", periods=len(oil_vals), freq="MS")
+        return pd.DataFrame(
+            {
+                "LEASE_KID": 1001,
+                "production_date": dates,
+                "oil_bbl": pd.array(oil_vals, dtype=np.float64),
+                "gas_mcf": pd.array([0.0] * len(oil_vals), dtype=np.float64),
+                "water_bbl": pd.array([0.0] * len(oil_vals), dtype=np.float64),
+            }
+        )
+
+    def test_clip_lower_tr07a(self) -> None:
+        # prev=10, curr=25 → (10-25)/10 = -1.5 → clipped to -1.0
+        part = self._seq([10, 25])
+        result = add_decline_rate(part)
+        assert result["decline_rate"].iloc[1] == pytest.approx(-1.0)
+
+    def test_clip_upper_tr07b(self) -> None:
+        # prev=100, curr=-1000 would give large positive value → clipped to 10.0
+        # Use prev=1, curr=-100 → (1 - (-100)) / 1 = 101 → clipped to 10
+        part = self._seq([1, -100])
+        result = add_decline_rate(part)
+        assert result["decline_rate"].iloc[1] == pytest.approx(10.0)
+
+    def test_within_bounds_tr07c(self) -> None:
+        # prev=100, curr=70 → (100-70)/100 = 0.3
+        part = self._seq([100, 70])
+        result = add_decline_rate(part)
+        assert result["decline_rate"].iloc[1] == pytest.approx(0.3)
+
+    def test_zero_prev_zero_curr_tr07d(self) -> None:
+        part = self._seq([0, 0])
+        result = add_decline_rate(part)
+        assert result["decline_rate"].iloc[1] == pytest.approx(0.0)
+
+    def test_first_month_is_nan(self) -> None:
+        part = self._seq([100, 80])
+        result = add_decline_rate(part)
+        assert math.isnan(result["decline_rate"].iloc[0])
+
+    def test_meta_consistency_tr23(self) -> None:
+        empty = _make_pivoted_partition(months=0)
+        meta = add_decline_rate(empty)
+        assert "decline_rate" in meta.columns
+
+
+# ---------------------------------------------------------------------------
+# Task F-05: add_rolling_features
+# ---------------------------------------------------------------------------
+
+
+class TestAddRollingFeatures:
+    def test_roll3_correctness_tr09a(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[100, 200, 300], months=3)
+        result = add_rolling_features(part)
+        # Mean of 100, 200, 300 = 200.0
+        assert result["oil_roll_3"].iloc[2] == pytest.approx(200.0)
+
+    def test_partial_window_nan_tr09b_3(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[100, 200], months=2)
+        result = add_rolling_features(part)
+        assert math.isnan(result["oil_roll_3"].iloc[0])
+        assert math.isnan(result["oil_roll_3"].iloc[1])
+
+    def test_partial_window_nan_tr09b_6(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[10, 20, 30, 40, 50], months=5)
+        result = add_rolling_features(part)
+        for i in range(5):
+            assert math.isnan(result["oil_roll_6"].iloc[i])
+
+    def test_roll6_full_window(self) -> None:
+        vals = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0]
+        part = _make_pivoted_partition(oil_vals=vals, months=6)
+        result = add_rolling_features(part)
+        expected = sum(vals) / 6  # 350.0
+        assert result["oil_roll_6"].iloc[5] == pytest.approx(expected)
+
+    def test_roll3_month6_value(self) -> None:
+        vals = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0]
+        part = _make_pivoted_partition(oil_vals=vals, months=6)
+        result = add_rolling_features(part)
+        # Month 6 roll3 = mean(400, 500, 600) = 500.0
+        assert result["oil_roll_3"].iloc[5] == pytest.approx(500.0)
+
+    def test_meta_consistency_tr23(self) -> None:
+        empty = _make_pivoted_partition(months=0)
+        meta = add_rolling_features(empty)
+        for col in [
+            "oil_roll_3",
+            "oil_roll_6",
+            "gas_roll_3",
+            "gas_roll_6",
+            "water_roll_3",
+            "water_roll_6",
+        ]:
+            assert col in meta.columns
+
+
+# ---------------------------------------------------------------------------
+# Task F-06: add_lag_features
+# ---------------------------------------------------------------------------
+
+
+class TestAddLagFeatures:
+    def test_lag1_correctness_tr09c(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[100, 200, 300], months=3)
+        result = add_lag_features(part)
+        assert math.isnan(result["oil_lag_1"].iloc[0])
+        assert result["oil_lag_1"].iloc[1] == pytest.approx(100.0)
+        assert result["oil_lag_1"].iloc[2] == pytest.approx(200.0)
+
+    def test_first_month_is_nan(self) -> None:
+        part = _make_pivoted_partition(oil_vals=[500], months=1)
+        result = add_lag_features(part)
+        assert math.isnan(result["oil_lag_1"].iloc[0])
+
+    def test_no_bleed_across_leases(self) -> None:
+        lease_a = _make_pivoted_partition(lease_id=1001, oil_vals=[100, 200], months=2)
+        lease_b = _make_pivoted_partition(lease_id=2001, oil_vals=[999, 888], months=2)
+        combined = pd.concat([lease_a, lease_b], ignore_index=True)
+        result = add_lag_features(combined)
+        first_b = result[result["LEASE_KID"] == 2001].iloc[0]
+        assert math.isnan(first_b["oil_lag_1"])
+
+    def test_meta_consistency_tr23(self) -> None:
+        empty = _make_pivoted_partition(months=0)
+        meta = add_lag_features(empty)
+        assert "oil_lag_1" in meta.columns
+        assert "gas_lag_1" in meta.columns
+        assert "water_lag_1" in meta.columns
+
+
+# ---------------------------------------------------------------------------
+# Task F-07 / F-08: run_features integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunFeatures:
+    def _config(self, tmp_path: Path) -> dict:
+        return {
+            "processed_dir": str(tmp_path / "processed"),
+            "output_dir": str(tmp_path / "features"),
         }
-    )
-    result = compute_rolling_and_lag_features(_dask(df)).compute().sort_values("production_date")
-    # Month 3 (index 2): mean(100, 200, 150) = 150.0
-    assert result["oil_bbl_roll3"].iloc[2] == pytest.approx(150.0)
-    # Month 4 (index 3): mean(200, 150, 300) = 216.667
-    assert result["oil_bbl_roll3"].iloc[3] == pytest.approx(650 / 3, rel=1e-3)
+
+    def _write_single_lease(self, tmp_path: Path, months: int = 6) -> None:
+        rows = []
+        for i in range(1, months + 1):
+            rows.append(
+                {
+                    "LEASE_KID": 1001,
+                    "MONTH-YEAR": f"{i}-2024",
+                    "PRODUCT": "O",
+                    "PRODUCTION": float(100 * i),
+                }
+            )
+            rows.append(
+                {
+                    "LEASE_KID": 1001,
+                    "MONTH-YEAR": f"{i}-2024",
+                    "PRODUCT": "G",
+                    "PRODUCTION": float(500 * i),
+                }
+            )
+        _make_transform_output(tmp_path, rows)
+
+    def test_returns_dask_dataframe_tr17(self, tmp_path: Path) -> None:
+        self._write_single_lease(tmp_path)
+        result = run_features(self._config(tmp_path))
+        assert isinstance(result, dd.DataFrame)
+        assert not isinstance(result, pd.DataFrame)
+
+    def test_parquet_readable_tr18(self, tmp_path: Path) -> None:
+        self._write_single_lease(tmp_path)
+        run_features(self._config(tmp_path))
+        reloaded = dd.read_parquet(str(tmp_path / "features"))
+        assert isinstance(reloaded, dd.DataFrame)
+        assert len(reloaded.compute()) > 0
+
+    def test_feature_column_presence_tr19(self, tmp_path: Path) -> None:
+        self._write_single_lease(tmp_path, months=6)
+        run_features(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "features")).compute()
+        for col in REQUIRED_FEATURE_COLS:
+            assert col in result.columns, f"Missing required column: {col}"
+
+    def test_schema_stability_tr14(self, tmp_path: Path) -> None:
+        self._write_single_lease(tmp_path, months=4)
+        run_features(self._config(tmp_path))
+        files = list(Path(tmp_path / "features").glob("*.parquet"))
+        if len(files) >= 2:
+            df1 = pd.read_parquet(files[0])
+            df2 = pd.read_parquet(files[1])
+            assert list(df1.columns) == list(df2.columns)
+
+    def test_processed_dir_not_exist_raises(self, tmp_path: Path) -> None:
+        config = self._config(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            run_features(config)
+
+    def test_cumulative_monotonicity_tr03(self, tmp_path: Path) -> None:
+        self._write_single_lease(tmp_path, months=12)
+        run_features(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "features")).compute()
+        for col in ["cum_oil", "cum_gas", "cum_water"]:
+            vals = result.sort_values("production_date")[col].tolist()
+            assert vals == sorted(vals), f"{col} not monotonically non-decreasing"
+
+    def test_gor_formula_tr06(self, tmp_path: Path) -> None:
+        _make_transform_output(
+            tmp_path,
+            [
+                {"LEASE_KID": 5001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0},
+                {"LEASE_KID": 5001, "MONTH-YEAR": "1-2024", "PRODUCT": "G", "PRODUCTION": 500.0},
+            ],
+        )
+        run_features(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "features")).compute()
+        row = result[result["LEASE_KID"] == 5001].iloc[0]
+        assert row["gor"] == pytest.approx(5.0)
+
+    def test_water_cut_tr09(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 6001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 70.0},
+            {"LEASE_KID": 6001, "MONTH-YEAR": "1-2024", "PRODUCT": "G", "PRODUCTION": 0.0},
+        ]
+        _make_transform_output(tmp_path, rows)
+        run_features(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "features")).compute()
+        row = result[result["LEASE_KID"] == 6001].iloc[0]
+        # water_bbl == 0, oil_bbl == 70 → water_cut = 0.0
+        assert row["water_cut"] == pytest.approx(0.0)
+
+    def test_decline_rate_clip_tr07(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 7001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 10.0},
+            {"LEASE_KID": 7001, "MONTH-YEAR": "2-2024", "PRODUCT": "O", "PRODUCTION": 25.0},
+        ]
+        _make_transform_output(tmp_path, rows)
+        run_features(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "features")).compute()
+        lease_rows = result[result["LEASE_KID"] == 7001].sort_values("production_date")
+        # Month 2: decline = (10-25)/10 = -1.5 → clipped to -1.0
+        assert lease_rows["decline_rate"].iloc[1] == pytest.approx(-1.0)
+
+    def test_rolling_averages_tr09(self, tmp_path: Path) -> None:
+        rows = []
+        for i, v in enumerate([100, 200, 300, 400, 500, 600], start=1):
+            rows.append(
+                {
+                    "LEASE_KID": 8001,
+                    "MONTH-YEAR": f"{i}-2024",
+                    "PRODUCT": "O",
+                    "PRODUCTION": float(v),
+                }
+            )
+        _make_transform_output(tmp_path, rows)
+        run_features(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "features")).compute()
+        lease_rows = result[result["LEASE_KID"] == 8001].sort_values("production_date")
+        assert lease_rows["oil_roll_3"].iloc[2] == pytest.approx(200.0)
+        assert lease_rows["oil_roll_6"].iloc[5] == pytest.approx(350.0)
+
+    def test_lag1_tr09c(self, tmp_path: Path) -> None:
+        rows = [
+            {"LEASE_KID": 9001, "MONTH-YEAR": "1-2024", "PRODUCT": "O", "PRODUCTION": 100.0},
+            {"LEASE_KID": 9001, "MONTH-YEAR": "2-2024", "PRODUCT": "O", "PRODUCTION": 200.0},
+            {"LEASE_KID": 9001, "MONTH-YEAR": "3-2024", "PRODUCT": "O", "PRODUCTION": 300.0},
+        ]
+        _make_transform_output(tmp_path, rows)
+        run_features(self._config(tmp_path))
+        result = dd.read_parquet(str(tmp_path / "features")).compute()
+        lease_rows = result[result["LEASE_KID"] == 9001].sort_values("production_date")
+        assert math.isnan(lease_rows["oil_lag_1"].iloc[0])
+        assert lease_rows["oil_lag_1"].iloc[1] == pytest.approx(100.0)
+        assert lease_rows["oil_lag_1"].iloc[2] == pytest.approx(200.0)
+
+    def test_meta_schema_consistency_tr23(self) -> None:
+        """Verify meta= passed to each map_partitions matches actual function output."""
+        empty_pivot = _make_pivoted_partition(months=0)
+        for fn in [
+            add_cumulative_production,
+            add_ratio_features,
+            add_decline_rate,
+            add_rolling_features,
+            add_lag_features,
+        ]:
+            meta_out = fn(empty_pivot.copy())
+            assert isinstance(meta_out, pd.DataFrame), f"{fn.__name__} meta is not DataFrame"
 
 
-@pytest.mark.unit
-def test_tr09b_rolling_nan_insufficient_history() -> None:
-    """TR-09b: 2 months → roll3 is NaN for both (min_periods=3)."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 2, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 200.0],
-            "gas_mcf": [0.0] * 2,
-            "water_bbl": [0.0] * 2,
-            "production_date": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")],
+# ---------------------------------------------------------------------------
+# Task F-09: Pipeline orchestrator tests
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineOrchestrator:
+    def _base_config(self, tmp_path: Path) -> str:
+        import yaml
+
+        cfg = {
+            "acquire": {
+                "lease_index": str(tmp_path / "index.txt"),
+                "raw_dir": str(tmp_path / "raw"),
+                "month_save_url": "https://example.com/MonthSave",
+                "download_base_url": "https://example.com/download",
+                "min_year": 2024,
+                "max_workers": 1,
+                "sleep_seconds": 0.0,
+            },
+            "ingest": {
+                "raw_dir": str(tmp_path / "raw"),
+                "interim_dir": str(tmp_path / "interim"),
+                "data_dictionary": "references/kgs_monthly_data_dictionary.csv",
+            },
+            "transform": {
+                "interim_dir": str(tmp_path / "interim"),
+                "processed_dir": str(tmp_path / "processed"),
+            },
+            "features": {
+                "processed_dir": str(tmp_path / "processed"),
+                "output_dir": str(tmp_path / "features"),
+            },
+            "dask": {
+                "scheduler": "local",
+                "n_workers": 1,
+                "threads_per_worker": 1,
+                "memory_limit": "1GB",
+                "dashboard_port": 8788,
+            },
+            "logging": {
+                "log_file": str(tmp_path / "logs" / "test.log"),
+                "level": "WARNING",
+            },
         }
-    )
-    result = compute_rolling_and_lag_features(_dask(df)).compute()
-    assert result["oil_bbl_roll3"].isna().all()
-
-
-@pytest.mark.unit
-def test_tr09b_roll6_nan_insufficient() -> None:
-    """TR-09b: 4 months → roll6 is NaN for all."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 4, dtype=pd.StringDtype()),
-            "oil_bbl": [10.0, 20.0, 30.0, 40.0],
-            "gas_mcf": [0.0] * 4,
-            "water_bbl": [0.0] * 4,
-            "production_date": [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 5)],
-        }
-    )
-    result = compute_rolling_and_lag_features(_dask(df)).compute()
-    assert result["oil_bbl_roll6"].isna().all()
-
-
-@pytest.mark.unit
-def test_tr09c_lag1() -> None:
-    """TR-09c: lag-1 of [10, 20, 30, 40] = [NaN, 10, 20, 30]."""
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 4, dtype=pd.StringDtype()),
-            "oil_bbl": [10.0, 20.0, 30.0, 40.0],
-            "gas_mcf": [0.0] * 4,
-            "water_bbl": [0.0] * 4,
-            "production_date": [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 5)],
-        }
-    )
-    result = compute_rolling_and_lag_features(_dask(df)).compute().sort_values("production_date")
-    lags = result["oil_bbl_lag1"].tolist()
-    assert pd.isna(lags[0])
-    assert lags[1] == pytest.approx(10.0)
-    assert lags[2] == pytest.approx(20.0)
-    assert lags[3] == pytest.approx(30.0)
-
-
-@pytest.mark.unit
-def test_rolling_lag_all_columns_present() -> None:
-    df = _base_df(6)
-    df["water_bbl"] = 0.0
-    result = compute_rolling_and_lag_features(_dask(df)).compute()
-    for col in [
-        "oil_bbl_roll3",
-        "oil_bbl_roll6",
-        "gas_mcf_roll3",
-        "gas_mcf_roll6",
-        "water_bbl_roll3",
-        "water_bbl_roll6",
-        "oil_bbl_lag1",
-        "gas_mcf_lag1",
-        "water_bbl_lag1",
-    ]:
-        assert col in result.columns
-
-
-@pytest.mark.unit
-def test_rolling_lag_returns_dask() -> None:
-    df = _base_df()
-    df["water_bbl"] = 0.0
-    assert isinstance(compute_rolling_and_lag_features(_dask(df)), dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 06: compute_rate_features
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_oil_per_day_january() -> None:
-    """oil_bbl=310, January → 10.0/day."""
-    df = _base_df()
-    df["oil_bbl"] = 310.0
-    df["production_date"] = pd.Timestamp("2024-01-01")
-    df["water_bbl"] = 0.0
-    result = compute_rate_features(_dask(df)).compute()
-    assert result["oil_bbl_per_day"].iloc[0] == pytest.approx(10.0)
-
-
-@pytest.mark.unit
-def test_oil_per_day_february_2024() -> None:
-    """oil_bbl=290, Feb 2024 (29 days) → 10.0/day."""
-    df = _base_df()
-    df["oil_bbl"] = 290.0
-    df["production_date"] = pd.Timestamp("2024-02-01")
-    df["water_bbl"] = 0.0
-    result = compute_rate_features(_dask(df)).compute()
-    assert result["oil_bbl_per_day"].iloc[0] == pytest.approx(10.0)
-
-
-@pytest.mark.unit
-def test_months_since_first_prod() -> None:
-    """Jan 2024 first prod, Apr 2024 → months_since=3."""
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 5)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 4, dtype=pd.StringDtype()),
-            "oil_bbl": [100.0, 100.0, 100.0, 100.0],
-            "gas_mcf": [0.0] * 4,
-            "water_bbl": [0.0] * 4,
-            "production_date": dates,
-            "api_number": pd.array(["A"] * 4, dtype=pd.StringDtype()),
-        }
-    )
-    result = compute_rate_features(_dask(df)).compute().sort_values("production_date")
-    assert result["months_since_first_prod"].iloc[3] == pytest.approx(3.0)
-
-
-@pytest.mark.unit
-def test_months_since_first_prod_all_zero() -> None:
-    """All oil_bbl=0 → months_since_first_prod=NaN."""
-    df = _base_df()
-    df["oil_bbl"] = 0.0
-    df["water_bbl"] = 0.0
-    result = compute_rate_features(_dask(df)).compute()
-    assert pd.isna(result["months_since_first_prod"].iloc[0])
-
-
-@pytest.mark.unit
-def test_rate_features_columns_present() -> None:
-    df = _base_df()
-    df["water_bbl"] = 0.0
-    result = compute_rate_features(_dask(df)).compute()
-    assert "oil_bbl_per_day" in result.columns
-    assert "gas_mcf_per_day" in result.columns
-    assert "months_since_first_prod" in result.columns
-
-
-@pytest.mark.unit
-def test_rate_features_returns_dask() -> None:
-    df = _base_df()
-    df["water_bbl"] = 0.0
-    assert isinstance(compute_rate_features(_dask(df)), dd.DataFrame)
-
-
-# ---------------------------------------------------------------------------
-# Task 07: write_features_parquet
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_write_features_parquet_writes(tmp_path: Path) -> None:
-    df = _base_df(5)
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    out = tmp_path / "features"
-    count = write_features_parquet(ddf, str(out))
-    assert count >= 1
-
-
-@pytest.mark.unit
-def test_write_features_parquet_readable(tmp_path: Path) -> None:
-    """TR-18."""
-    df = _base_df(3)
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    out = tmp_path / "f"
-    write_features_parquet(ddf, str(out))
-    for f in out.glob("*.parquet"):
-        pd.read_parquet(f)
-
-
-@pytest.mark.unit
-def test_write_features_parquet_count_matches(tmp_path: Path) -> None:
-    df = _base_df(5)
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    out = tmp_path / "f"
-    count = write_features_parquet(ddf, str(out))
-    assert count == len(list(out.glob("*.parquet")))
-
-
-# ---------------------------------------------------------------------------
-# Task 08: write_manifest
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_write_manifest_creates_valid_json(tmp_path: Path) -> None:
-    df = _base_df(5)
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    start = datetime.now(tz=timezone.utc)
-    manifest_path = write_manifest(ddf, str(tmp_path), start)
-    assert manifest_path.exists()
-    data = json.loads(manifest_path.read_text())
-    for key in [
-        "schema",
-        "feature_columns",
-        "record_count",
-        "partition_count",
-        "processing_start",
-        "processing_end",
-        "min_production_date",
-        "max_production_date",
-    ]:
-        assert key in data
-
-
-@pytest.mark.unit
-def test_write_manifest_record_count(tmp_path: Path) -> None:
-    n = 7
-    df = _base_df(n)
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    start = datetime.now(tz=timezone.utc)
-    path = write_manifest(ddf, str(tmp_path), start)
-    data = json.loads(path.read_text())
-    assert data["record_count"] == n
-
-
-@pytest.mark.unit
-def test_write_manifest_returns_path(tmp_path: Path) -> None:
-    df = _base_df(2)
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    start = datetime.now(tz=timezone.utc)
-    result = write_manifest(ddf, str(tmp_path), start)
-    assert isinstance(result, Path)
-    assert result.exists()
-
-
-@pytest.mark.unit
-def test_write_manifest_end_gte_start(tmp_path: Path) -> None:
-    df = _base_df(2)
-    df["water_bbl"] = 0.0
-    ddf = _dask(df)
-    start = datetime.now(tz=timezone.utc)
-    path = write_manifest(ddf, str(tmp_path), start)
-    data = json.loads(path.read_text())
-    assert data["processing_end"] >= data["processing_start"]
-
-
-# ---------------------------------------------------------------------------
-# Task 09: run_features (mocked)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_run_features_calls_stages_in_order(tmp_path: Path) -> None:
-    call_order: list[str] = []
-
-    def _mock(name: str):
-        def inner(*a, **kw):
-            call_order.append(name)
-            return MagicMock()
-
-        return inner
-
-    mock_ddf = MagicMock(spec=dd.DataFrame)
-    mock_manifest = tmp_path / "manifest.json"
-    mock_manifest.write_text("{}")
-
-    def _side_effect_add_water(d):
-        call_order.append("add_water")
-        return d
-
-    def _side_effect_gor(d):
-        call_order.append("gor")
-        return d
-
-    def _side_effect_water_cut(d):
-        call_order.append("wcut")
-        return d
-
-    def _side_effect_cumulative(d):
-        call_order.append("cum")
-        return d
-
-    def _side_effect_decline_rate(d):
-        call_order.append("dec")
-        return d
-
-    def _side_effect_rolling(d):
-        call_order.append("roll")
-        return d
-
-    def _side_effect_rate(d):
-        call_order.append("rate")
-        return d
-
-    with (
-        patch("kgs_pipeline.features.read_processed", return_value=mock_ddf) as _,
-        patch(
-            "kgs_pipeline.features.add_water_column",
-            side_effect=_side_effect_add_water,
-        ),
-        patch(
-            "kgs_pipeline.features.compute_gor",
-            side_effect=_side_effect_gor,
-        ),
-        patch(
-            "kgs_pipeline.features.compute_water_cut",
-            side_effect=_side_effect_water_cut,
-        ),
-        patch(
-            "kgs_pipeline.features.compute_cumulative",
-            side_effect=_side_effect_cumulative,
-        ),
-        patch(
-            "kgs_pipeline.features.compute_decline_rate",
-            side_effect=_side_effect_decline_rate,
-        ),
-        patch(
-            "kgs_pipeline.features.compute_rolling_and_lag_features",
-            side_effect=_side_effect_rolling,
-        ),
-        patch(
-            "kgs_pipeline.features.compute_rate_features",
-            side_effect=_side_effect_rate,
-        ),
-        patch("kgs_pipeline.features.write_features_parquet", return_value=1),
-        patch("kgs_pipeline.features.dd.read_parquet", return_value=mock_ddf),
-        patch("kgs_pipeline.features.write_manifest", return_value=mock_manifest),
-    ):
-        result = run_features(str(tmp_path), str(tmp_path))
-        assert isinstance(result, Path)
-
-    expected_order = ["add_water", "gor", "wcut", "cum", "dec", "roll", "rate"]
-    assert call_order == expected_order
-
-
-# ---------------------------------------------------------------------------
-# TR-19: Feature column presence end-to-end
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_tr19_full_feature_pipeline_columns(tmp_path: Path) -> None:
-    """TR-19: All required feature columns present after full pipeline."""
-    dates = [pd.Timestamp(f"2024-{m:02d}-01") for m in range(1, 7)]
-    df = pd.DataFrame(
-        {
-            "lease_kid": pd.array(["L1"] * 6, dtype=pd.StringDtype()),
-            "api_number": pd.array(["A"] * 6, dtype=pd.StringDtype()),
-            "lease_name": pd.array(["LN"] * 6, dtype=pd.StringDtype()),
-            "operator": pd.array(["OP"] * 6, dtype=pd.StringDtype()),
-            "county": pd.array(["C"] * 6, dtype=pd.StringDtype()),
-            "field": pd.array(["F"] * 6, dtype=pd.StringDtype()),
-            "producing_zone": pd.array(["Z"] * 6, dtype=pd.StringDtype()),
-            "production_date": dates,
-            "oil_bbl": [100.0, 200.0, 150.0, 300.0, 0.0, 250.0],
-            "gas_mcf": [500.0] * 6,
-            "well_count": [1.0] * 6,
-            "latitude": [38.0] * 6,
-            "longitude": [-97.0] * 6,
-            "is_outlier": [False] * 6,
-            "has_negative_production": [False] * 6,
-            "source_file": pd.array(["t.txt"] * 6, dtype=pd.StringDtype()),
-        }
-    )
-    ddf = _dask(df)
-    ddf = add_water_column(ddf)
-    ddf = compute_gor(ddf)
-    ddf = compute_water_cut(ddf)
-    ddf = compute_cumulative(ddf)
-    ddf = compute_decline_rate(ddf)
-    ddf = compute_rolling_and_lag_features(ddf)
-    ddf = compute_rate_features(ddf)
-    result = ddf.compute()
-
-    required_cols = [
-        "lease_kid",
-        "production_date",
-        "oil_bbl",
-        "gas_mcf",
-        "water_bbl",
-        "cum_oil",
-        "cum_gas",
-        "cum_water",
-        "gor",
-        "water_cut",
-        "decline_rate",
-        "oil_bbl_roll3",
-        "oil_bbl_roll6",
-        "gas_mcf_roll3",
-        "gas_mcf_roll6",
-        "water_bbl_roll3",
-        "water_bbl_roll6",
-        "oil_bbl_lag1",
-        "gas_mcf_lag1",
-        "water_bbl_lag1",
-        "oil_bbl_per_day",
-        "gas_mcf_per_day",
-        "months_since_first_prod",
-    ]
-    for col in required_cols:
-        assert col in result.columns, f"Missing column: {col}"
-
-
-@pytest.mark.unit
-def test_tr09d_gor_formula_not_swapped() -> None:
-    """TR-09d: GOR = gas_mcf / oil_bbl (not inverted)."""
-    df = _base_df()
-    df["oil_bbl"] = 50.0
-    df["gas_mcf"] = 200.0
-    result = compute_gor(_dask(df)).compute()
-    assert result["gor"].iloc[0] == pytest.approx(4.0)  # 200/50 = 4, not 50/200
-
-
-@pytest.mark.unit
-def test_tr09e_water_cut_formula() -> None:
-    """TR-09e: water_cut = water_bbl / (oil_bbl + water_bbl)."""
-    df = _base_df()
-    df["water_bbl"] = 30.0
-    df["oil_bbl"] = 70.0
-    result = compute_water_cut(_dask(df)).compute()
-    assert result["water_cut"].iloc[0] == pytest.approx(30.0 / 100.0)
-
-
-@pytest.mark.unit
-def test_tr10c_boundary_values_not_invalid() -> None:
-    """TR-10c: 0.0 and 1.0 are valid water cut values."""
-    # 0.0 case
-    df = _base_df()
-    df["water_bbl"] = 0.0
-    df["oil_bbl"] = 100.0
-    r1 = compute_water_cut(_dask(df)).compute()
-    assert r1["water_cut"].iloc[0] == 0.0
-
-    # 1.0 case
-    df2 = _base_df()
-    df2["water_bbl"] = 100.0
-    df2["oil_bbl"] = 0.0
-    r2 = compute_water_cut(_dask(df2)).compute()
-    assert r2["water_cut"].iloc[0] == 1.0
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(cfg))
+        return str(config_path)
+
+    def test_only_acquire_called(self, tmp_path: Path) -> None:
+        from kgs_pipeline.pipeline import main
+
+        config_path = self._base_config(tmp_path)
+        with (
+            patch("kgs_pipeline.pipeline.run_acquire") as mock_acquire,
+            patch("kgs_pipeline.pipeline._init_dask_client") as mock_dask,
+        ):
+            mock_acquire.return_value = []
+            mock_dask.return_value = MagicMock()
+            with patch(
+                "sys.argv", ["kgs-pipeline", "--stages", "acquire", "--config", config_path]
+            ):
+                main()
+            mock_acquire.assert_called_once()
+
+    def test_ingest_and_transform_called(self, tmp_path: Path) -> None:
+        from kgs_pipeline.pipeline import main
+
+        config_path = self._base_config(tmp_path)
+        with (
+            patch("kgs_pipeline.pipeline.run_ingest") as mock_ingest,
+            patch("kgs_pipeline.pipeline.run_transform") as mock_transform,
+            patch("kgs_pipeline.pipeline.run_acquire") as mock_acquire,
+            patch("kgs_pipeline.pipeline._init_dask_client") as mock_dask,
+        ):
+            mock_ingest.return_value = MagicMock()
+            mock_transform.return_value = MagicMock()
+            mock_acquire.return_value = []
+            mock_dask.return_value = MagicMock(dashboard_link="http://localhost:8788")
+            mock_dask.return_value.close = MagicMock()
+            with patch(
+                "sys.argv",
+                ["kgs-pipeline", "--stages", "ingest", "transform", "--config", config_path],
+            ):
+                main()
+            mock_ingest.assert_called_once()
+            mock_transform.assert_called_once()
+            mock_acquire.assert_not_called()
+
+    def test_stage_failure_stops_pipeline(self, tmp_path: Path) -> None:
+        from kgs_pipeline.pipeline import main
+
+        config_path = self._base_config(tmp_path)
+        with (
+            patch("kgs_pipeline.pipeline.run_ingest", side_effect=RuntimeError("boom")),
+            patch("kgs_pipeline.pipeline.run_transform") as mock_transform,
+            patch("kgs_pipeline.pipeline._init_dask_client") as mock_dask,
+        ):
+            mock_dask.return_value = MagicMock(
+                dashboard_link="http://localhost:8788",
+                close=MagicMock(),
+            )
+            with patch(
+                "sys.argv",
+                ["kgs-pipeline", "--stages", "ingest", "transform", "--config", config_path],
+            ):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+            assert exc_info.value.code != 0
+            mock_transform.assert_not_called()
+
+    def test_logging_configured_before_stages(self, tmp_path: Path) -> None:
+        """Logging must be set up before any stage runs."""
+        import logging as stdlib_logging
+        from kgs_pipeline.pipeline import _setup_logging
+
+        cfg = {"log_file": str(tmp_path / "logs" / "test.log"), "level": "INFO"}
+        _setup_logging(cfg)
+        root = stdlib_logging.getLogger()
+        assert any(isinstance(h, stdlib_logging.FileHandler) for h in root.handlers)
+        assert any(isinstance(h, stdlib_logging.StreamHandler) for h in root.handlers)

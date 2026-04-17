@@ -1,39 +1,32 @@
-paths:
-  lease_file: references/oil_leases_2020_present.txt
-  raw_data_dir: data/raw
+acquire:
+  lease_index: data/external/oil_leases_2020_present.txt
+  raw_dir: data/raw
+  month_save_url: https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave
+  download_base_url: https://chasm.kgs.ku.edu/ords/qualified.anon_blobber.download
+  min_year: 2024
+  max_workers: 5
+  sleep_seconds: 0.5
+
+ingest:
+  raw_dir: data/raw
   interim_dir: data/interim
-  processed_dir: data/processed
-  encoders_dir: data/processed/encoders
-  logs_dir: logs
-
-scraping:
-  max_concurrency: 5
-  retry_attempts: 3
-  retry_backoff_base: 2
-  page_timeout_seconds: 30
-  button_timeout_seconds: 10
-
-ingestion:
-  file_glob: "lease_*.txt"
-  interim_filename: raw_combined.parquet
+  data_dictionary: references/kgs_monthly_data_dictionary.csv
 
 transform:
-  dedup_keys:
-    - lease_kid
-    - production_date
-    - product
-    - production
-  oil_outlier_threshold_bbl: 50000
-  invalid_product_codes:
-    - O
-    - G
+  interim_dir: data/interim
+  processed_dir: data/processed/transform
 
 features:
-  rolling_windows:
-    - 3
-    - 6
-  gor_high_threshold: 100000
-  categorical_columns:
-    - county
-    - operator
-    - producing_zone
+  processed_dir: data/processed/transform
+  output_dir: data/processed/features
+
+dask:
+  scheduler: local
+  n_workers: 4
+  threads_per_worker: 1
+  memory_limit: "3GB"
+  dashboard_port: 8787
+
+logging:
+  log_file: logs/pipeline.log
+  level: INFO

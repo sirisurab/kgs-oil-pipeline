@@ -1,96 +1,154 @@
-"""Top-level pipeline orchestrator chaining all four stages."""
+"""Pipeline orchestrator: coordinates all four pipeline stages."""
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+import time
 from pathlib import Path
 
+import yaml
+from dask.distributed import Client
+
+# Stage runners — imported at module level so tests can patch them cleanly
 from kgs_pipeline.acquire import run_acquire
-from kgs_pipeline.config import config as _cfg
 from kgs_pipeline.features import run_features
 from kgs_pipeline.ingest import run_ingest
-from kgs_pipeline.logging_utils import get_logger
 from kgs_pipeline.transform import run_transform
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
+
+_ALL_STAGES = ["acquire", "ingest", "transform", "features"]
 
 
-def run_pipeline(
-    index_path: str,
-    raw_dir: str,
-    interim_dir: str,
-    processed_dir: str,
-    features_dir: str,
-    min_year: int = 2024,
-    workers: int = 5,
-) -> dict:
-    """Run the full KGS pipeline: acquire → ingest → transform → features.
+def _setup_logging(log_cfg: dict) -> None:
+    """Configure dual-channel logging (console + file) from config.logging section."""
+    log_file = log_cfg.get("log_file", "logs/pipeline.log")
+    level_str = log_cfg.get("level", "INFO")
+    level = getattr(logging, level_str.upper(), logging.INFO)
 
-    Returns a summary dict with keys: acquired, interim_files, processed_files, manifest.
-    """
-    logger.info("Pipeline starting", extra={"min_year": min_year, "workers": workers})
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Stage: acquire")
-    paths = run_acquire(index_path, raw_dir, min_year, workers)
-    logger.info("Stage acquire complete", extra={"acquired": len(paths)})
+    root = logging.getLogger()
+    root.setLevel(level)
 
-    logger.info("Stage: ingest")
-    interim_files = run_ingest(raw_dir, interim_dir, min_year)
-    logger.info("Stage ingest complete", extra={"interim_files": interim_files})
+    # Avoid adding duplicate handlers on repeated calls (e.g. in tests)
+    if root.handlers:
+        root.handlers.clear()
 
-    logger.info("Stage: transform")
-    processed_files = run_transform(interim_dir, processed_dir)
-    logger.info("Stage transform complete", extra={"processed_files": processed_files})
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s — %(message)s")
 
-    logger.info("Stage: features")
-    manifest_path = run_features(processed_dir, features_dir)
-    logger.info("Stage features complete", extra={"manifest": str(manifest_path)})
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(level)
+    console.setFormatter(fmt)
+    root.addHandler(console)
 
-    summary = {
-        "acquired": len(paths),
-        "interim_files": interim_files,
-        "processed_files": processed_files,
-        "manifest": str(manifest_path),
-    }
-    logger.info("Pipeline complete", extra=summary)
-    return summary
+    fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+
+def _init_dask_client(dask_cfg: dict) -> Client:
+    """Initialize a Dask distributed client from config.dask settings."""
+    from dask.distributed import LocalCluster
+
+    scheduler = dask_cfg.get("scheduler", "local")
+    if scheduler == "local":
+        cluster = LocalCluster(
+            n_workers=int(dask_cfg.get("n_workers", 4)),
+            threads_per_worker=int(dask_cfg.get("threads_per_worker", 1)),
+            memory_limit=str(dask_cfg.get("memory_limit", "3GB")),
+            dashboard_address=f":{dask_cfg.get('dashboard_port', 8787)}",
+        )
+        client = Client(cluster)
+    else:
+        client = Client(scheduler)
+
+    logger.info("Dask dashboard: %s", client.dashboard_link)
+    return client
 
 
 def main() -> None:
-    """CLI entry point for the full pipeline."""
-    parser = argparse.ArgumentParser(description="KGS end-to-end pipeline runner")
-    parser.add_argument("--index-path", default=_cfg.LEASE_INDEX_PATH)
-    parser.add_argument("--raw-dir", default=_cfg.RAW_DATA_DIR)
-    parser.add_argument("--interim-dir", default=_cfg.INTERIM_DATA_DIR)
-    parser.add_argument("--processed-dir", default=_cfg.PROCESSED_DATA_DIR)
-    parser.add_argument("--features-dir", default=_cfg.FEATURES_DATA_DIR)
-    parser.add_argument("--min-year", "--start-year", type=int, default=_cfg.MIN_YEAR, dest="min_year")
-    parser.add_argument("--end-year", type=int, default=None)
-    parser.add_argument("--workers", type=int, default=_cfg.MAX_WORKERS)
+    """CLI entry point for the KGS pipeline."""
+    parser = argparse.ArgumentParser(description="KGS Oil & Gas Production Pipeline")
+    parser.add_argument(
+        "--stages",
+        nargs="+",
+        choices=_ALL_STAGES,
+        default=_ALL_STAGES,
+        help="Stages to run (default: all four in order)",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Path to config.yaml (default: config.yaml)",
+    )
     args = parser.parse_args()
 
-    if args.end_year is not None:
-        logger.warning(
-            "--end-year is reserved for future use and is currently ignored",
-            extra={"end_year": args.end_year},
-        )
+    with open(args.config, "r", encoding="utf-8") as f:
+        config: dict = yaml.safe_load(f)
+
+    _setup_logging(config.get("logging", {}))
+    logger.info("Pipeline starting — stages: %s", args.stages)
+
+    stages_to_run: list[str] = args.stages
+
+    # Acquire (I/O-bound, no distributed client)
+    if "acquire" in stages_to_run:
+        logger.info("Starting acquire stage")
+        t0 = time.time()
+        run_acquire(config["acquire"])
+        logger.info("Acquire completed in %.1fs", time.time() - t0)
+
+    # Initialize Dask distributed client after acquire, before ingest
+    client = None
+    if any(s in stages_to_run for s in ["ingest", "transform", "features"]):
+        try:
+            client = _init_dask_client(config.get("dask", {}))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dask client init failed (%s) — continuing without cluster", exc)
 
     try:
-        summary = run_pipeline(
-            index_path=args.index_path,
-            raw_dir=args.raw_dir,
-            interim_dir=args.interim_dir,
-            processed_dir=args.processed_dir,
-            features_dir=args.features_dir,
-            min_year=args.min_year,
-            workers=args.workers,
-        )
-        print(summary)
-        sys.exit(0)
-    except Exception as exc:
-        logger.error("Pipeline failed", extra={"error": str(exc)})
-        sys.exit(1)
+        if "ingest" in stages_to_run:
+            logger.info("Starting ingest stage")
+            t0 = time.time()
+            try:
+                run_ingest(config["ingest"])
+                logger.info("Ingest completed in %.1fs", time.time() - t0)
+            except Exception as exc:
+                logger.error("Ingest failed: %s", exc)
+                raise SystemExit(1) from exc
+
+        if "transform" in stages_to_run:
+            logger.info("Starting transform stage")
+            t0 = time.time()
+            try:
+                run_transform(config["transform"])
+                logger.info("Transform completed in %.1fs", time.time() - t0)
+            except Exception as exc:
+                logger.error("Transform failed: %s", exc)
+                raise SystemExit(1) from exc
+
+        if "features" in stages_to_run:
+            logger.info("Starting features stage")
+            t0 = time.time()
+            try:
+                run_features(config["features"])
+                logger.info("Features completed in %.1fs", time.time() - t0)
+            except Exception as exc:
+                logger.error("Features failed: %s", exc)
+                raise SystemExit(1) from exc
+
+    finally:
+        if client is not None:
+            try:
+                client.close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+    logger.info("Pipeline complete.")
 
 
 if __name__ == "__main__":

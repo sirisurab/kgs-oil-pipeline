@@ -1,436 +1,492 @@
-# Transform Component Tasks
-
-**Module:** `kgs_pipeline/transform.py`
-**Test file:** `tests/test_transform.py`
+# Transform Stage — Task Specifications
 
 ## Overview
 
-The transform component reads interim Parquet files from `data/interim/`, performs
-data cleaning and standardisation (column renaming, type casting, duplicate removal,
-outlier handling, zero/null distinction), and writes clean Parquet files to
-`data/processed/`. It also produces per-well monthly records that are the input to the
-features stage.
+The transform stage reads the canonical interim Parquet dataset produced by ingest,
+performs data cleaning (deduplication, null handling, outlier removal, invalid value
+replacement), casts categorical columns to their declared value sets, derives a
+`production_date` column from `MONTH-YEAR`, sets the entity index on `LEASE_KID`,
+sorts by `production_date` within partitions, and writes the cleaned, analysis-ready
+Parquet dataset to `data/processed/transform/`. Processing is parallel using Dask's
+distributed scheduler (CPU-bound, per ADR-001).
 
-The raw KGS data schema (after ingest normalisation) has columns:
-`LEASE_KID`, `LEASE`, `DOR_CODE`, `API_NUMBER`, `FIELD`, `PRODUCING_ZONE`, `OPERATOR`,
-`COUNTY`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`, `LATITUDE`,
-`LONGITUDE`, `MONTH_YEAR`, `PRODUCT`, `WELLS`, `PRODUCTION`, `source_file`.
+## Architecture constraints (from ADRs)
 
-The transform stage reshapes this into a well-centric wide format where each row
-represents one lease-month with separate columns for oil and gas production.
+- **ADR-001**: Transform is CPU-bound — use Dask distributed scheduler.
+- **ADR-002**: All operations must be vectorized — no per-row iteration, no iterating
+  over entity groups. Use grouped vectorized transforms.
+- **ADR-003**: Categorical allowed values are defined in the data dictionary — values
+  outside the declared set must be replaced with the appropriate null sentinel before
+  casting, never allowed to propagate silently.
+- **ADR-004**: Output must be `max(10, min(n, 50))` partitions. Repartition must be
+  the last operation before `to_parquet`. Row filtering using string operations must
+  be inside a partition-level function.
+- **ADR-005**: Task graph remains lazy until the final Parquet write. No `.compute()`
+  inside transformation functions.
+- **TR-17**: All stage functions must return `dask.dataframe.DataFrame`.
+- **TR-23**: Every `map_partitions` call must pass a `meta=` argument derived by
+  calling the function on an empty DataFrame matching the input schema.
 
-## Design Decisions
+## Input state (from boundary-ingest-transform.md)
 
-- All transform functions accept and return `dask.dataframe.DataFrame` — never call
-  `.compute()` internally (TR-17). Use `map_partitions` for row-level operations.
-- String column `meta=` arguments always use `pd.StringDtype()` — never `"object"`.
-- After reading interim Parquet, immediately repartition to `min(npartitions, 50)`.
-- Output: write to `data/processed/` as Parquet. Target `max(1, total_rows // 500_000)`
-  partitions. Never partition_on a high-cardinality column.
-- Logging: structured JSON via `kgs_pipeline.logging_utils`; log cleaning operation
-  counts (rows dropped for duplicates, rows dropped for bad dates, outlier rows flagged).
-- Domain units: oil production in BBL, gas production in MCF, water in BBL.
-- `PRODUCT` column values: `"O"` = oil, `"G"` = gas. The pipeline pivots these to
-  separate `oil_bbl` and `gas_mcf` columns.
-- `MONTH_YEAR` is parsed into a `production_date` column (first day of the month) as
-  `datetime64[ns]`. Rows with MONTH_YEAR = `"0-YYYY"` (annual summary rows) and
-  MONTH_YEAR starting with `"-1"` (cumulative start rows) must be dropped before the
-  pivot — they are not monthly observations.
-- `LEASE_KID` is renamed to `lease_kid` and used as the primary well/lease identifier.
-- All identifier and string columns use `pd.StringDtype()` in Parquet output to
-  prevent pyarrow type mismatches.
-- Outlier flag: a production value > 50,000 BBL/month for oil or > 500,000 MCF/month
-  for gas on a single lease is flagged with a boolean `is_outlier` column (TR-02).
-  Flagged rows are NOT removed — they are retained with `is_outlier=True`. Downstream
-  ML workflows decide whether to exclude them.
+Transform receives from ingest:
+- Canonical schema, data-dictionary dtypes enforced.
+- All nullable absent columns filled with NA.
+- Partitions: `max(10, min(n, 50))`, unsorted.
+- No re-casting or schema reconciliation needed — transform may rely on types being correct.
+
+## Output state (boundary contract to features)
+
+At stage exit, transform guarantees:
+- Entity-indexed on `LEASE_KID`.
+- Sorted by `production_date` within each partition.
+- `production_date` column added as `datetime64[ns]`.
+- Categorical columns cast to declared category sets; values outside declared sets
+  replaced with NA before casting.
+- Invalid values (negatives where physically impossible, out-of-range values) replaced
+  with the appropriate null sentinel.
+- Duplicates removed; row count ≤ input row count.
+- Partitions: `max(10, min(n, 50))`.
+
+## Column derivation: `production_date`
+
+`MONTH-YEAR` format is `"M-YYYY"` (e.g. `"1-2024"`, `"12-2024"`).
+Derive `production_date` as a `datetime64[ns]` column representing the first day of
+the indicated month:
+
+```
+split MONTH-YEAR on "-"
+month = first element (int)
+year = last element (int)
+production_date = pd.to_datetime({"year": year, "month": month, "day": 1})
+```
+
+Rows where the derivation fails (non-numeric components, month=0, month=-1 for
+cumulative markers per the data dictionary) must be dropped before the datetime
+conversion. Log the count of dropped rows at INFO.
+
+## Domain cleaning rules (from test-requirements and domain context)
+
+- **TR-01 (Physical bounds):** `PRODUCTION` cannot be negative — replace negative
+  values with NA and log a warning with the count.
+- **TR-02 (Unit consistency):** Oil production (`PRODUCT == "O"`) above 50,000
+  BBL/month for a single lease is almost certainly a unit error — flag these rows
+  in a log warning (do not drop; retain with a warning flag column if specified
+  in the config, otherwise just log).
+- **TR-05 (Zero production):** Zeros in `PRODUCTION` are valid measurements and must
+  remain as zeros, not be converted to NA.
+- **TR-04 (Well completeness):** Not enforced at write time but tested: the processed
+  data must preserve all monthly records per well so completeness can be verified.
+
+## Categorical cleaning rules (ADR-003)
+
+For `PRODUCT` (allowed: `O`, `G`) and `TWN_DIR` (allowed: `S`, `N`) and `RANGE_DIR`
+(allowed: `E`, `W`):
+- Before casting to `CategoricalDtype`, replace any value outside the declared set
+  with `NA` (or `pd.NA`) using a vectorized mask operation.
+- Cast to `pd.CategoricalDtype(categories=[...], ordered=False)`.
+- Values outside the declared set must never appear in the output categorical column.
 
 ---
 
-## Task 01: Read and repartition interim Parquet
+## Task T-01: `production_date` derivation
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `read_interim(interim_dir: str) -> dd.DataFrame`
+**Function:** `add_production_date(partition: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Read all Parquet files from `interim_dir` using `dd.read_parquet(interim_dir)`.
-Immediately repartition to `min(ddf.npartitions, 50)` before returning. Log the number
-of partitions and the interim directory path. Raise `FileNotFoundError` if `interim_dir`
-does not exist or contains no Parquet files.
+**Description:** Partition-level function (used with `map_partitions`) that parses
+`MONTH-YEAR` into a `production_date` datetime column. Drops rows with unparseable
+or non-monthly `MONTH-YEAR` values (month=0 cumulative, month=-1 starting cumulative,
+non-numeric). Returns the partition with a new `production_date` column of type
+`datetime64[ns]`.
 
-**Dependencies:** `dask.dataframe`, `pathlib`, `kgs_pipeline.logging_utils`
+### Input
 
-**Test cases:**
+`pd.DataFrame` — one partition, canonical schema, `MONTH-YEAR` as StringDtype.
 
-- `@pytest.mark.unit` — Given a temporary directory with 2 valid Parquet files written
-  from a small synthetic DataFrame, assert `read_interim` returns a
-  `dask.dataframe.DataFrame` with the correct columns.
-- `@pytest.mark.unit` — Assert the return type is `dask.dataframe.DataFrame` (TR-17).
-- `@pytest.mark.unit` — Assert `npartitions <= 50` after the call.
-- `@pytest.mark.unit` — Given a non-existent path, assert `FileNotFoundError` is raised.
-- `@pytest.mark.integration` — Given `data/interim/` populated by the ingest stage,
-  assert `read_interim` returns a non-empty Dask DataFrame.
+### Processing logic (pseudo-code)
 
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+```
+split MONTH-YEAR on "-" into month_part and year_part (last element)
+mask_invalid = month_part is not numeric OR year_part is not numeric
+             OR int(month_part) < 1 OR int(month_part) > 12
+drop rows where mask_invalid is True; log count of dropped rows
+
+construct production_date = pd.to_datetime(
+    {"year": int(year_part), "month": int(month_part), "day": 1}
+)
+add production_date column to partition
+return partition with production_date as datetime64[ns]
+```
+
+### Output
+
+`pd.DataFrame` — same columns as input plus `production_date` (`datetime64[ns]`).
+Input rows with invalid `MONTH-YEAR` are dropped.
+
+### Error handling
+
+- Non-numeric or out-of-range month/year components: drop row, log count at INFO.
+- The `MONTH-YEAR` values `"0-<year>"` (yearly summary) and `"-1-<year>"`
+  (starting cumulative) must be treated as invalid monthly records and dropped.
+
+### `meta=` construction for `map_partitions`
+
+Derive `meta` by calling `add_production_date` on an empty DataFrame that has all
+canonical columns at their declared dtypes. The output must include `production_date`
+as `datetime64[ns]`. Use the output of that call as the `meta=` argument.
+
+### Test cases (in `tests/test_transform.py`)
+
+- **Given** a partition with `MONTH-YEAR = "1-2024"`, **assert** `production_date`
+  is `pd.Timestamp("2024-01-01")`.
+- **Given** a partition with `MONTH-YEAR = "12-2024"`, **assert** `production_date`
+  is `pd.Timestamp("2024-12-01")`.
+- **Given** rows with `MONTH-YEAR = "0-2024"` (yearly marker), **assert** those rows
+  are dropped.
+- **Given** rows with `MONTH-YEAR = "-1-2024"` (cumulative marker), **assert** those
+  rows are dropped.
+- **Given** rows with non-numeric `MONTH-YEAR`, **assert** those rows are dropped.
+- **TR-23**: Call `add_production_date` on `ddf._meta.copy()` (empty DataFrame) and
+  assert the resulting column list and dtypes match the `meta=` argument used in the
+  `map_partitions` call.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
+report no errors, `requirements.txt` updated with all third-party packages imported
+in this task.
 
 ---
 
-## Task 02: Drop non-monthly rows and parse production date
+## Task T-02: Categorical cleaner
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `parse_production_date(ddf: dd.DataFrame) -> dd.DataFrame`
+**Function:** `clean_categoricals(partition: pd.DataFrame, categorical_cols: dict[str, list[str]]) -> pd.DataFrame`
 
-**Description:**
-Filter out non-monthly rows and parse `MONTH_YEAR` into a `production_date` column.
+**Description:** Partition-level function (used with `map_partitions`) that replaces
+out-of-vocabulary values in categorical columns with NA, then casts to
+`pd.CategoricalDtype`. Operates on the columns specified in `categorical_cols`.
 
-Inside a `map_partitions` function:
-1. Drop rows where MONTH_YEAR starts with `"0-"` (annual summary, month=0) or `"-1-"`
-   (cumulative start rows). These are metadata rows, not monthly production observations.
-2. For remaining rows, split MONTH_YEAR on `"-"` to extract month (first token) and
-   year (last token). Construct a `production_date` as the first day of that month:
-   `pd.to_datetime({"year": year_int, "month": month_int, "day": 1}, errors="coerce")`.
-3. Drop rows where `production_date` is NaT (unparseable dates).
-4. Drop the original `MONTH_YEAR` column.
-5. Return the updated DataFrame.
+### Input
 
-The `meta` passed to `map_partitions` must include a `production_date` column with
-dtype `datetime64[ns]` and exclude `MONTH_YEAR`.
+- `partition`: one pandas partition with canonical schema.
+- `categorical_cols`: dict mapping column name to list of allowed categories, e.g.
+  `{"PRODUCT": ["O", "G"], "TWN_DIR": ["S", "N"], "RANGE_DIR": ["E", "W"]}`.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
+### Processing logic (pseudo-code)
 
-**Test cases:**
+```
+for each col_name, allowed in categorical_cols.items():
+    mask_invalid = partition[col_name].notna() and partition[col_name] not in allowed
+    set invalid values to pd.NA
+    cast column to pd.CategoricalDtype(categories=allowed, ordered=False)
+return partition
+```
 
-- `@pytest.mark.unit` — Given rows with MONTH_YEAR values `["1-2024", "0-2024",
-  "-1-2024", "12-2024"]`, assert the result contains exactly 2 rows (only `"1-2024"`
-  and `"12-2024"` survive) with a `production_date` column of dtype `datetime64[ns]`.
-- `@pytest.mark.unit` — Given `MONTH_YEAR = "6-2024"`, assert `production_date` equals
-  `pd.Timestamp("2024-06-01")`.
-- `@pytest.mark.unit` — Given a row with an unparseable MONTH_YEAR (e.g. `"abc-2024"`),
-  assert it is dropped and no exception is raised.
-- `@pytest.mark.unit` — Assert `MONTH_YEAR` column is absent in the output DataFrame.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
+All masking and replacement must use vectorized operations — no row iteration.
 
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+### Output
+
+`pd.DataFrame` — same schema as input, with categorical columns cast to
+`CategoricalDtype` and out-of-vocabulary values replaced by NA.
+
+### `meta=` construction
+
+Derive `meta` by calling `clean_categoricals` on an empty DataFrame with the correct
+input schema and the `categorical_cols` dict. Use the output schema as `meta=` for
+`map_partitions`.
+
+### Test cases (in `tests/test_transform.py`)
+
+- **Given** a partition where `PRODUCT` has value `"X"` (not in `["O", "G"]`),
+  **assert** that value is replaced by NA and the column is cast to CategoricalDtype.
+- **Given** a partition with valid `PRODUCT` values `"O"` and `"G"`, **assert** both
+  are retained and the column dtype is `CategoricalDtype`.
+- **TR-23**: Verify the `meta=` argument matches actual function output on an empty
+  DataFrame for each categorical column.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
+report no errors, `requirements.txt` updated with all third-party packages imported
+in this task.
 
 ---
 
-## Task 03: Column standardisation and type casting
+## Task T-03: Physical bounds cleaner
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `standardise_columns(ddf: dd.DataFrame) -> dd.DataFrame`
+**Function:** `clean_physical_bounds(partition: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Rename and cast columns to their canonical types for the processed schema:
+**Description:** Partition-level function (used with `map_partitions`) that enforces
+physical constraints on production values. Replaces negative `PRODUCTION` values with
+NA. Logs a warning for `PRODUCTION` > 50,000 BBL/month on oil records (TR-01, TR-02).
+Preserves zero `PRODUCTION` values as valid measurements (TR-05).
 
-1. Rename `LEASE_KID` → `lease_kid`, `LEASE` → `lease_name`, `API_NUMBER` → `api_number`,
-   `OPERATOR` → `operator`, `COUNTY` → `county`, `FIELD` → `field`,
-   `PRODUCING_ZONE` → `producing_zone`, `PRODUCT` → `product`,
-   `PRODUCTION` → `production`, `WELLS` → `well_count`,
-   `LATITUDE` → `latitude`, `LONGITUDE` → `longitude`.
-   Retain `source_file` unchanged. Drop columns that are not in the canonical set:
-   `DOR_CODE`, `TOWNSHIP`, `TWN_DIR`, `RANGE`, `RANGE_DIR`, `SECTION`, `SPOT`
-   (these are retained as optional — keep them if present but they are not required
-   downstream; do not raise if they are absent).
-2. Cast `production` to `float64` (coerce errors to NaN).
-3. Cast `well_count` to `float64` (coerce errors to NaN).
-4. Cast `latitude` and `longitude` to `float64` (coerce errors to NaN).
-5. Cast `lease_kid`, `api_number`, `operator`, `county`, `lease_name`, `field`,
-   `producing_zone`, `product`, `source_file` to `pd.StringDtype()`.
-6. Apply inside `map_partitions` with explicit meta covering the output schema.
+### Input
 
-**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
+`pd.DataFrame` — one partition, canonical schema, `production_date` added,
+categoricals cleaned.
 
-**Test cases:**
+### Processing logic (pseudo-code)
 
-- `@pytest.mark.unit` — Given a synthetic DataFrame with original KGS column names,
-  assert the output contains `lease_kid`, `operator`, `county`, `production`,
-  `well_count`, `production_date`, `product` and that all string columns have
-  `pd.StringDtype()`.
-- `@pytest.mark.unit` — Given a `PRODUCTION` value of `"abc"` (non-numeric string),
-  assert it is coerced to `NaN` (not exception).
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
-- `@pytest.mark.unit` — Assert `DOR_CODE` is not present in output if
-  implementation drops it.
+```
+# TR-01: negative production is physically impossible
+negative_mask = PRODUCTION < 0
+if any negative_mask:
+    log WARNING "Replacing <count> negative PRODUCTION values with NA in partition"
+    set PRODUCTION where negative_mask to NA
 
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+# TR-02: oil production > 50,000 BBL/month is likely a unit error
+oil_high_mask = (PRODUCT == "O") AND (PRODUCTION > 50000)
+if any oil_high_mask:
+    log WARNING "<count> oil PRODUCTION values exceed 50,000 BBL/month — possible unit error"
+
+# TR-05: zeros are preserved as-is — do NOT replace with NA
+# (no action needed; zeros pass through unchanged)
+
+return partition
+```
+
+### Output
+
+`pd.DataFrame` — same schema, negative `PRODUCTION` replaced with NA, zero production
+preserved.
+
+### Test cases (in `tests/test_transform.py`)
+
+- **TR-01**: **Given** a partition with `PRODUCTION = -100.0`, **assert** it is
+  replaced with NA.
+- **TR-05**: **Given** a partition with `PRODUCTION = 0.0`, **assert** it remains
+  `0.0` (not NA).
+- **TR-02**: **Given** an oil row with `PRODUCTION = 60000.0`, **assert** a warning
+  is logged and the value is retained (not dropped or nulled).
+- **Given** a partition with no invalid values, **assert** the DataFrame is returned
+  unchanged.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
+report no errors, `requirements.txt` updated with all third-party packages imported
+in this task.
 
 ---
 
-## Task 04: Deduplicate records
+## Task T-04: Deduplicator
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `deduplicate(ddf: dd.DataFrame) -> dd.DataFrame`
+**Function:** `deduplicate(partition: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Remove duplicate rows from the Dask DataFrame. A duplicate is defined as two rows
-sharing the same `(lease_kid, product, production_date)` tuple. Keep the first
-occurrence.
+**Description:** Partition-level function (used with `map_partitions`) that removes
+duplicate rows. Deduplication key: `(LEASE_KID, MONTH-YEAR, PRODUCT)`. On duplicate
+rows, retain the first occurrence.
 
-Implementation: use `map_partitions` to apply `pd.DataFrame.drop_duplicates` on each
-partition with `subset=["lease_kid", "product", "production_date"], keep="first"`.
-This is a within-partition deduplication; cross-partition duplicates are handled by
-ensuring the caller repartitions appropriately before this step (document this
-assumption in the docstring).
+### Input
 
-Log the count of rows before and after deduplication at INFO level.
+`pd.DataFrame` — one partition, canonical schema.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
+### Processing logic (pseudo-code)
 
-**Test cases:**
+```
+before_count = len(partition)
+partition = partition.drop_duplicates(subset=["LEASE_KID", "MONTH-YEAR", "PRODUCT"], keep="first")
+after_count = len(partition)
+if before_count > after_count:
+    log INFO "Dropped <before - after> duplicate rows in partition"
+return partition
+```
 
-- `@pytest.mark.unit` — Given a DataFrame with 10 rows where 3 are duplicates of
-  existing rows (same lease_kid, product, production_date), assert the result has 7 rows.
-- `@pytest.mark.unit` — Given a DataFrame with no duplicates, assert the result has the
-  same row count as the input.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
+### Output
 
-**Test cases (TR-15):**
+`pd.DataFrame` — same schema, duplicates removed. Row count ≤ input row count.
 
-- `@pytest.mark.unit` TR-15a — Given a synthetic DataFrame, assert that after
-  deduplication the row count is less than or equal to the original row count.
-- `@pytest.mark.unit` TR-15b — Apply deduplication twice on the same DataFrame and
-  assert the output of the second application is identical in shape and values to the
-  first (idempotency).
+### Test cases (in `tests/test_transform.py`)
 
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+- **TR-15 (Row count reconciliation):** **Given** a partition with 3 identical rows
+  (same `LEASE_KID`, `MONTH-YEAR`, `PRODUCT`), **assert** only 1 row is returned.
+- **TR-15 (Idempotency):** **Given** a deduplicated partition, **assert** running
+  `deduplicate` again produces the same output (same row count and values).
+- **Given** a partition with no duplicates, **assert** the row count is unchanged.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
+report no errors, `requirements.txt` updated with all third-party packages imported
+in this task.
 
 ---
 
-## Task 05: Pivot oil and gas production to wide format
+## Task T-05: Entity indexer and sorter
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `pivot_products(ddf: dd.DataFrame) -> dd.DataFrame`
+**Function:** `set_entity_index(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
 
-**Description:**
-Transform the long-format DataFrame (one row per lease-month-product) to a wide format
-(one row per lease-month with separate columns for oil and gas production).
+**Description:** Set the Dask DataFrame index to `LEASE_KID` (the entity column)
+using `ddf.set_index("LEASE_KID")`. Then sort within each partition by
+`production_date` using `map_partitions`. Returns the indexed, sorted Dask DataFrame.
 
-Implementation steps (inside `map_partitions`):
+### Processing logic (pseudo-code)
 
-1. Separate oil rows (`product == "O"`) and gas rows (`product == "G"`).
-2. Rename `production` → `oil_bbl` in the oil subset; rename `production` → `gas_mcf`
-   in the gas subset.
-3. Define the merge key as `["lease_kid", "production_date", "api_number", "operator",
-   "county", "field", "producing_zone", "well_count", "latitude", "longitude",
-   "source_file"]`.
-4. Outer-merge the oil and gas subsets on the merge key.
-5. Fill `oil_bbl` NaN values with `0.0` where oil data is absent (gas-only lease-month).
-6. Fill `gas_mcf` NaN values with `0.0` where gas data is absent (oil-only lease-month).
-7. Drop the `product` column.
-8. Return the wide DataFrame.
+```
+ddf = ddf.set_index("LEASE_KID", sorted=False, drop=True)
 
-The meta for `map_partitions` must include `oil_bbl` (`float64`), `gas_mcf` (`float64`),
-and omit `production` and `product`.
+# Sort within each partition by production_date
+# (set_index distributed shuffle destroys any prior ordering — ADR transform H1)
+ddf = ddf.map_partitions(
+    lambda part: part.sort_values("production_date"),
+    meta=<appropriate meta>
+)
+return ddf
+```
 
-**Domain context (TR-05):**
-Zero production values (`0.0`) in the raw data must remain `0.0` in the output — not
-be converted to NaN. Only missing data (where the product type was entirely absent for
-a lease-month) is filled with `0.0` during the pivot.
+### Constraint (H1 stage manifest)
 
-**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
+The distributed shuffle triggered by `set_index` destroys any prior row ordering.
+Sort by `production_date` must happen after `set_index`, not before.
 
-**Test cases:**
+### Output
 
-- `@pytest.mark.unit` — Given a long DataFrame with oil row (`product="O"`,
-  `production=100.0`) and gas row (`product="G"`, `production=500.0`) for the same
-  lease-month, assert the wide output has a single row with `oil_bbl=100.0` and
-  `gas_mcf=500.0`.
-- `@pytest.mark.unit` — Given a lease-month with only an oil row, assert the wide
-  output has `oil_bbl=<value>` and `gas_mcf=0.0`.
-- `@pytest.mark.unit` TR-05 — Given a raw row with `production=0.0` for product `"O"`,
-  assert `oil_bbl=0.0` in the output (not NaN).
-- `@pytest.mark.unit` — Assert `product` and `production` columns are absent in output.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
+`dask.dataframe.DataFrame` — indexed on `LEASE_KID`, sorted by `production_date`
+within each partition.
 
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+### Test cases (in `tests/test_transform.py`)
+
+- **TR-16 (Sort stability):** **Given** a synthetic Dask DataFrame with multiple
+  partitions, after `set_entity_index`, assert that within each partition rows are
+  sorted by `production_date` ascending.
+- **Given** a DataFrame with 5 rows across 2 partitions for the same `LEASE_KID`,
+  assert the index is `LEASE_KID` after the call.
+
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
+report no errors, `requirements.txt` updated with all third-party packages imported
+in this task.
 
 ---
 
-## Task 06: Outlier flagging
+## Task T-06: Transform runner
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `flag_outliers(ddf: dd.DataFrame, oil_threshold: float = 50_000.0, gas_threshold: float = 500_000.0) -> dd.DataFrame`
+**Function:** `run_transform(config: dict) -> dask.dataframe.DataFrame`
 
-**Description:**
-Add a boolean `is_outlier` column to the DataFrame. A row is flagged as an outlier if
-`oil_bbl > oil_threshold` OR `gas_mcf > gas_threshold`. Outlier rows are retained
-in the dataset — they are not removed. The `is_outlier` column has dtype `bool`.
+**Description:** Orchestrate the full transform stage. Read interim Parquet, apply
+all cleaning and transformation operations in sequence via `map_partitions`, set the
+entity index, repartition, and write the result to `data/processed/transform/`. Returns
+the lazy Dask DataFrame.
 
-Also validate physical bounds inside `map_partitions` (TR-01, TR-02):
-- Log a warning (do not drop) for any row where `oil_bbl < 0` or `gas_mcf < 0`.
-- These physically impossible values are NOT automatically removed here — they are
-  flagged via a separate `has_negative_production` boolean column.
+### Input
 
-Both columns (`is_outlier`, `has_negative_production`) must appear in the `meta`.
+- `config`: the `transform` section of `config.yaml` as a Python dict, with keys:
+  `interim_dir`, `processed_dir`.
 
-**Dependencies:** `dask.dataframe`, `pandas`, `kgs_pipeline.logging_utils`
+### Processing logic (pseudo-code)
 
-**Test cases:**
+```
+ddf = dask.dataframe.read_parquet(config["interim_dir"])
 
-- `@pytest.mark.unit` TR-01 — Given a row with `oil_bbl = -5.0`, assert
-  `has_negative_production = True` and the row is retained (not dropped).
-- `@pytest.mark.unit` TR-02 — Given a row with `oil_bbl = 100_000.0` (above 50,000
-  threshold), assert `is_outlier = True`.
-- `@pytest.mark.unit` TR-02 — Given a row with `oil_bbl = 49_999.0`, assert
-  `is_outlier = False`.
-- `@pytest.mark.unit` — Given a row with `gas_mcf = 600_000.0`, assert `is_outlier = True`.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
-- `@pytest.mark.unit` — Assert both `is_outlier` and `has_negative_production` columns
-  are present in the output.
+# Apply partition-level transforms in sequence
+categorical_cols = {"PRODUCT": ["O", "G"], "TWN_DIR": ["S", "N"], "RANGE_DIR": ["E", "W"]}
+ddf = ddf.map_partitions(add_production_date, meta=<meta>)
+ddf = ddf.map_partitions(clean_categoricals, categorical_cols, meta=<meta>)
+ddf = ddf.map_partitions(clean_physical_bounds, meta=<meta>)
+ddf = ddf.map_partitions(deduplicate, meta=<meta>)
 
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+ddf = set_entity_index(ddf)
 
----
+n = ddf.npartitions
+n_out = max(10, min(n, 50))
+ddf = ddf.repartition(npartitions=n_out)   ← last op before write (ADR-004)
 
-## Task 07: Sort and well-continuity validation
+ddf.to_parquet(config["processed_dir"], engine="pyarrow", write_index=True, overwrite=True)
 
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `sort_by_well_date(ddf: dd.DataFrame) -> dd.DataFrame`
+log INFO: partitions written, output directory
+return ddf
+```
 
-**Description:**
-Sort the Dask DataFrame by `["lease_kid", "production_date"]` in ascending order.
-Use `ddf.sort_values(["lease_kid", "production_date"])`. This materialises the sort
-lazily (Dask will add a shuffle step). Document in the docstring that the resulting
-Dask DataFrame has a modified partition structure after the shuffle.
+### Lazy evaluation constraint (ADR-005, TR-17)
 
-After sorting, return the Dask DataFrame. The caller is responsible for repartitioning
-before writing.
+- Do not call `.compute()` inside `run_transform`.
+- Return type must be `dask.dataframe.DataFrame`.
 
-**Dependencies:** `dask.dataframe`, `kgs_pipeline.logging_utils`
+### `meta=` construction (TR-23)
 
-**Test cases:**
+For every `map_partitions` call, derive `meta` by calling the partition function on an
+empty DataFrame with the correct input schema (use `ddf._meta.copy()`), not by
+manually constructing a schema dict. The output column list, order, and dtypes must
+match exactly.
 
-- `@pytest.mark.unit` TR-16 — Given a synthetic DataFrame with rows out of order for
-  two leases, assert that after `.compute()` the rows for each lease_kid are sorted
-  ascending by production_date with no date inversion.
-- `@pytest.mark.unit` — Assert return type is `dask.dataframe.DataFrame` (TR-17).
-- `@pytest.mark.unit` TR-04 — Given a synthetic well with production records for
-  January through December 2024 (12 rows), assert that after sorting the row count
-  per lease_kid equals 12.
+### Error handling
 
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+- If `interim_dir` does not exist or is empty, raise `FileNotFoundError` with a
+  descriptive message.
+- Partition-level errors inside `map_partitions` functions propagate as Dask task
+  graph failures and surface at `to_parquet` time.
+- Log stage start and completion at INFO level with elapsed time.
 
----
+### Test cases (in `tests/test_transform.py`)
 
-## Task 08: Write processed Parquet output
+- **TR-17**: **Assert** `run_transform` returns `dask.dataframe.DataFrame`, not
+  `pandas.DataFrame`.
+- **TR-11 (Data integrity):** **Given** 5 synthetic partitions with known LEASE_KID
+  / MONTH-YEAR / PRODUCTION values, after `run_transform`, read back the processed
+  Parquet and spot-check that PRODUCTION values for specific (LEASE_KID, MONTH-YEAR)
+  combinations match the input values (sampling at least 5 rows across 3 partitions).
+- **TR-12 (Data cleaning validation):** After `run_transform` on synthetic data
+  containing nulls, negative PRODUCTION, and duplicates:
+  - Assert no negative PRODUCTION values remain.
+  - Assert dtype of `production_date` is `datetime64[ns]`.
+  - Assert `PRODUCT` column dtype is CategoricalDtype.
+- **TR-13 (Partition correctness):** Read processed Parquet and assert each partition
+  file's `LEASE_KID` index values do not appear in any other partition (each partition
+  is entity-coherent).
+- **TR-14 (Schema stability):** Sample the schema from two different processed Parquet
+  files and assert column names and dtypes match.
+- **TR-15 (Deduplication):** Assert processed row count ≤ input row count.
+- **TR-18 (Parquet readability):** Assert every processed Parquet file is readable by
+  a fresh `dask.dataframe.read_parquet` call.
+- **TR-23**: For each `map_partitions` call, verify the `meta=` argument matches the
+  actual function output on an empty input DataFrame.
 
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `write_processed_parquet(ddf: dd.DataFrame, output_dir: str) -> int`
-
-**Description:**
-Write the cleaned, wide-format Dask DataFrame to `data/processed/` as Parquet files.
-
-1. Compute target npartitions: `max(1, ddf.npartitions // 5)` (aim for 20-50 files).
-2. Repartition: `ddf.repartition(npartitions=N)`.
-3. Write: `ddf.to_parquet(output_dir, write_index=False, overwrite=True)`.
-4. Return the count of `.parquet` files written.
-5. Log the file count and output directory.
-
-Never use `partition_on` with `lease_kid` or any other high-cardinality column.
-
-**Dependencies:** `dask`, `pathlib`, `kgs_pipeline.logging_utils`
-
-**Test cases:**
-
-- `@pytest.mark.unit` — Given a small synthetic Dask DataFrame (5 partitions, 50 rows),
-  assert `write_processed_parquet` returns >= 1 and the output directory contains
-  Parquet files.
-- `@pytest.mark.unit` — Assert written Parquet files can be read back with
-  `pd.read_parquet` without error (TR-18).
-- `@pytest.mark.unit` — Assert the number returned equals the actual file count on disk.
-
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
+report no errors, `requirements.txt` updated with all third-party packages imported
+in this task.
 
 ---
 
-## Task 09: Transform orchestrator and CLI
-
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `run_transform(interim_dir: str, output_dir: str) -> int`
-**Entry point:** `main()` and `if __name__ == "__main__"` block
-
-**Description:**
-Chain all transform functions:
-1. `read_interim(interim_dir)` → raw Dask DataFrame.
-2. `parse_production_date(ddf)` → date-parsed DataFrame.
-3. `standardise_columns(ddf)` → standardised DataFrame.
-4. `deduplicate(ddf)` → deduplicated DataFrame.
-5. `pivot_products(ddf)` → wide-format DataFrame.
-6. `flag_outliers(ddf)` → flagged DataFrame.
-7. `sort_by_well_date(ddf)` → sorted DataFrame.
-8. `write_processed_parquet(ddf, output_dir)` → returns file count.
-
-`main()` uses `argparse`:
-- `--interim-dir`: default from `config.INTERIM_DATA_DIR`
-- `--output-dir`: default from `config.PROCESSED_DATA_DIR`
-
-Register console script: `kgs-transform = "kgs_pipeline.transform:main"`
-
-**Test cases:**
-
-- `@pytest.mark.unit` — Mock all sub-functions; assert `run_transform` calls them in
-  correct order and returns the mocked file count.
-- `@pytest.mark.integration` — Given real `data/interim/` input, assert `run_transform`
-  writes at least 1 Parquet file and returns a positive integer.
-
-**Definition of done:** Orchestrator and CLI implemented, all tests pass, `ruff` and
-`mypy` report no errors, console script registered. `requirements.txt` updated with all
-third-party packages imported in this task.
-
----
-
-## Task 10: Domain and technical correctness tests (TR-01 to TR-05, TR-11 to TR-16)
+## Task T-07: Transform stage domain and integration tests
 
 **Module:** `tests/test_transform.py`
 
-**Description:**
-Implement all domain and technical correctness tests for the transform stage.
+**Description:** Domain and integration tests that verify correctness of the complete
+transform pipeline against synthetic data with known properties.
 
-**Test cases:**
+### Test cases
 
-- `@pytest.mark.unit` TR-01 — Physical bounds: assert that the processed Parquet output
-  (computed from a synthetic input that includes a row with `oil_bbl=-1.0`) contains the
-  row with `has_negative_production=True` and `is_outlier=False`.
-- `@pytest.mark.unit` TR-02 — Unit consistency: given a synthetic DataFrame with
-  `oil_bbl=100_001.0`, assert `is_outlier=True` in the output.
-- `@pytest.mark.unit` TR-04 — Well completeness: given a synthetic well with records
-  for months 1-12 of 2024 (12 rows), assert 12 rows survive the full transform pipeline.
-- `@pytest.mark.unit` TR-05 — Zero production: given a raw row with `production=0.0`
-  for product `"O"`, assert `oil_bbl=0.0` (not NaN) in the processed output.
-- `@pytest.mark.integration` TR-11 — Data integrity: read 10 randomly sampled
-  lease-months from `data/processed/` and compare their `oil_bbl` values against the
-  corresponding raw files in `data/raw/`. Assert values match within floating-point
-  tolerance.
-- `@pytest.mark.integration` TR-12 — Data cleaning validation: read all Parquet files
-  from `data/processed/` and assert: no duplicates on `(lease_kid, production_date)`,
-  `production_date` dtype is `datetime64[ns]`, `oil_bbl` dtype is `float64`.
-- `@pytest.mark.integration` TR-13 — Partition correctness: for each Parquet partition
-  in `data/processed/`, assert that the partition contains only one `lease_kid` value
-  (no cross-lease mixing). Note: this test applies only if `write_processed_parquet`
-  uses `partition_on=["lease_kid"]`; if not, skip or document why this check is
-  not applicable and substitute a check that each file does not mix counties.
-- `@pytest.mark.integration` TR-14 — Schema stability: read Parquet schemas from at
-  least 3 partition files in `data/processed/` and assert all have identical column
-  names and dtypes.
-- `@pytest.mark.unit` TR-15 — Row count reconciliation: assert deduplicated row count
-  <= raw row count and that running deduplication twice yields identical output.
-- `@pytest.mark.integration` TR-16 — Sort stability: for a given `lease_kid` that
-  spans multiple Parquet files, assert the last `production_date` in the first file
-  is earlier than the first `production_date` in the second file.
-- `@pytest.mark.integration` TR-17 — Lazy evaluation: assert `read_interim`,
-  `parse_production_date`, `standardise_columns`, `deduplicate`, `pivot_products`,
-  `flag_outliers`, and `sort_by_well_date` all return `dask.dataframe.DataFrame`
-  (not `pd.DataFrame`).
-- `@pytest.mark.integration` TR-18 — Parquet readability: read every `.parquet` file
-  in `data/processed/` with `pd.read_parquet` and assert no exception is raised.
+- **TR-04 (Well completeness check):** **Given** a synthetic dataset where lease
+  `L001` has records for January, February, and March 2024 (no gaps), **assert** the
+  processed output contains exactly 3 records for `L001` and no months are missing.
 
-**Definition of done:** All test cases implemented, all unit tests pass, `ruff` and
-`mypy` report no errors. `requirements.txt` updated with all third-party packages
-imported in this task.
+- **TR-05 (Zero production handling):** **Given** raw data with `PRODUCTION = 0.0`
+  for a specific (LEASE_KID, MONTH-YEAR), **assert** the processed output retains
+  that row with `PRODUCTION = 0.0` (not NA, not dropped).
+
+- **TR-11 (Data integrity spot check):** **Given** a known set of (LEASE_KID,
+  MONTH-YEAR, PRODUCTION) tuples in the input, **assert** the same tuples appear in
+  the processed output (production values are preserved, not accidentally aggregated
+  or dropped).
+
+- **TR-12 (Data type validation):** After `run_transform`, **assert**:
+  - `production_date` dtype is `datetime64[ns]`.
+  - `PRODUCT` dtype is `CategoricalDtype`.
+  - `PRODUCTION` dtype is `float64`.
+  - `LEASE_KID` is the DataFrame index (Int64).
+
+- **TR-13 (Partition correctness):** Read at least 3 processed Parquet partitions.
+  For each partition, collect the unique `LEASE_KID` index values. **Assert** no
+  `LEASE_KID` appears in more than one partition.
+
+- **TR-14 (Schema stability):** Sample schema from two processed Parquet files.
+  **Assert** column names and dtypes are identical.
+
+- **TR-15 (Row count and idempotency):** **Assert** processed row count ≤ raw input
+  row count. Run the cleaning pipeline twice on the same input; **assert** the output
+  row count is the same both times.
+
+- **TR-16 (Sort stability):** For a multi-partition output, read back two consecutive
+  partitions for the same `LEASE_KID`. **Assert** the last `production_date` in
+  partition N is ≤ the first `production_date` in partition N+1 for that entity.
+
+**Definition of done:** All test cases pass, ruff and mypy report no errors,
+`requirements.txt` updated with all third-party packages imported in this task.

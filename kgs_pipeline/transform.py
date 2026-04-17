@@ -1,425 +1,226 @@
-"""Transform component: clean and standardise KGS interim data."""
+"""Transform stage: clean, index, sort, and write processed Parquet."""
 
 from __future__ import annotations
 
-import argparse
+import logging
+import time
 from pathlib import Path
 
 import dask.dataframe as dd
-import pandas as pd  # type: ignore[import-untyped]
+import numpy as np
+import pandas as pd
 
-from kgs_pipeline.config import config as _cfg
-from kgs_pipeline.logging_utils import get_logger
-
-logger = get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Output meta helpers
-# ---------------------------------------------------------------------------
-
-# Columns remaining after standardise_columns (canonical lower-case names)
-_STD_STRING_COLS = [
-    "lease_kid",
-    "lease_name",
-    "api_number",
-    "operator",
-    "county",
-    "field",
-    "producing_zone",
-    "product",
-    "source_file",
-]
-_STD_FLOAT_COLS = ["production", "well_count", "latitude", "longitude"]
-
-# Optional columns kept if present (not required downstream)
-_OPTIONAL_COLS = ["DOR_CODE", "TOWNSHIP", "TWN_DIR", "RANGE", "RANGE_DIR", "SECTION", "SPOT"]
-
-# Wide format columns after pivot
-_WIDE_STRING_COLS = [
-    "lease_kid",
-    "api_number",
-    "operator",
-    "county",
-    "field",
-    "producing_zone",
-    "source_file",
-    "lease_name",
-]
-_WIDE_FLOAT_COLS = ["oil_bbl", "gas_mcf", "well_count", "latitude", "longitude"]
-
-
-def _std_meta() -> pd.DataFrame:
-    """Meta for standardise_columns output (includes production_date, product)."""
-    d: dict[str, object] = {col: pd.array([], dtype=pd.StringDtype()) for col in _STD_STRING_COLS}
-    d.update({col: pd.array([], dtype="float64") for col in _STD_FLOAT_COLS})
-    d["production_date"] = pd.array([], dtype="datetime64[ns]")
-    return pd.DataFrame(d)
-
-
-def _wide_meta() -> pd.DataFrame:
-    """Meta for pivot_products output."""
-    d: dict[str, object] = {col: pd.array([], dtype=pd.StringDtype()) for col in _WIDE_STRING_COLS}
-    d.update({col: pd.array([], dtype="float64") for col in _WIDE_FLOAT_COLS})
-    d["production_date"] = pd.array([], dtype="datetime64[ns]")
-    df = pd.DataFrame(d)
-    # Reorder columns to match actual merge output order
-    col_order = [
-        "lease_kid",
-        "production_date",
-        "api_number",
-        "operator",
-        "county",
-        "field",
-        "producing_zone",
-        "well_count",
-        "latitude",
-        "longitude",
-        "source_file",
-        "lease_name",
-        "oil_bbl",
-        "gas_mcf",
-    ]
-    # Only include columns that exist
-    col_order = [c for c in col_order if c in df.columns]
-    return df[col_order]
-
-
-def _flagged_meta() -> pd.DataFrame:
-    """Meta for flag_outliers output."""
-    base = _wide_meta()
-    base["is_outlier"] = pd.array([], dtype="bool")
-    base["has_negative_production"] = pd.array([], dtype="bool")
-    return base
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Task 01: Read and repartition interim Parquet
+# Task T-01: production_date derivation
 # ---------------------------------------------------------------------------
 
 
-def read_interim(interim_dir: str) -> dd.DataFrame:
-    """Read interim Parquet files and repartition to at most 50 partitions.
+def add_production_date(partition: pd.DataFrame) -> pd.DataFrame:
+    """Parse MONTH-YEAR into a production_date datetime column.
 
-    Raises:
-        FileNotFoundError: if *interim_dir* does not exist or has no Parquet files.
+    Drops rows with invalid or non-monthly MONTH-YEAR values (month=0, month=-1,
+    non-numeric). Returns the partition with production_date as datetime64[ns].
     """
-    path = Path(interim_dir)
-    if not path.exists():
-        raise FileNotFoundError(f"Interim directory not found: {interim_dir}")
-    if not list(path.glob("*.parquet")):
-        raise FileNotFoundError(f"No Parquet files found in: {interim_dir}")
+    if partition.empty:
+        partition = partition.copy()
+        partition["production_date"] = pd.Series(dtype="datetime64[ns]")
+        return partition
 
-    ddf = dd.read_parquet(str(path))
-    n = min(ddf.npartitions, 50)
-    ddf = ddf.repartition(npartitions=n)
+    my_str = partition["MONTH-YEAR"].astype(str)
 
-    logger.info(
-        "Read interim Parquet",
-        extra={"partitions": ddf.npartitions, "dir": interim_dir},
+    # Split on "-" — month is the first element, year is the last element.
+    # Edge cases: "-1-2024" splits as ['', '1', '2024'] → month_part='', year_part='2024'
+    parts = my_str.str.split("-")
+    month_part = parts.str[0]
+    year_part = parts.str[-1]
+
+    def _is_int(s: pd.Series) -> pd.Series:
+        return s.str.match(r"^\d+$").fillna(False)
+
+    valid_month = _is_int(month_part)
+    valid_year = _is_int(year_part)
+
+    # Month must be 1–12
+    month_int = pd.to_numeric(month_part, errors="coerce")
+    valid_range = (month_int >= 1) & (month_int <= 12)
+
+    mask_valid = valid_month & valid_year & valid_range
+    n_dropped = (~mask_valid).sum()
+    if n_dropped > 0:
+        logger.info("add_production_date: dropped %d rows with invalid MONTH-YEAR", n_dropped)
+
+    partition = partition[mask_valid].copy()
+    if partition.empty:
+        partition["production_date"] = pd.Series(dtype="datetime64[ns]")
+        return partition
+
+    my_valid = partition["MONTH-YEAR"].astype(str)
+    parts_valid = my_valid.str.split("-")
+    m = pd.to_numeric(parts_valid.str[0], errors="coerce")
+    y = pd.to_numeric(parts_valid.str[-1], errors="coerce")
+
+    partition["production_date"] = pd.to_datetime({"year": y, "month": m, "day": 1})
+    return partition
+
+
+# ---------------------------------------------------------------------------
+# Task T-02: Categorical cleaner
+# ---------------------------------------------------------------------------
+
+
+def clean_categoricals(
+    partition: pd.DataFrame,
+    categorical_cols: dict[str, list[str]],
+) -> pd.DataFrame:
+    """Replace out-of-vocabulary categorical values with NA and cast to CategoricalDtype.
+
+    All masking is vectorized — no row iteration.
+    """
+    partition = partition.copy()
+    for col_name, allowed in categorical_cols.items():
+        if col_name not in partition.columns:
+            continue
+        col = partition[col_name].astype(object)  # work in object space for masking
+        invalid_mask = col.notna() & ~col.isin(allowed)
+        if invalid_mask.any():
+            col = col.where(~invalid_mask, other=np.nan)
+        partition[col_name] = col.astype(pd.CategoricalDtype(categories=allowed, ordered=False))
+    return partition
+
+
+# ---------------------------------------------------------------------------
+# Task T-03: Physical bounds cleaner
+# ---------------------------------------------------------------------------
+
+
+def clean_physical_bounds(partition: pd.DataFrame) -> pd.DataFrame:
+    """Enforce physical constraints on production values.
+
+    - Replaces negative PRODUCTION with NA (TR-01).
+    - Logs warning for oil PRODUCTION > 50,000 BBL/month (TR-02).
+    - Preserves zero PRODUCTION as valid (TR-05).
+    """
+    partition = partition.copy()
+    prod = partition["PRODUCTION"]
+
+    negative_mask = prod < 0
+    n_neg = int(negative_mask.sum())
+    if n_neg > 0:
+        logger.warning("Replacing %d negative PRODUCTION values with NA in partition", n_neg)
+        partition.loc[negative_mask, "PRODUCTION"] = float("nan")
+
+    # TR-02: flag suspicious high oil values
+    if "PRODUCT" in partition.columns:
+        prod_updated = partition["PRODUCTION"]
+        oil_high_mask = (partition["PRODUCT"].astype(str) == "O") & (prod_updated > 50_000)
+        n_high = int(oil_high_mask.sum())
+        if n_high > 0:
+            logger.warning(
+                "%d oil PRODUCTION values exceed 50,000 BBL/month — possible unit error",
+                n_high,
+            )
+
+    return partition
+
+
+# ---------------------------------------------------------------------------
+# Task T-04: Deduplicator
+# ---------------------------------------------------------------------------
+
+
+def deduplicate(partition: pd.DataFrame) -> pd.DataFrame:
+    """Remove duplicate rows by (LEASE_KID, MONTH-YEAR, PRODUCT), keep first."""
+    before = len(partition)
+    partition = partition.drop_duplicates(
+        subset=["LEASE_KID", "MONTH-YEAR", "PRODUCT"], keep="first"
+    )
+    after = len(partition)
+    if before > after:
+        logger.info("Dropped %d duplicate rows in partition", before - after)
+    return partition
+
+
+# ---------------------------------------------------------------------------
+# Task T-05: Entity indexer and sorter
+# ---------------------------------------------------------------------------
+
+
+def set_entity_index(ddf: dd.DataFrame) -> dd.DataFrame:
+    """Set the Dask DataFrame index to LEASE_KID and sort within partitions by production_date."""
+    ddf = ddf.set_index("LEASE_KID", sorted=False, drop=True)
+
+    meta = ddf._meta.sort_values("production_date")
+    ddf = ddf.map_partitions(
+        lambda part: part.sort_values("production_date"),
+        meta=meta,
     )
     return ddf
 
 
 # ---------------------------------------------------------------------------
-# Task 02: Drop non-monthly rows and parse production date
+# Task T-06: Transform runner
 # ---------------------------------------------------------------------------
 
 
-def _parse_date_partition(pdf: pd.DataFrame) -> pd.DataFrame:
-    """Filter non-monthly rows and create production_date column."""
-    if "MONTH_YEAR" not in pdf.columns:
-        pdf["production_date"] = pd.NaT
-        return pdf
+def run_transform(config: dict) -> dd.DataFrame:
+    """Orchestrate the full transform stage.
 
-    # Drop annual summary (month=0) and cumulative-start rows
-    mask = ~(
-        pdf["MONTH_YEAR"].astype(str).str.startswith("0-")
-        | pdf["MONTH_YEAR"].astype(str).str.startswith("-1-")
-    )
-    pdf = pdf[mask].copy()
-
-    def _parse_my(val: object) -> pd.Timestamp:
-        s = str(val).strip()
-        parts = s.split("-")
-        try:
-            month = int(parts[0])
-            year = int(parts[-1])
-            return pd.Timestamp(year=year, month=month, day=1)
-        except (ValueError, IndexError):
-            return pd.NaT  # type: ignore[return-value]
-
-    pdf["production_date"] = pdf["MONTH_YEAR"].apply(_parse_my)
-    pdf = pdf[pdf["production_date"].notna()].copy()
-    pdf = pdf.drop(columns=["MONTH_YEAR"])
-    return pdf
-
-
-def parse_production_date(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Filter non-monthly rows and parse MONTH_YEAR → production_date column.
-
-    Returns a Dask DataFrame without MONTH_YEAR and with production_date (datetime64[ns]).
+    Reads interim Parquet, applies all cleaning steps, indexes and sorts,
+    repartitions, and writes to data/processed/transform/.
+    Returns the lazy Dask DataFrame.
     """
-    # Build meta: drop MONTH_YEAR, add production_date
-    existing_cols = [c for c in ddf._meta.columns if c != "MONTH_YEAR"]
-    meta_dict: dict[str, object] = {}
-    for col in existing_cols:
-        meta_dict[col] = ddf._meta[col]
-    meta_dict["production_date"] = pd.array([], dtype="datetime64[ns]")
-    meta = pd.DataFrame(meta_dict)
+    interim_dir = config["interim_dir"]
+    if not Path(interim_dir).exists():
+        raise FileNotFoundError(f"interim_dir does not exist: {interim_dir}")
 
-    return ddf.map_partitions(_parse_date_partition, meta=meta)
+    t0 = time.time()
+    logger.info("Transform stage starting — reading from %s", interim_dir)
 
+    ddf: dd.DataFrame = dd.read_parquet(interim_dir)
 
-# ---------------------------------------------------------------------------
-# Task 03: Column standardisation and type casting
-# ---------------------------------------------------------------------------
-
-
-def _standardise_partition(pdf: pd.DataFrame) -> pd.DataFrame:
-    """Rename columns, cast types per canonical schema."""
-    rename_map = {
-        "LEASE_KID": "lease_kid",
-        "LEASE": "lease_name",
-        "API_NUMBER": "api_number",
-        "OPERATOR": "operator",
-        "COUNTY": "county",
-        "FIELD": "field",
-        "PRODUCING_ZONE": "producing_zone",
-        "PRODUCT": "product",
-        "PRODUCTION": "production",
-        "WELLS": "well_count",
-        "LATITUDE": "latitude",
-        "LONGITUDE": "longitude",
+    categorical_cols: dict[str, list[str]] = {
+        "PRODUCT": ["O", "G"],
+        "TWN_DIR": ["S", "N"],
+        "RANGE_DIR": ["E", "W"],
     }
-    pdf = pdf.rename(columns={k: v for k, v in rename_map.items() if k in pdf.columns})
 
-    # Drop optional administrative columns if present
-    optional_drop = ["DOR_CODE", "TOWNSHIP", "TWN_DIR", "RANGE", "RANGE_DIR", "SECTION", "SPOT"]
-    pdf = pdf.drop(columns=[c for c in optional_drop if c in pdf.columns])
+    # T-01: add production_date
+    meta_01 = add_production_date(ddf._meta.copy())
+    ddf = ddf.map_partitions(add_production_date, meta=meta_01)
 
-    # Cast numeric columns
-    for col in ["production", "well_count", "latitude", "longitude"]:
-        if col in pdf.columns:
-            pdf[col] = pd.to_numeric(pdf[col], errors="coerce")
+    # T-02: clean categoricals
+    meta_02 = clean_categoricals(ddf._meta.copy(), categorical_cols)
+    ddf = ddf.map_partitions(clean_categoricals, categorical_cols, meta=meta_02)
 
-    # Cast string columns
-    str_cols = [
-        "lease_kid",
-        "api_number",
-        "operator",
-        "county",
-        "lease_name",
-        "field",
-        "producing_zone",
-        "product",
-        "source_file",
-    ]
-    for col in str_cols:
-        if col in pdf.columns:
-            pdf[col] = pdf[col].astype(pd.StringDtype())
+    # T-03: physical bounds
+    meta_03 = clean_physical_bounds(ddf._meta.copy())
+    ddf = ddf.map_partitions(clean_physical_bounds, meta=meta_03)
 
-    return pdf
+    # T-04: deduplication
+    meta_04 = deduplicate(ddf._meta.copy())
+    ddf = ddf.map_partitions(deduplicate, meta=meta_04)
 
+    # T-05: entity index + sort
+    ddf = set_entity_index(ddf)
 
-def standardise_columns(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Rename and cast columns to the canonical processed schema."""
-    # Build meta by applying to the meta DataFrame
-    meta = _standardise_partition(ddf._meta.copy())
-    return ddf.map_partitions(_standardise_partition, meta=meta)
+    # Repartition (last op before write — ADR-004)
+    n = ddf.npartitions
+    n_out = max(10, min(n, 50))
+    ddf = ddf.repartition(npartitions=n_out)
 
+    processed_dir = config["processed_dir"]
+    Path(processed_dir).mkdir(parents=True, exist_ok=True)
 
-# ---------------------------------------------------------------------------
-# Task 04: Deduplicate records
-# ---------------------------------------------------------------------------
+    ddf.to_parquet(processed_dir, engine="pyarrow", write_index=True, overwrite=True)
 
-
-def _dedup_partition(pdf: pd.DataFrame) -> pd.DataFrame:
-    return pdf.drop_duplicates(subset=["lease_kid", "product", "production_date"], keep="first")
-
-
-def deduplicate(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Remove within-partition duplicates on (lease_kid, product, production_date).
-
-    NOTE: Cross-partition duplicates are not removed here. The caller should
-    repartition by lease before calling this function to ensure cross-partition
-    duplicates land in the same partition.
-    """
-    before = ddf.npartitions
-    result = ddf.map_partitions(_dedup_partition, meta=ddf._meta)
-    logger.info("Deduplicated", extra={"input_partitions": before})
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Task 05: Pivot oil and gas production to wide format
-# ---------------------------------------------------------------------------
-
-_PIVOT_MERGE_KEY = [
-    "lease_kid",
-    "production_date",
-    "api_number",
-    "operator",
-    "county",
-    "field",
-    "producing_zone",
-    "well_count",
-    "latitude",
-    "longitude",
-    "source_file",
-]
-
-# lease_name may also be in the merge key if present
-_PIVOT_MERGE_KEY_OPTIONAL = ["lease_name"]
-
-
-def _pivot_partition(pdf: pd.DataFrame) -> pd.DataFrame:
-    """Pivot long oil/gas rows to wide format."""
-    merge_key = [c for c in _PIVOT_MERGE_KEY if c in pdf.columns]
-    for c in _PIVOT_MERGE_KEY_OPTIONAL:
-        if c in pdf.columns:
-            merge_key.append(c)
-
-    oil = pdf[pdf["product"] == "O"].copy()
-    gas = pdf[pdf["product"] == "G"].copy()
-
-    oil = oil.rename(columns={"production": "oil_bbl"})
-    gas = gas.rename(columns={"production": "gas_mcf"})
-
-    oil_cols = merge_key + ["oil_bbl"]
-    gas_cols = merge_key + ["gas_mcf"]
-
-    oil_subset = oil[[c for c in oil_cols if c in oil.columns]]
-    gas_subset = gas[[c for c in gas_cols if c in gas.columns]]
-
-    wide = oil_subset.merge(gas_subset, on=merge_key, how="outer")
-    wide["oil_bbl"] = wide["oil_bbl"].fillna(0.0) if "oil_bbl" in wide.columns else 0.0
-    wide["gas_mcf"] = wide["gas_mcf"].fillna(0.0) if "gas_mcf" in wide.columns else 0.0
-    if "product" in wide.columns:
-        wide = wide.drop(columns=["product"])
-
-    return wide
-
-
-def pivot_products(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Pivot long oil/gas format to wide format with oil_bbl and gas_mcf columns."""
-    meta = _wide_meta()
-    # Preserve optional columns in meta if present
-    for c in _PIVOT_MERGE_KEY_OPTIONAL:
-        if c in ddf._meta.columns and c not in meta.columns:
-            meta[c] = pd.array([], dtype=pd.StringDtype())
-
-    return ddf.map_partitions(_pivot_partition, meta=meta)
-
-
-# ---------------------------------------------------------------------------
-# Task 06: Outlier flagging
-# ---------------------------------------------------------------------------
-
-
-def _flag_partition(
-    pdf: pd.DataFrame,
-    oil_threshold: float,
-    gas_threshold: float,
-) -> pd.DataFrame:
-    pdf = pdf.copy()
-    oil = pd.to_numeric(pdf.get("oil_bbl", pd.Series(dtype="float64")), errors="coerce").fillna(0.0)
-    gas = pd.to_numeric(pdf.get("gas_mcf", pd.Series(dtype="float64")), errors="coerce").fillna(0.0)
-
-    pdf["is_outlier"] = (oil > oil_threshold) | (gas > gas_threshold)
-    pdf["has_negative_production"] = (oil < 0) | (gas < 0)
-
-    neg_count = int(pdf["has_negative_production"].sum())
-    if neg_count:
-        logger.warning(
-            "Negative production values detected",
-            extra={"count": neg_count},
-        )
-    return pdf
-
-
-def flag_outliers(
-    ddf: dd.DataFrame,
-    oil_threshold: float = 50_000.0,
-    gas_threshold: float = 500_000.0,
-) -> dd.DataFrame:
-    """Add is_outlier and has_negative_production boolean columns."""
-    meta = ddf._meta.copy()
-    meta["is_outlier"] = pd.array([], dtype="bool")
-    meta["has_negative_production"] = pd.array([], dtype="bool")
-
-    return ddf.map_partitions(_flag_partition, oil_threshold, gas_threshold, meta=meta)
-
-
-# ---------------------------------------------------------------------------
-# Task 07: Sort by well and date
-# ---------------------------------------------------------------------------
-
-
-def sort_by_well_date(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Sort the Dask DataFrame by (lease_kid, production_date) ascending.
-
-    NOTE: Dask will add a shuffle step. The resulting DataFrame has a modified
-    partition structure after the sort. The caller should repartition before writing.
-    """
-    logger.info("Sorting by lease_kid, production_date")
-    return ddf.sort_values(["lease_kid", "production_date"])
-
-
-# ---------------------------------------------------------------------------
-# Task 08: Write processed Parquet output
-# ---------------------------------------------------------------------------
-
-
-def write_processed_parquet(ddf: dd.DataFrame, output_dir: str) -> int:
-    """Write cleaned wide-format DataFrame to *output_dir* as Parquet.
-
-    Returns the number of Parquet files written.
-    """
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    n_partitions = max(1, ddf.npartitions // 5)
-    ddf.repartition(npartitions=n_partitions).to_parquet(
-        str(out), write_index=False, overwrite=True
-    )
-
-    file_count = len(list(out.glob("*.parquet")))
+    elapsed = time.time() - t0
     logger.info(
-        "Wrote processed Parquet",
-        extra={"files": file_count, "output_dir": str(out)},
+        "Transform complete: %d partitions written to %s (%.1fs)",
+        n_out,
+        processed_dir,
+        elapsed,
     )
-    return file_count
-
-
-# ---------------------------------------------------------------------------
-# Task 09: Transform orchestrator and CLI
-# ---------------------------------------------------------------------------
-
-
-def run_transform(interim_dir: str, output_dir: str) -> int:
-    """Chain all transform stages and write processed Parquet."""
-    ddf = read_interim(interim_dir)
-    ddf = parse_production_date(ddf)
-    ddf = standardise_columns(ddf)
-    ddf = deduplicate(ddf)
-    ddf = pivot_products(ddf)
-    ddf = flag_outliers(ddf)
-    ddf = sort_by_well_date(ddf)
-    return write_processed_parquet(ddf, output_dir)
-
-
-def main() -> None:
-    """CLI entry point for the transform stage."""
-    parser = argparse.ArgumentParser(
-        description="KGS transform: clean interim data to processed Parquet"
-    )
-    parser.add_argument("--interim-dir", default=_cfg.INTERIM_DATA_DIR)
-    parser.add_argument("--output-dir", default=_cfg.PROCESSED_DATA_DIR)
-    args = parser.parse_args()
-
-    count = run_transform(args.interim_dir, args.output_dir)
-    print(f"Transform wrote {count} Parquet file(s).")
-
-
-if __name__ == "__main__":
-    main()
+    return ddf
