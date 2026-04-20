@@ -1,1 +1,3 @@
-# kgs_pipeline — KGS oil and gas production data pipeline
+"""KGS Oil & Gas Production Data Pipeline."""
+
+__version__ = "0.1.0"

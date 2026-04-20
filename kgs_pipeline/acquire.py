@@ -1,179 +1,133 @@
-"""Acquire stage: download raw KGS lease production files from the KGS portal."""
+"""Acquire stage — download raw KGS lease production files."""
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
 
-import dask.bag as db
+import dask
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------------------------
-# Dataclasses (Task 06)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class AcquireConfig:
-    """Configuration for the acquire stage."""
-
-    index_path: Path
-    output_dir: Path
-    min_year: int = 2024
-    max_workers: int = 5
-    request_timeout: int = 30
-    monthsave_base_url: str = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave"
-    sleep_seconds: float = 0.5
-
-
-@dataclass
-class AcquireSummary:
-    """Summary of an acquire stage run."""
-
-    total: int
-    downloaded: int
-    skipped: int
-    failed: int
-    output_dir: Path
-
-
-# ---------------------------------------------------------------------------
-# Task 01: Lease index loader
+# ACQ-01: Lease index loader
 # ---------------------------------------------------------------------------
 
+def load_lease_index(index_path: str) -> pd.DataFrame:
+    """Load and filter the KGS lease index CSV.
 
-def load_lease_index(index_path: str | Path, min_year: int) -> pd.DataFrame:
-    """Load and filter the KGS lease index CSV file.
+    Filters to rows with year >= 2024 and deduplicates on the URL column.
 
     Args:
-        index_path: Path to the lease index file (CSV with quoted fields).
-        min_year: Minimum year to include (rows with earlier years are dropped).
+        index_path: Path to the lease index file.
 
     Returns:
-        Filtered, URL-deduplicated DataFrame.
+        Filtered, deduplicated DataFrame with the URL column intact.
 
     Raises:
-        FileNotFoundError: If index_path does not exist.
-        ValueError: If URL or MONTH-YEAR column is absent.
+        FileNotFoundError: If ``index_path`` does not exist.
+        ValueError: If required columns are absent.
     """
-    path = Path(index_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Lease index file not found: {path}")
+    p = Path(index_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Lease index not found: {index_path}")
 
-    df = pd.read_csv(path, low_memory=False)
+    df = pd.read_csv(index_path, dtype=str)
 
-    if "MONTH-YEAR" not in df.columns:
-        raise ValueError("Required column 'MONTH-YEAR' is absent from the lease index file.")
-    if "URL" not in df.columns:
-        raise ValueError("Required column 'URL' is absent from the lease index file.")
+    required = {"URL", "MONTH-YEAR"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Lease index missing columns: {missing}")
 
-    # Extract year by splitting MONTH-YEAR on "-" and taking the last element
-    year_parts = df["MONTH-YEAR"].astype(str).str.split("-").str[-1]
+    def _parse_year(val: str) -> int | None:
+        try:
+            return int(str(val).split("-")[-1].strip())
+        except (ValueError, AttributeError):
+            return None
 
-    # Keep only rows where the year part is numeric
-    numeric_mask = year_parts.str.isnumeric()
-    df = df[numeric_mask].copy()
-    year_parts = year_parts[numeric_mask]
-
-    # Filter by min_year
-    df = df[year_parts.astype(int) >= min_year].copy()
-
-    # Deduplicate by URL — one row per unique URL
-    df = df.drop_duplicates(subset=["URL"]).reset_index(drop=True)
-
-    return df
+    years = df["MONTH-YEAR"].map(_parse_year)
+    df = df[years.notna() & (years >= 2024)].copy()
+    df = df.drop_duplicates(subset=["URL"])
+    return df.reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
-# Task 02: Lease ID extractor
+# ACQ-02: Lease ID extractor
 # ---------------------------------------------------------------------------
-
 
 def extract_lease_id(url: str) -> str:
-    """Extract the f_lc (lease ID) query parameter from a KGS lease page URL.
+    """Extract the ``f_lc`` lease ID from a KGS MainLease URL.
 
     Args:
-        url: KGS lease page URL containing f_lc parameter.
+        url: A KGS MainLease URL.
 
     Returns:
-        The lease ID as a string.
+        The lease ID string.
 
     Raises:
-        ValueError: If f_lc parameter is absent from the URL.
+        ValueError: If ``f_lc`` is not present in the URL.
     """
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
     if "f_lc" not in params:
-        raise ValueError(f"'f_lc' parameter not found in URL: {url}")
+        raise ValueError(f"No f_lc parameter in URL: {url}")
     return params["f_lc"][0]
 
 
 # ---------------------------------------------------------------------------
-# Task 03: MonthSave page parser
+# ACQ-03: MonthSave page parser
 # ---------------------------------------------------------------------------
 
-
-def parse_download_link(html_content: str, base_url: str) -> str:
-    """Parse the KGS MonthSave HTML page and extract the download URL.
+def parse_download_link(html: str, base_url: str) -> str:
+    """Find the ``anon_blobber.download`` link in a KGS MonthSave page.
 
     Args:
-        html_content: HTML content of the MonthSave page.
-        base_url: Base URL for resolving relative hrefs.
+        html: Raw HTML content of the MonthSave page.
+        base_url: Base URL used to resolve relative hrefs.
 
     Returns:
         Absolute download URL string.
 
     Raises:
-        ValueError: If no anchor with 'anon_blobber.download' is found.
+        ValueError: If no matching anchor is found.
     """
-    soup = BeautifulSoup(html_content, "html.parser")
-    anchor = soup.find("a", href=lambda h: h and "anon_blobber.download" in h)
-    if anchor is None:
-        snippet = html_content[:200]
-        raise ValueError(
-            f"No download link (anon_blobber.download) found in HTML. First 200 chars: {snippet!r}"
-        )
-    if not isinstance(anchor, Tag):
-        raise ValueError("Expected anchor to be a Tag, not NavigableString")
-    href: str = anchor["href"]
-    if not href.startswith("http"):
-        href = urljoin(base_url, href)
-    return href
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all("a", href=True):
+        href: str = tag["href"]
+        if "anon_blobber.download" in href:
+            if href.startswith("http"):
+                return href
+            return urljoin(base_url, href)
+    raise ValueError(f"No anon_blobber.download link found in HTML (base_url={base_url})")
 
 
 # ---------------------------------------------------------------------------
-# Task 04: Single-file downloader
+# ACQ-04: Single-lease downloader
 # ---------------------------------------------------------------------------
 
+_KGS_BASE = "https://chasm.kgs.ku.edu"
+_MONTH_SAVE_TMPL = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc={lease_id}"
 
-def download_lease_file(
+
+def download_lease(
     lease_url: str,
     output_dir: Path,
     session: requests.Session,
-    monthsave_base_url: str = "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave",
-    request_timeout: int = 30,
-    sleep_seconds: float = 0.5,
 ) -> Path | None:
-    """Execute the two-step download workflow for a single lease URL.
+    """Execute the two-step KGS download for a single lease.
 
     Args:
-        lease_url: URL to the KGS lease page.
-        output_dir: Directory where the downloaded file will be saved.
-        session: requests.Session to use for HTTP calls.
-        monthsave_base_url: Base URL for the MonthSave endpoint.
-        request_timeout: HTTP timeout in seconds.
-        sleep_seconds: Seconds to sleep after a successful download.
+        lease_url: The MainLease URL for this lease.
+        output_dir: Directory where downloaded files are saved.
+        session: A ``requests.Session`` for connection reuse.
 
     Returns:
-        Path to the saved file, or None if skipped or failed.
+        ``Path`` to the saved file, or ``None`` on any failure.
     """
     try:
         lease_id = extract_lease_id(lease_url)
@@ -181,202 +135,189 @@ def download_lease_file(
         logger.warning("Cannot extract lease ID from %s: %s", lease_url, exc)
         return None
 
-    monthsave_url = f"{monthsave_base_url}?f_lc={lease_id}"
+    month_save_url = _MONTH_SAVE_TMPL.format(lease_id=lease_id)
 
-    tmp_path: Path | None = None
     try:
-        # Fetch the MonthSave page
-        resp = session.get(monthsave_url, timeout=request_timeout)
-        resp.raise_for_status()
-
-        # Parse the download link
-        try:
-            download_url = parse_download_link(resp.text, monthsave_url)
-        except ValueError as exc:
-            logger.warning("No download link for lease %s: %s", lease_url, exc)
+        resp = session.get(month_save_url, timeout=30)
+        if resp.status_code != 200:
+            logger.warning("MonthSave returned %s for lease %s", resp.status_code, lease_id)
             return None
-
-        # Extract filename from the download URL
-        parsed = urlparse(download_url)
-        params = parse_qs(parsed.query)
-        filename = params.get("p_file_name", [None])[0]
-        if filename is None:
-            logger.warning("Cannot determine filename from download URL: %s", download_url)
-            return None
-
-        final_path = output_dir / filename
-
-        # Idempotency: skip if file already exists
-        if final_path.exists():
-            logger.debug("Skipping %s — already exists", final_path)
-            return final_path
-
-        # Download the file
-        file_resp = session.get(download_url, timeout=request_timeout)
-        file_resp.raise_for_status()
-
-        if len(file_resp.content) == 0:
-            logger.warning("Empty response for %s — skipping", download_url)
-            return None
-
-        # Atomic write: tmp file → rename
-        tmp_path = output_dir / f"{filename}.tmp"
-        tmp_path.write_bytes(file_resp.content)
-        tmp_path.rename(final_path)
-        tmp_path = None  # successfully renamed
-
-        time.sleep(sleep_seconds)
-        logger.info("Downloaded %s", final_path.name)
-        return final_path
-
-    except requests.RequestException as exc:
-        logger.warning("Request error downloading lease %s: %s", lease_url, exc)
-        if tmp_path is not None and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+        download_url = parse_download_link(resp.text, _KGS_BASE)
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Network error fetching MonthSave for lease %s: %s", lease_id, exc)
+        return None
+    except ValueError as exc:
+        logger.warning("No download link for lease %s: %s", lease_id, exc)
         return None
 
+    # Extract filename from p_file_name query param
+    dl_params = parse_qs(urlparse(download_url).query)
+    filename = dl_params.get("p_file_name", [f"lp{lease_id}.txt"])[0]
+    dest = output_dir / filename
+
+    # Idempotency — skip if already downloaded
+    if dest.exists():
+        return dest
+
+    try:
+        data_resp = session.get(download_url, timeout=60)
+        if data_resp.status_code != 200:
+            logger.warning("Data download returned %s for lease %s", data_resp.status_code, lease_id)
+            return None
+        if not data_resp.content:
+            logger.warning("Empty content for lease %s", lease_id)
+            return None
+        data_resp.content.decode("utf-8")  # validate decodable
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Network error downloading data for lease %s: %s", lease_id, exc)
+        return None
+    except UnicodeDecodeError:
+        logger.warning("Non-UTF-8 content for lease %s", lease_id)
+        return None
+
+    dest.write_bytes(data_resp.content)
+    time.sleep(0.5)
+    return dest
+
 
 # ---------------------------------------------------------------------------
-# Task 05: Parallel download orchestrator
+# ACQ-05: Retry decorator
 # ---------------------------------------------------------------------------
 
-
-def _download_worker(
-    args: tuple[str, Path, str, int, float],
-) -> Path | None:
-    """Worker function for Dask bag map — creates its own session per call."""
-    lease_url, output_dir, monthsave_base_url, request_timeout, sleep_seconds = args
-    session = requests.Session()
-    return download_lease_file(
-        lease_url=lease_url,
-        output_dir=output_dir,
-        session=session,
-        monthsave_base_url=monthsave_base_url,
-        request_timeout=request_timeout,
-        sleep_seconds=sleep_seconds,
-    )
-
-
-def run_acquire(config: AcquireConfig) -> AcquireSummary:
-    """Orchestrate parallel downloads using Dask threaded scheduler.
+def with_retry(max_attempts: int, backoff_base: float):
+    """Decorator factory with exponential backoff retry logic.
 
     Args:
-        config: AcquireConfig with all acquire settings.
+        max_attempts: Maximum number of call attempts.
+        backoff_base: Base seconds for exponential backoff.
 
     Returns:
-        AcquireSummary with counts of downloaded, skipped, and failed files.
-
-    Raises:
-        RuntimeError: If all downloads fail.
+        Decorator that wraps callables with retry logic.
     """
-    output_dir = Path(config.output_dir)
+    def decorator(fn):  # type: ignore[no-untyped-def]
+        def wrapper(*args, **kwargs):  # type: ignore[no-untyped-def]
+            last_exc: Exception | None = None
+            for attempt in range(max_attempts):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:
+                    last_exc = exc
+                    wait = backoff_base * (2 ** attempt)
+                    logger.warning(
+                        "Attempt %d/%d failed for %s: %s — retrying in %.1fs",
+                        attempt + 1,
+                        max_attempts,
+                        fn.__name__,
+                        exc,
+                        wait,
+                    )
+                    time.sleep(wait)
+            raise last_exc  # type: ignore[misc]
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# ACQ-06: Parallel acquire orchestrator
+# ---------------------------------------------------------------------------
+
+def run_acquire(config: dict) -> list[Path]:
+    """Orchestrate parallel download of all lease production files.
+
+    Uses the Dask threaded scheduler (I/O-bound — ADR-001).
+
+    Args:
+        config: Pipeline configuration dict.
+
+    Returns:
+        List of ``Path`` objects for successfully downloaded files.
+    """
+    acq_cfg = config["acquire"]
+    index_df = load_lease_index(acq_cfg["lease_index"])
+    urls: list[str] = index_df["URL"].tolist()
+
+    output_dir = Path(acq_cfg["raw_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    df = load_lease_index(config.index_path, config.min_year)
-    urls: list[str] = df["URL"].tolist()
-    total = len(urls)
-    logger.info("Acquiring %d unique lease URLs", total)
+    max_attempts: int = acq_cfg.get("max_attempts", 3)
+    backoff_base: float = float(acq_cfg.get("backoff_base", 1.0))
 
-    max_workers = min(config.max_workers, 5)
+    session = requests.Session()
 
-    # Build args tuples for each URL
-    args_list = [
-        (
-            url,
-            output_dir,
-            config.monthsave_base_url,
-            config.request_timeout,
-            config.sleep_seconds,
-        )
-        for url in urls
-    ]
+    @with_retry(max_attempts=max_attempts, backoff_base=backoff_base)
+    def _download(url: str) -> Path | None:
+        return download_lease(url, output_dir, session)
 
-    # Use Dask threaded scheduler (ADR-001, H1)
-    bag = db.from_sequence(args_list, npartitions=max(1, min(max_workers, len(args_list))))
-    results: list[Path | None] = bag.map(_download_worker).compute(scheduler="threads")
+    delayed_tasks = [dask.delayed(_download)(url) for url in urls]
+    results = dask.compute(*delayed_tasks, scheduler="threads", num_workers=5)
 
-    # Tally results — distinguish skipped (already existed before run) vs new downloads
-    # We track by checking which files existed before; for simplicity: None=failed, Path=success
-    # We can't distinguish skipped vs downloaded without pre-run inventory at this point.
-    # Count None entries as failed; non-None as downloaded (includes pre-existing files).
-    failed = sum(1 for r in results if r is None)
-    succeeded = total - failed
-
-    # Attempt to distinguish skipped by reading the bag result — any Path returned is either
-    # a new download or a pre-existing file. We treat all successes as "downloaded" here
-    # unless we know the file already existed.  The orchestrator cannot reliably split this
-    # without tracking pre-run state.  Per spec: skipped = pre-existing, downloaded = new.
-    # We approximate: both categories report as downloaded since the function returns the path.
-    downloaded = succeeded
-    skipped = 0
-
+    paths = [r for r in results if r is not None]
+    failed = len(results) - len(paths)
     logger.info(
-        "Acquire complete — total=%d, downloaded=%d, skipped=%d, failed=%d",
-        total,
-        downloaded,
-        skipped,
+        "Acquire complete: %d attempted, %d succeeded, %d failed",
+        len(results),
+        len(paths),
         failed,
     )
-
-    if failed == total and total > 0:
-        raise RuntimeError(f"All {failed} downloads failed for output directory {output_dir}")
-
-    return AcquireSummary(
-        total=total,
-        downloaded=downloaded,
-        skipped=skipped,
-        failed=failed,
-        output_dir=output_dir,
-    )
+    return paths
 
 
 # ---------------------------------------------------------------------------
-# Task 07: Validate downloaded files
+# ACQ-07: File integrity validator
 # ---------------------------------------------------------------------------
 
-
-def validate_raw_files(output_dir: Path) -> list[str]:
-    """Validate every .txt file in output_dir for basic integrity.
-
-    Validation rules (TR-21):
-    - File size > 0 bytes
-    - Readable as UTF-8 text
-    - At least 2 lines (header + 1 data row)
+def validate_raw_files(raw_dir: Path) -> list[str]:
+    """Scan raw files and return error messages for failed integrity checks.
 
     Args:
-        output_dir: Directory containing downloaded .txt files.
+        raw_dir: Directory containing raw downloaded files.
 
     Returns:
-        List of filenames that fail validation (empty if all pass).
+        List of error strings (empty if all files pass).
 
     Raises:
-        FileNotFoundError: If output_dir does not exist.
+        FileNotFoundError: If ``raw_dir`` does not exist.
     """
-    if not output_dir.exists():
-        raise FileNotFoundError(f"Output directory not found: {output_dir}")
+    if not raw_dir.exists():
+        raise FileNotFoundError(f"raw_dir does not exist: {raw_dir}")
 
-    failures: list[str] = []
-    for fpath in sorted(output_dir.glob("*.txt")):
-        name = fpath.name
+    errors: list[str] = []
+    for filepath in raw_dir.iterdir():
+        if not filepath.is_file():
+            continue
         try:
-            size = fpath.stat().st_size
+            size = filepath.stat().st_size
             if size == 0:
-                logger.warning("Validation failed — empty file: %s", name)
-                failures.append(name)
+                errors.append(f"{filepath.name}: zero-byte file")
                 continue
-
-            content = fpath.read_text(encoding="utf-8")
-            lines = [ln for ln in content.splitlines() if ln.strip()]
-            if len(lines) < 2:
-                logger.warning("Validation failed — no data rows: %s", name)
-                failures.append(name)
+            content = filepath.read_bytes()
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                errors.append(f"{filepath.name}: non-UTF-8 content")
                 continue
+            non_empty_lines = [ln for ln in text.splitlines() if ln.strip()]
+            if len(non_empty_lines) < 2:
+                errors.append(f"{filepath.name}: fewer than 2 non-empty lines (header-only or empty)")
+        except OSError as exc:
+            errors.append(f"{filepath.name}: OS error — {exc}")
 
-        except UnicodeDecodeError:
-            logger.warning("Validation failed — invalid UTF-8: %s", name)
-            failures.append(name)
-        except Exception as exc:
-            logger.warning("Validation failed — read error (%s): %s", exc, name)
-            failures.append(name)
+    return errors
 
-    return failures
+
+# ---------------------------------------------------------------------------
+# ACQ-08: Stage entry point
+# ---------------------------------------------------------------------------
+
+def acquire(config: dict) -> None:
+    """Top-level entry point for the acquire stage.
+
+    Args:
+        config: Pipeline configuration dict.
+    """
+    paths = run_acquire(config)
+    raw_dir = Path(config["acquire"]["raw_dir"])
+    errors = validate_raw_files(raw_dir)
+    for err in errors:
+        logger.warning("File integrity error: %s", err)
+    logger.info("Acquire stage complete: %d files downloaded", len(paths))

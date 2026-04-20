@@ -1,14 +1,28 @@
-data/
-logs/
-large_tool_results/
-conversation_history/
+# Python
 __pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
+*.py[cod]
 *.egg-info/
 dist/
 build/
+.eggs/
+
+# Virtual environment
+.venv/
+env/
+
+# Data (keep .gitkeep stubs)
+data/raw/*.txt
+data/raw/*.csv
+data/interim/
+data/features/
+data/processed/
+logs/
+
+# OS
+.DS_Store
+*.swp
+
+# pytest / mypy
+.pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.DS_Store

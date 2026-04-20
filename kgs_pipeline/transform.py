@@ -1,395 +1,416 @@
-"""Transform stage: clean, validate, index, and sort the ingested KGS production data."""
+"""Transform stage — clean, parse dates, index by entity, sort by date."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import dask.dataframe as dd
 import pandas as pd
-
-from kgs_pipeline.ingest import load_schema, resolve_pandas_dtype
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Dataclasses
+# TRN-01: Production date parser
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class TransformConfig:
-    """Configuration for the transform stage."""
+def parse_production_date(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert MONTH-YEAR to a production_date datetime column.
 
-    input_dir: Path
-    output_dir: Path
-    dict_path: Path
-
-
-@dataclass
-class TransformSummary:
-    """Summary of a transform stage run."""
-
-    output_dir: Path
-    partition_count: int
-
-
-# ---------------------------------------------------------------------------
-# Task 01: production_date derivation
-# ---------------------------------------------------------------------------
-
-
-def derive_production_date(df: pd.DataFrame) -> pd.DataFrame:
-    """Parse MONTH-YEAR into a production_date datetime column.
-
-    Drops rows where month == 0 (yearly aggregates), month == -1 (starting
-    cumulative), month not in 1-12, or year < 2024. Operates on a pandas
-    partition via map_partitions.
+    Rows with month == 0 (yearly summaries) are dropped before parsing.
 
     Args:
-        df: Pandas DataFrame partition with MONTH-YEAR column.
+        df: Partition DataFrame with a ``MONTH-YEAR`` column.
 
     Returns:
-        DataFrame with production_date column appended.
+        DataFrame with ``production_date`` added and ``MONTH-YEAR`` removed.
     """
-    if df.empty:
-        df = df.copy()
-        df["production_date"] = pd.Series(dtype="datetime64[ns]")
+    if df.empty or "MONTH-YEAR" not in df.columns:
+        if "MONTH-YEAR" in df.columns:
+            df = df.drop(columns=["MONTH-YEAR"])
+        if "production_date" not in df.columns:
+            df = df.copy()
+            df["production_date"] = pd.NaT
         return df
 
-    df = df.copy()
-    parts = df["MONTH-YEAR"].astype(str).str.split("-")
-    month_str = parts.str[0]
-    year_str = parts.str[-1]
+    # Drop month=0 rows (yearly summary)
+    def _month(val: object) -> int | None:
+        try:
+            return int(str(val).split("-")[0].strip())
+        except (ValueError, AttributeError):
+            return None
 
-    month_num = pd.to_numeric(month_str, errors="coerce")
-    year_num = pd.to_numeric(year_str, errors="coerce")
+    months = df["MONTH-YEAR"].map(_month)
+    df = df[~((months.notna()) & (months == 0))].copy()
 
-    valid = (
-        month_num.notna()
-        & year_num.notna()
-        & (month_num >= 1)
-        & (month_num <= 12)
-        & (year_num >= 2024)
-    )
+    def _to_date(val: object) -> pd.Timestamp:
+        try:
+            parts = str(val).split("-")
+            month = int(parts[0].strip())
+            year = int(parts[-1].strip())
+            return pd.Timestamp(year=year, month=month, day=1)
+        except Exception:
+            return pd.NaT  # type: ignore[return-value]
 
-    dropped = (~valid).sum()
-    if dropped > 0:
-        logger.warning("derive_production_date: dropping %d rows with invalid MONTH-YEAR", dropped)
+    dates = df["MONTH-YEAR"].map(_to_date)
+    bad_count = int(dates.isna().sum())
+    if bad_count > 0:
+        logger.warning(
+            "parse_production_date: %d rows have unparseable MONTH-YEAR → NaT", bad_count
+        )
 
-    df = df[valid].copy()
-    month_num = month_num[valid]
-    year_num = year_num[valid]
-
-    df["production_date"] = pd.to_datetime(
-        {"year": year_num.astype(int), "month": month_num.astype(int), "day": 1}
-    ).astype("datetime64[ns]")
-
+    df = df.drop(columns=["MONTH-YEAR"])
+    df["production_date"] = pd.to_datetime(dates)
     return df
 
 
 # ---------------------------------------------------------------------------
-# Task 02: Physical bounds validation
+# TRN-02: Null and invalid value cleaner
 # ---------------------------------------------------------------------------
 
 
-def validate_physical_bounds(df: pd.DataFrame) -> pd.DataFrame:
-    """Enforce physical constraints on production and wells columns.
-
-    - PRODUCTION < 0 → set to pd.NA (data error, not zero)
-    - WELLS < 0 → set to pd.NA
-    - PRODUCT == "O" and PRODUCTION > 50000 → production_unit_flag = True
+def clean_invalid_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove rows with invalid/unresolvable values.
 
     Args:
-        df: Pandas DataFrame partition.
+        df: Partition DataFrame.
 
     Returns:
-        DataFrame with physical bounds enforced and production_unit_flag column added.
+        Cleaned DataFrame.
     """
-    df = df.copy()
+    if df.empty:
+        return df
 
+    before = len(df)
+
+    # Drop NaT production_date
+    if "production_date" in df.columns:
+        mask_nat = df["production_date"].isna()
+        if mask_nat.any():
+            logger.debug(
+                "clean_invalid_values: dropping %d rows with NaT production_date", mask_nat.sum()
+            )
+            df = df[~mask_nat].copy()
+
+    # Drop null LEASE_KID
+    if "LEASE_KID" in df.columns:
+        mask_kid = df["LEASE_KID"].isna()
+        if mask_kid.any():
+            logger.debug(
+                "clean_invalid_values: dropping %d rows with null LEASE_KID", int(mask_kid.sum())
+            )
+            df = df[~mask_kid].copy()
+
+    # Drop null PRODUCT
+    if "PRODUCT" in df.columns:
+        mask_prod = df["PRODUCT"].isna()
+        if mask_prod.any():
+            logger.debug(
+                "clean_invalid_values: dropping %d rows with null PRODUCT", int(mask_prod.sum())
+            )
+            df = df[~mask_prod].copy()
+
+    # Impute null PRODUCTION where WELLS > 0
+    if "PRODUCTION" in df.columns and "WELLS" in df.columns:
+        prod_null = df["PRODUCTION"].isna()
+        wells_positive = df["WELLS"].notna() & (pd.to_numeric(df["WELLS"], errors="coerce") > 0)
+        impute_mask = prod_null & wells_positive
+        if impute_mask.any():
+            df = df.copy()
+            df.loc[impute_mask, "PRODUCTION"] = 0.0
+
+    # Drop rows with negative PRODUCTION
     if "PRODUCTION" in df.columns:
-        neg_prod = (df["PRODUCTION"] < 0).fillna(False)
-        n_neg = neg_prod.sum()
-        if n_neg > 0:
-            logger.warning("validate_physical_bounds: setting %d negative PRODUCTION values to NA", n_neg)
-        df.loc[neg_prod, "PRODUCTION"] = pd.NA
+        prod_num = pd.to_numeric(df["PRODUCTION"], errors="coerce")
+        neg_mask = prod_num < 0
+        if neg_mask.any():
+            lease_ids = df.loc[neg_mask, "LEASE_KID"].tolist() if "LEASE_KID" in df.columns else []
+            logger.warning(
+                "clean_invalid_values: dropping %d rows with PRODUCTION < 0 (LEASE_KIDs: %s)",
+                int(neg_mask.sum()),
+                lease_ids[:5],
+            )
+            df = df[~neg_mask].copy()
 
-    if "WELLS" in df.columns:
-        neg_wells = (df["WELLS"] < 0).fillna(False)
-        n_neg_w = neg_wells.sum()
-        if n_neg_w > 0:
-            logger.warning("validate_physical_bounds: setting %d negative WELLS values to NA", n_neg_w)
-        df.loc[neg_wells, "WELLS"] = pd.NA
-
-    # production_unit_flag: True for oil rows with PRODUCTION > 50000
-    if "PRODUCT" in df.columns and "PRODUCTION" in df.columns:
-        is_oil = df["PRODUCT"].astype(str) == "O"
-        high_prod = df["PRODUCTION"].fillna(0) > 50000
-        df["production_unit_flag"] = is_oil & high_prod
-    else:
-        df["production_unit_flag"] = False
-
+    logger.debug("clean_invalid_values: %d → %d rows", before, len(df))
     return df
 
 
 # ---------------------------------------------------------------------------
-# Task 03: Duplicate removal
+# TRN-03: Unit range validator
 # ---------------------------------------------------------------------------
 
 
-def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove duplicate rows keyed on (LEASE_KID, MONTH-YEAR, PRODUCT).
+def validate_production_units(df: pd.DataFrame) -> pd.DataFrame:
+    """Flag likely unit errors in production volumes (diagnostic only).
 
     Args:
-        df: Pandas DataFrame partition.
+        df: Partition DataFrame.
+
+    Returns:
+        Unchanged DataFrame (warnings emitted for flagged rows).
+    """
+    if df.empty or "PRODUCT" not in df.columns or "PRODUCTION" not in df.columns:
+        return df
+
+    prod_num = pd.to_numeric(df["PRODUCTION"], errors="coerce")
+    # Flag oil rows > 50,000 BBL/month
+    is_oil = df["PRODUCT"].astype(str) == "O"
+    high_oil = is_oil & (prod_num > 50000)
+    if high_oil.any():
+        for _, row in df[high_oil].iterrows():
+            logger.warning(
+                "validate_production_units: LEASE_KID=%s has OIL PRODUCTION=%.1f > 50000 (likely unit error)",
+                row.get("LEASE_KID", "?"),
+                row.get("PRODUCTION", float("nan")),
+            )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# TRN-04: Deduplicator
+# ---------------------------------------------------------------------------
+
+
+def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove duplicate rows on (LEASE_KID, PRODUCT, production_date).
+
+    Args:
+        df: Partition DataFrame.
 
     Returns:
         Deduplicated DataFrame.
     """
-    return df.drop_duplicates(subset=["LEASE_KID", "MONTH-YEAR", "PRODUCT"], keep="first")
-
-
-# ---------------------------------------------------------------------------
-# Task 04: Categorical column casting
-# ---------------------------------------------------------------------------
-
-
-def cast_categoricals(df: pd.DataFrame, schema: dict[str, dict]) -> pd.DataFrame:
-    """Cast categorical columns to declared category sets.
-
-    Values outside the declared set are replaced with pd.NA before casting.
-
-    Args:
-        df: Pandas DataFrame partition.
-        schema: Column schema from load_schema().
-
-    Returns:
-        DataFrame with categorical columns cast.
-    """
-    df = df.copy()
-    for col, meta in schema.items():
-        if meta["dtype"] != "categorical":
-            continue
-        if col not in df.columns:
-            continue
-        categories = meta.get("categories")
-        if categories:
-            valid = set(categories)
-            out_of_set = ~df[col].astype(str).isin(valid) & df[col].notna()
-            df.loc[out_of_set, col] = pd.NA
-            df[col] = df[col].astype(pd.CategoricalDtype(categories=categories, ordered=False))
-        else:
-            df[col] = df[col].astype(pd.CategoricalDtype())
-    return df
-
-
-# ---------------------------------------------------------------------------
-# Task 05: Well completeness gap detection
-# ---------------------------------------------------------------------------
-
-
-def check_well_completeness(df: pd.DataFrame) -> pd.DataFrame:
-    """Add has_date_gap column indicating missing months per lease.
-
-    Uses vectorized groupby+transform. Operates on a pandas partition after
-    production_date has been derived.
-
-    Args:
-        df: Pandas DataFrame partition with LEASE_KID and production_date columns.
-
-    Returns:
-        DataFrame with has_date_gap boolean column added.
-    """
-    df = df.copy()
-
-    if "production_date" not in df.columns or df.empty:
-        df["has_date_gap"] = False
+    if df.empty:
         return df
 
-    def _has_gap(group: pd.Series) -> pd.Series:
-        dates = group.dropna()
-        if dates.empty:
-            return pd.Series([False] * len(group), index=group.index)
-        min_d = dates.min()
-        max_d = dates.max()
-        # Expected months between min and max inclusive
-        months_diff = (max_d.year - min_d.year) * 12 + (max_d.month - min_d.month) + 1
-        actual = dates.nunique()
-        gap = actual < months_diff
-        return pd.Series([gap] * len(group), index=group.index)
+    key_cols = [c for c in ["LEASE_KID", "PRODUCT", "production_date"] if c in df.columns]
+    if not key_cols:
+        return df
 
-    df["has_date_gap"] = (
-        df.groupby("LEASE_KID", group_keys=False)["production_date"]
-        .transform(_has_gap)
-    )
-    return df
+    return df.drop_duplicates(subset=key_cols, keep="first").copy()
 
 
 # ---------------------------------------------------------------------------
-# Task 06: Entity indexing and sort
+# TRN-05: Entity indexer and temporal sorter
 # ---------------------------------------------------------------------------
 
 
 def index_and_sort(ddf: dd.DataFrame) -> dd.DataFrame:
-    """Set LEASE_KID as the Dask index and sort within each partition by production_date.
+    """Set LEASE_KID as index and sort by production_date within partitions.
 
     Args:
-        ddf: Lazy Dask DataFrame.
+        ddf: Dask DataFrame after partition transforms.
 
     Returns:
-        Lazy Dask DataFrame with LEASE_KID index and partitions sorted by production_date.
+        Dask DataFrame with LEASE_KID index and production_date sorted.
+
+    Raises:
+        KeyError: If required columns are absent.
     """
-    ddf = ddf.set_index("LEASE_KID", sorted=False, drop=False)
+    if "LEASE_KID" not in ddf.columns:
+        raise KeyError("LEASE_KID column not present")
+    if "production_date" not in ddf.columns:
+        raise KeyError("production_date column not present")
 
-    # Derive meta by calling the sort lambda on a minimal real input
-    one_row_meta = ddf._meta.copy()
-    sorted_meta = one_row_meta.sort_values("production_date")
-    meta = sorted_meta.iloc[0:0]
+    ddf = ddf.set_index("LEASE_KID", drop=False, sorted=False)
 
-    ddf = ddf.map_partitions(lambda df: df.sort_values("production_date"), meta=meta)
+    meta = ddf._meta.copy()  # noqa: SLF001
+    meta_sorted = meta.sort_values("production_date")
+    ddf = ddf.map_partitions(lambda df: df.sort_values("production_date"), meta=meta_sorted)
+
     return ddf
 
 
 # ---------------------------------------------------------------------------
-# Task 07: Data integrity spot-check
+# TRN-06: Well completeness checker
+# ---------------------------------------------------------------------------
+
+
+def check_well_completeness(df: pd.DataFrame) -> pd.DataFrame:
+    """Log warnings for gaps > 31 days in monthly production records.
+
+    Args:
+        df: Partition DataFrame with ``production_date``.
+
+    Returns:
+        Unchanged DataFrame (diagnostic only).
+    """
+    if df.empty or "production_date" not in df.columns:
+        return df
+
+    group_cols = [c for c in ["LEASE_KID", "PRODUCT"] if c in df.columns]
+    if not group_cols:
+        return df
+
+    for key, grp in df.groupby(group_cols, sort=False):
+        dates = pd.to_datetime(grp["production_date"]).sort_values()
+        diffs = dates.diff().dropna()
+        big_gaps = diffs[diffs.dt.days > 31]
+        if not big_gaps.empty:
+            for idx in big_gaps.index:
+                gap_start = dates.loc[idx] - big_gaps.loc[idx]
+                gap_end = dates.loc[idx]
+                logger.warning(
+                    "check_well_completeness: gap > 31 days for %s from %s to %s",
+                    key,
+                    gap_start.date(),
+                    gap_end.date(),
+                )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# TRN-07: Transform map_partitions orchestrator
+# ---------------------------------------------------------------------------
+
+
+def apply_partition_transforms(ddf: dd.DataFrame) -> dd.DataFrame:
+    """Chain all partition-level transforms lazily.
+
+    Args:
+        ddf: Input Dask DataFrame.
+
+    Returns:
+        Dask DataFrame with transforms applied (lazy).
+    """
+    meta1 = parse_production_date(ddf._meta.copy())  # noqa: SLF001
+    ddf = ddf.map_partitions(parse_production_date, meta=meta1)
+
+    meta2 = clean_invalid_values(ddf._meta.copy())  # noqa: SLF001
+    ddf = ddf.map_partitions(clean_invalid_values, meta=meta2)
+
+    meta3 = validate_production_units(ddf._meta.copy())  # noqa: SLF001
+    ddf = ddf.map_partitions(validate_production_units, meta=meta3)
+
+    meta4 = deduplicate(ddf._meta.copy())  # noqa: SLF001
+    ddf = ddf.map_partitions(deduplicate, meta=meta4)
+
+    meta5 = check_well_completeness(ddf._meta.copy())  # noqa: SLF001
+    ddf = ddf.map_partitions(check_well_completeness, meta=meta5)
+
+    return ddf
+
+
+# ---------------------------------------------------------------------------
+# TRN-08: Transform Parquet writer
+# ---------------------------------------------------------------------------
+
+
+def write_transform(ddf: dd.DataFrame, config: dict) -> None:
+    """Write transformed Dask DataFrame to partitioned Parquet.
+
+    Args:
+        ddf: Transformed Dask DataFrame.
+        config: Pipeline configuration dict.
+    """
+    output_dir = Path(config["transform"]["processed_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    n = ddf.npartitions
+    n_partitions = max(10, min(n, 50))
+    ddf = ddf.repartition(npartitions=n_partitions)
+
+    try:
+        ddf.to_parquet(str(output_dir), write_index=True, overwrite=True)
+        logger.info("Wrote transform Parquet to %s (%d partitions)", output_dir, n_partitions)
+    except Exception as exc:
+        logger.error("Failed to write transform Parquet: %s", exc)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# TRN-09: Data integrity spot-checker
 # ---------------------------------------------------------------------------
 
 
 def spot_check_integrity(
-    ddf_input: dd.DataFrame,
-    ddf_output: dd.DataFrame,
+    interim_dir: Path,
+    processed_dir: Path,
     sample_size: int,
-) -> dict[str, int]:
-    """Spot-check that PRODUCTION values match between input and output.
-
-    This function calls .compute() on the sample only.
+) -> None:
+    """Spot-check production values between interim and processed Parquet.
 
     Args:
-        ddf_input: Input Dask DataFrame (before transforms).
-        ddf_output: Output Dask DataFrame (after transforms).
-        sample_size: Number of rows to sample for comparison.
-
-    Returns:
-        Dict with keys: checked, passed, failed.
+        interim_dir: Path to interim Parquet directory.
+        processed_dir: Path to processed Parquet directory.
+        sample_size: Number of tuples to sample.
     """
-    sample = ddf_input.sample(frac=min(1.0, sample_size / max(1, len(ddf_input)))).compute()
-    if len(sample) > sample_size:
-        sample = sample.head(sample_size)
+    try:
+        interim_df = pd.read_parquet(interim_dir)
+        processed_df = pd.read_parquet(processed_dir)
+    except Exception as exc:
+        logger.warning("spot_check_integrity: cannot read Parquet files: %s", exc)
+        return
 
-    output_df = ddf_output.compute()
+    required = {"LEASE_KID", "PRODUCT", "production_date", "PRODUCTION"}
+    if not required.issubset(interim_df.columns) or not required.issubset(processed_df.columns):
+        logger.warning("spot_check_integrity: required columns missing, skipping")
+        return
 
-    checked = 0
-    passed = 0
-    failed = 0
+    keys = interim_df[["LEASE_KID", "PRODUCT", "production_date"]].drop_duplicates()
+    if len(keys) == 0:
+        return
 
-    for _, row in sample.iterrows():
-        checked += 1
-        key = (row.get("LEASE_KID"), row.get("MONTH-YEAR"), row.get("PRODUCT"))
-        match = output_df[
-            (output_df.get("LEASE_KID", pd.Series()) == key[0])
-            & (output_df.get("MONTH-YEAR", pd.Series()) == key[1])
-            & (output_df.get("PRODUCT", pd.Series()) == key[2])
+    sample_n = min(sample_size, len(keys))
+    sampled = keys.sample(n=sample_n, random_state=42)
+
+    for _, row in sampled.iterrows():
+        k_id = row["LEASE_KID"]
+        product = row["PRODUCT"]
+        p_date = row["production_date"]
+
+        interim_row = interim_df[
+            (interim_df["LEASE_KID"] == k_id)
+            & (interim_df["PRODUCT"] == product)
+            & (interim_df["production_date"] == p_date)
         ]
-        if match.empty:
-            failed += 1
+        processed_row = processed_df[
+            (processed_df["LEASE_KID"] == k_id)
+            & (processed_df["PRODUCT"] == product)
+            & (processed_df["production_date"] == p_date)
+        ]
+
+        if interim_row.empty or processed_row.empty:
             continue
-        in_prod = row.get("PRODUCTION")
-        out_prod = match["PRODUCTION"].iloc[0]
-        # Allow NA substitution for originally negative values
-        if pd.isna(in_prod) and pd.isna(out_prod):
-            passed += 1
-        elif pd.isna(in_prod) or pd.isna(out_prod):
-            # One is NA, one is not — could be negative→NA replacement, count as passed
-            passed += 1
-        elif float(in_prod) == float(out_prod):
-            passed += 1
-        elif float(in_prod) < 0 and pd.isna(out_prod):
-            passed += 1
-        else:
-            failed += 1
 
-    return {"checked": checked, "passed": passed, "failed": failed}
+        interim_val = float(interim_row["PRODUCTION"].iloc[0])
+        processed_val = float(processed_row["PRODUCTION"].iloc[0])
+
+        if abs(interim_val - processed_val) > 1e-6:
+            logger.warning(
+                "spot_check_integrity: mismatch for LEASE_KID=%s PRODUCT=%s date=%s "
+                "interim=%.4f processed=%.4f",
+                k_id,
+                product,
+                p_date,
+                interim_val,
+                processed_val,
+            )
 
 
 # ---------------------------------------------------------------------------
-# Task 08: Transform Parquet writer
+# TRN-10: Stage entry point
 # ---------------------------------------------------------------------------
 
 
-def write_transform_parquet(ddf: dd.DataFrame, output_dir: Path, n_partitions: int) -> None:
-    """Repartition and write the transformed Dask DataFrame as Parquet.
+def transform(config: dict, client: object) -> None:
+    """Top-level entry point for the transform stage.
 
     Args:
-        ddf: Lazy Dask DataFrame.
-        output_dir: Output directory.
-        n_partitions: Target partition count (last structural operation before write).
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ddf = ddf.repartition(npartitions=n_partitions)
-    ddf.to_parquet(str(output_dir), write_index=True, overwrite=True)
-    logger.info("Transform: wrote %d partitions to %s", n_partitions, output_dir)
-
-
-# ---------------------------------------------------------------------------
-# Task 09: Transform stage entry point
-# ---------------------------------------------------------------------------
-
-
-def run_transform(config: TransformConfig, client: Any) -> TransformSummary:
-    """Orchestrate the full transform stage.
-
-    All map_partitions applications are lazy; the single .compute() call happens
-    inside write_transform_parquet via to_parquet (ADR-005).
-
-    Args:
-        config: TransformConfig with all transform settings.
+        config: Pipeline configuration dict.
         client: Dask distributed Client.
-
-    Returns:
-        TransformSummary with output dir and partition count.
     """
-    schema = load_schema(config.dict_path)
+    interim_dir = Path(config["transform"]["interim_dir"])
+    ddf = dd.read_parquet(str(interim_dir))
 
-    # Step 1: Read interim Parquet
-    ddf = dd.read_parquet(str(config.input_dir))
-
-    # Derive meta for each map_partitions call using actual function on one-row input
-    # Step 2: derive_production_date
-    one_row = ddf._meta.copy()
-    meta_pd = derive_production_date(one_row).iloc[0:0]
-    ddf = ddf.map_partitions(derive_production_date, meta=meta_pd)
-
-    # Step 3: remove_duplicates
-    one_row2 = ddf._meta.copy()
-    meta_rd = remove_duplicates(one_row2).iloc[0:0]
-    ddf = ddf.map_partitions(remove_duplicates, meta=meta_rd)
-
-    # Step 4: validate_physical_bounds
-    one_row3 = ddf._meta.copy()
-    meta_vp = validate_physical_bounds(one_row3).iloc[0:0]
-    ddf = ddf.map_partitions(validate_physical_bounds, meta=meta_vp)
-
-    # Step 5: cast_categoricals
-    one_row4 = ddf._meta.copy()
-    meta_cc = cast_categoricals(one_row4, schema).iloc[0:0]
-    ddf = ddf.map_partitions(cast_categoricals, schema, meta=meta_cc)
-
-    # Step 6: check_well_completeness
-    one_row5 = ddf._meta.copy()
-    meta_wc = check_well_completeness(one_row5).iloc[0:0]
-    ddf = ddf.map_partitions(check_well_completeness, meta=meta_wc)
-
-    # Step 7: index_and_sort
+    ddf = apply_partition_transforms(ddf)
     ddf = index_and_sort(ddf)
+    write_transform(ddf, config)
 
-    # Step 8: compute partition count
-    n_partitions = max(10, min(ddf.npartitions, 50))
+    processed_dir = Path(config["transform"]["processed_dir"])
+    spot_check_integrity(interim_dir, processed_dir, sample_size=20)
 
-    # Step 9: write output
-    write_transform_parquet(ddf, config.output_dir, n_partitions)
-
-    return TransformSummary(output_dir=config.output_dir, partition_count=n_partitions)
+    logger.info("Transform stage complete")

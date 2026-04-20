@@ -1,33 +1,28 @@
 acquire:
-  index_path: data/external/oil_leases_2020_present.txt
-  output_dir: data/raw
-  min_year: 2024
-  max_workers: 5
-  request_timeout: 30
-  monthsave_base_url: https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave
-  sleep_seconds: 0.5
+  lease_index: data/external/oil_leases_2020_present.txt
+  raw_dir: data/raw
+  max_attempts: 3
+  backoff_base: 1.0
 
 ingest:
-  input_dir: data/raw
-  output_dir: data/interim
-  output_filename: raw_combined
+  raw_dir: data/raw
+  interim_dir: data/interim
   dict_path: references/kgs_monthly_data_dictionary.csv
+  min_year: 2024
 
 transform:
-  input_dir: data/interim
-  output_dir: data/interim/transformed
-  dict_path: references/kgs_monthly_data_dictionary.csv
+  interim_dir: data/interim
+  processed_dir: data/features
 
 features:
-  input_dir: data/interim/transformed
-  output_dir: data/processed
-  manifest_path: data/processed/feature_manifest.json
+  transform_dir: data/features
+  processed_dir: data/processed
 
 dask:
   scheduler: local
-  n_workers: 4
-  threads_per_worker: 1
-  memory_limit: "3GB"
+  n_workers: 2
+  threads_per_worker: 2
+  memory_limit: "2GB"
   dashboard_port: 8787
 
 logging:

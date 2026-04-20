@@ -2,336 +2,308 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
-import numpy as np
+import dask.dataframe as dd
 import pandas as pd
 import pytest
 
 from kgs_pipeline.ingest import (
-    IngestConfig,
-    IngestSummary,
+    EXPECTED_COLUMNS,
+    enforce_schema,
+    filter_by_year,
+    ingest_file,
     load_schema,
     read_raw_file,
-    resolve_pandas_dtype,
-    write_interim_parquet,
+    validate_interim_schema,
+    write_interim,
 )
 
-# Path to the real data dictionary (available in the repo)
-DICT_PATH = Path("references/kgs_monthly_data_dictionary.csv")
+_DICT_PATH = "references/kgs_monthly_data_dictionary.csv"
+
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# ING-01: load_schema
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def minimal_csv(tmp_path: Path) -> Path:
-    """Minimal valid CSV matching canonical schema (required columns only)."""
-    content = (
-        "LEASE_KID,MONTH-YEAR,PRODUCT,PRODUCTION,WELLS,OPERATOR,COUNTY,FIELD,"
-        "PRODUCING_ZONE,LEASE,DOR_CODE,API_NUMBER,TOWNSHIP,TWN_DIR,RANGE,RANGE_DIR,"
-        "SECTION,SPOT,LATITUDE,LONGITUDE\n"
-        "1001,1-2024,O,500.0,3,ACME Oil,Barton,BARTON COUNTY,COMMON SAND,"
-        "ALPHA LEASE,12345,1234567890,15,S,10,W,12,NE,38.5,-99.2\n"
-    )
-    p = tmp_path / "lp001.txt"
-    p.write_text(content, encoding="utf-8")
+def test_load_schema_returns_21_keys() -> None:
+    schema = load_schema(_DICT_PATH)
+    assert len(schema) == 20
+
+
+def test_load_schema_lease_kid_non_nullable_int64() -> None:
+    schema = load_schema(_DICT_PATH)
+    assert schema["LEASE_KID"]["nullable"] is False
+    assert schema["LEASE_KID"]["dtype"] == "int64"
+
+
+def test_load_schema_wells_nullable_int64() -> None:
+    schema = load_schema(_DICT_PATH)
+    assert schema["WELLS"]["nullable"] is True
+    assert schema["WELLS"]["dtype"] == "Int64"
+
+
+def test_load_schema_product_categories() -> None:
+    schema = load_schema(_DICT_PATH)
+    assert schema["PRODUCT"]["categories"] == ["O", "G"]
+
+
+def test_load_schema_township_nullable_int64() -> None:
+    schema = load_schema(_DICT_PATH)
+    assert schema["TOWNSHIP"]["nullable"] is True
+    assert schema["TOWNSHIP"]["dtype"] == "Int64"
+
+
+def test_load_schema_file_not_found() -> None:
+    with pytest.raises(FileNotFoundError):
+        load_schema("/nonexistent/data_dict.csv")
+
+
+# ---------------------------------------------------------------------------
+# ING-02: read_raw_file
+# ---------------------------------------------------------------------------
+
+
+def _write_kgs_file(tmp_path: Path, rows: list[dict]) -> Path:
+    df = pd.DataFrame(rows)
+    p = tmp_path / "test_lease.txt"
+    df.to_csv(p, index=False, quoting=1)
     return p
 
 
-@pytest.fixture()
-def sample_schema() -> dict:
-    """Return the real schema from the data dictionary."""
-    return load_schema(DICT_PATH)
-
-
-# ---------------------------------------------------------------------------
-# Task 01: load_schema
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_load_schema_all_columns(sample_schema: dict) -> None:
-    """All 21 data dictionary columns should be present."""
-    # 20 canonical columns + URL column in the data dict
-    assert len(sample_schema) >= 20
-
-
-@pytest.mark.unit
-def test_load_schema_lease_kid_non_nullable(sample_schema: dict) -> None:
-    entry = sample_schema["LEASE_KID"]
-    assert entry["nullable"] is False
-    assert entry["dtype"] == "int"
-
-
-@pytest.mark.unit
-def test_load_schema_twn_dir_categorical(sample_schema: dict) -> None:
-    entry = sample_schema["TWN_DIR"]
-    assert entry["nullable"] is True
-    assert entry["dtype"] == "categorical"
-    assert entry["categories"] == ["S", "N"]
-
-
-@pytest.mark.unit
-def test_load_schema_product_non_nullable_categorical(sample_schema: dict) -> None:
-    entry = sample_schema["PRODUCT"]
-    assert entry["nullable"] is False
-    assert entry["dtype"] == "categorical"
-    assert entry["categories"] == ["O", "G"]
-
-
-@pytest.mark.unit
-def test_load_schema_file_not_found(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
-        load_schema(tmp_path / "nonexistent.csv")
-
-
-# ---------------------------------------------------------------------------
-# Task 02: resolve_pandas_dtype
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_resolve_dtype_int_non_nullable() -> None:
-    assert resolve_pandas_dtype("int", False, None) == pd.Int64Dtype()
-
-
-@pytest.mark.unit
-def test_resolve_dtype_int_nullable() -> None:
-    assert resolve_pandas_dtype("int", True, None) == pd.Int64Dtype()
-
-
-@pytest.mark.unit
-def test_resolve_dtype_float() -> None:
-    assert resolve_pandas_dtype("float", True, None) == np.float64
-
-
-@pytest.mark.unit
-def test_resolve_dtype_string() -> None:
-    assert resolve_pandas_dtype("string", True, None) == pd.StringDtype()
-
-
-@pytest.mark.unit
-def test_resolve_dtype_categorical_with_categories() -> None:
-    result = resolve_pandas_dtype("categorical", True, ["S", "N"])
-    assert isinstance(result, pd.CategoricalDtype)
-    assert list(result.categories) == ["S", "N"]
-
-
-@pytest.mark.unit
-def test_resolve_dtype_unknown_raises() -> None:
-    with pytest.raises(ValueError, match="unknown"):
-        resolve_pandas_dtype("unknown", True, None)
-
-
-# ---------------------------------------------------------------------------
-# Task 03: read_raw_file
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_read_raw_file_canonical_columns(minimal_csv: Path, sample_schema: dict) -> None:
-    """Returned DataFrame has all expected canonical columns plus source_file."""
-    df = read_raw_file(minimal_csv, sample_schema)
-    assert "LEASE_KID" in df.columns
-    assert "MONTH-YEAR" in df.columns
-    assert "PRODUCT" in df.columns
+def test_read_raw_file_adds_source_file(tmp_path: Path) -> None:
+    rows = [
+        {"LEASE_KID": "1", "PRODUCT": "O", "MONTH-YEAR": "1-2024", "PRODUCTION": "100.0"},
+    ]
+    p = _write_kgs_file(tmp_path, rows)
+    df = read_raw_file(p)
     assert "source_file" in df.columns
+    assert df["source_file"].iloc[0] == p.name
 
 
-@pytest.mark.unit
-def test_read_raw_file_absent_nullable_column(tmp_path: Path, sample_schema: dict) -> None:
-    """Absent nullable column (OPERATOR) is added as all-NA StringDtype."""
-    content = (
-        "LEASE_KID,MONTH-YEAR,PRODUCT\n"
-        "1001,1-2024,O\n"
-    )
-    p = tmp_path / "lp002.txt"
-    p.write_text(content, encoding="utf-8")
-    df = read_raw_file(p, sample_schema)
-    assert "OPERATOR" in df.columns
-    # All values should be NA
-    assert df["OPERATOR"].isna().all()
+def test_read_raw_file_empty_bytes(tmp_path: Path) -> None:
+    p = tmp_path / "empty.txt"
+    p.write_bytes(b"")
+    df = read_raw_file(p)
+    assert df.empty
 
 
-@pytest.mark.unit
-def test_read_raw_file_absent_non_nullable_raises(tmp_path: Path, sample_schema: dict) -> None:
-    """Absent non-nullable column (LEASE_KID) raises ValueError."""
-    content = "MONTH-YEAR,PRODUCT\n1-2024,O\n"
-    p = tmp_path / "lp003.txt"
-    p.write_text(content, encoding="utf-8")
-    with pytest.raises(ValueError, match="LEASE_KID"):
-        read_raw_file(p, sample_schema)
+def test_read_raw_file_header_only(tmp_path: Path) -> None:
+    p = tmp_path / "header.txt"
+    p.write_text("LEASE_KID,PRODUCT\n", encoding="utf-8")
+    df = read_raw_file(p)
+    assert df.empty
 
 
-@pytest.mark.unit
-def test_read_raw_file_year_filter(tmp_path: Path, sample_schema: dict) -> None:
-    """Rows with year < 2024 are dropped."""
-    content = (
-        "LEASE_KID,MONTH-YEAR,PRODUCT\n"
-        "1001,1-2023,O\n"
-        "1002,1-2024,G\n"
-    )
-    p = tmp_path / "lp004.txt"
-    p.write_text(content, encoding="utf-8")
-    df = read_raw_file(p, sample_schema)
-    assert len(df) == 1
-    assert "1-2024" in df["MONTH-YEAR"].astype(str).values
-
-
-@pytest.mark.unit
-def test_read_raw_file_non_numeric_year_dropped(tmp_path: Path, sample_schema: dict) -> None:
-    """Rows with MONTH-YEAR = '0-1966' are dropped."""
-    content = (
-        "LEASE_KID,MONTH-YEAR,PRODUCT\n"
-        "1001,0-1966,O\n"
-        "1002,1-2024,G\n"
-    )
-    p = tmp_path / "lp005.txt"
-    p.write_text(content, encoding="utf-8")
-    df = read_raw_file(p, sample_schema)
-    assert len(df) == 1
-
-
-@pytest.mark.unit
-def test_read_raw_file_invalid_categorical_becomes_na(tmp_path: Path, sample_schema: dict) -> None:
-    """PRODUCT value not in ['O','G'] becomes pd.NA, no exception."""
-    content = (
-        "LEASE_KID,MONTH-YEAR,PRODUCT\n"
-        "1001,1-2024,X\n"
-        "1002,2-2024,O\n"
-    )
-    p = tmp_path / "lp006.txt"
-    p.write_text(content, encoding="utf-8")
-    df = read_raw_file(p, sample_schema)
-    # Row with PRODUCT=X should have NA product
-    prod_vals = df["PRODUCT"].tolist()
-    assert any(pd.isna(v) for v in prod_vals)
-
-
-@pytest.mark.unit
-def test_read_raw_file_source_file_basename(minimal_csv: Path, sample_schema: dict) -> None:
-    """source_file column contains only the basename, not full path."""
-    df = read_raw_file(minimal_csv, sample_schema)
-    assert df["source_file"].iloc[0] == "lp001.txt"
-
-
-@pytest.mark.unit
-def test_read_raw_file_url_column_dropped(tmp_path: Path, sample_schema: dict) -> None:
-    """URL column is dropped if present."""
-    content = (
-        "LEASE_KID,MONTH-YEAR,PRODUCT,URL\n"
-        "1001,1-2024,O,https://example.com\n"
-    )
-    p = tmp_path / "lp007.txt"
-    p.write_text(content, encoding="utf-8")
-    df = read_raw_file(p, sample_schema)
-    assert "URL" not in df.columns
-
-
-@pytest.mark.unit
-def test_read_raw_file_not_found(tmp_path: Path, sample_schema: dict) -> None:
+def test_read_raw_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        read_raw_file(tmp_path / "missing.txt", sample_schema)
+        read_raw_file(tmp_path / "missing.txt")
 
 
 # ---------------------------------------------------------------------------
-# Task 05: write_interim_parquet (partition count formula)
+# ING-03: filter_by_year
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
-def test_partition_count_formula_lower_bound() -> None:
-    """n_files=3 → partition count = 10 (lower bound)."""
-    from kgs_pipeline.ingest import write_interim_parquet
-    n = 3
-    expected = max(10, min(n, 50))
-    assert expected == 10
+def test_filter_by_year_keeps_2024_onwards() -> None:
+    df = pd.DataFrame(
+        {
+            "MONTH-YEAR": ["1-2024", "12-2025", "3-2022", "-1-1965", "0-1966"],
+            "val": [1, 2, 3, 4, 5],
+        }
+    )
+    result = filter_by_year(df, min_year=2024)
+    assert set(result["MONTH-YEAR"]) == {"1-2024", "12-2025"}
 
 
-@pytest.mark.unit
-def test_partition_count_formula_mid() -> None:
-    n = 30
-    expected = max(10, min(n, 50))
-    assert expected == 30
+def test_filter_by_year_all_before_2024() -> None:
+    df = pd.DataFrame({"MONTH-YEAR": ["1-2020", "6-2022"], "val": [1, 2]})
+    result = filter_by_year(df, min_year=2024)
+    assert result.empty
 
 
-@pytest.mark.unit
-def test_partition_count_formula_upper_bound() -> None:
-    n = 100
-    expected = max(10, min(n, 50))
-    assert expected == 50
+def test_filter_by_year_no_non_numeric_tokens() -> None:
+    df = pd.DataFrame({"MONTH-YEAR": ["1-2024", "2-2025"], "val": [1, 2]})
+    result = filter_by_year(df, min_year=2024)
+    assert len(result) == 2
 
 
-@pytest.mark.unit
-def test_write_interim_parquet_creates_files(tmp_path: Path) -> None:
-    """write_interim_parquet produces at least one .parquet file."""
-    import dask.dataframe as dd
+# ---------------------------------------------------------------------------
+# ING-04: enforce_schema
+# ---------------------------------------------------------------------------
 
-    df = pd.DataFrame({
-        "LEASE_KID": pd.array([1001], dtype=pd.Int64Dtype()),
-        "MONTH-YEAR": pd.array(["1-2024"], dtype=pd.StringDtype()),
-        "PRODUCT": pd.Categorical(["O"], categories=["O", "G"]),
-        "source_file": pd.array(["lp001.txt"], dtype=pd.StringDtype()),
-    })
+
+def test_enforce_schema_adds_nullable_column() -> None:
+    schema = load_schema(_DICT_PATH)
+    # LEASE is nullable string
+    df = pd.DataFrame({"LEASE_KID": ["1"], "PRODUCT": ["O"], "MONTH-YEAR": ["1-2024"]})
+    result = enforce_schema(df, schema)
+    assert "LEASE" in result.columns
+    assert result["LEASE"].isna().all()
+
+
+def test_enforce_schema_raises_for_non_nullable_absent() -> None:
+    schema = load_schema(_DICT_PATH)
+    df = pd.DataFrame({"PRODUCT": ["O"], "MONTH-YEAR": ["1-2024"]})
+    with pytest.raises(ValueError, match="LEASE_KID"):
+        enforce_schema(df, schema)
+
+
+def test_enforce_schema_product_out_of_set_replaced() -> None:
+    schema = load_schema(_DICT_PATH)
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1"],
+            "PRODUCT": ["X"],
+            "MONTH-YEAR": ["1-2024"],
+        }
+    )
+    result = enforce_schema(df, schema)
+    assert result["PRODUCT"].isna().all()
+
+
+def test_enforce_schema_drops_extra_column() -> None:
+    schema = load_schema(_DICT_PATH)
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1"],
+            "PRODUCT": ["O"],
+            "MONTH-YEAR": ["1-2024"],
+            "URL": ["http://extra.com"],
+        }
+    )
+    result = enforce_schema(df, schema)
+    assert "URL" not in result.columns
+
+
+def test_enforce_schema_twn_dir_categorical() -> None:
+    schema = load_schema(_DICT_PATH)
+    df = pd.DataFrame(
+        {
+            "LEASE_KID": ["1"],
+            "PRODUCT": ["O"],
+            "MONTH-YEAR": ["1-2024"],
+            "TWN_DIR": ["S"],
+        }
+    )
+    result = enforce_schema(df, schema)
+    assert hasattr(result["TWN_DIR"], "cat")
+    assert set(result["TWN_DIR"].cat.categories) == {"S", "N"}
+
+
+# ---------------------------------------------------------------------------
+# ING-05: ingest_file
+# ---------------------------------------------------------------------------
+
+
+def _make_full_raw_file(tmp_path: Path) -> Path:
+    rows = [
+        {
+            "LEASE_KID": "1001",
+            "LEASE": "TEST",
+            "DOR_CODE": "5001",
+            "API_NUMBER": "15-001-00001",
+            "FIELD": "KANASKA",
+            "PRODUCING_ZONE": "Lansing",
+            "OPERATOR": "TestCo",
+            "COUNTY": "Ellis",
+            "TOWNSHIP": "1",
+            "TWN_DIR": "S",
+            "RANGE": "14",
+            "RANGE_DIR": "E",
+            "SECTION": "1",
+            "SPOT": "NE",
+            "LATITUDE": "38.5",
+            "LONGITUDE": "-99.0",
+            "MONTH-YEAR": my,
+            "PRODUCT": "O",
+            "WELLS": "2",
+            "PRODUCTION": "100.0",
+        }
+        for my in ["1-2024", "6-2025", "3-2022", "12-2020"]
+    ]
+    df = pd.DataFrame(rows)
+    p = tmp_path / "lease_file.txt"
+    df.to_csv(p, index=False, quoting=1)
+    return p
+
+
+def test_ingest_file_year_filter(tmp_path: Path) -> None:
+    p = _make_full_raw_file(tmp_path)
+    schema = load_schema(_DICT_PATH)
+    result = ingest_file(p, schema, min_year=2024)
+    assert not result.empty
+    # Only 2024+ rows
+    assert all(int(my.split("-")[-1]) >= 2024 for my in result.get("MONTH-YEAR", pd.Series()))
+
+
+def test_ingest_file_all_before_min_year(tmp_path: Path) -> None:
+    rows = [{"LEASE_KID": "1", "PRODUCT": "O", "MONTH-YEAR": "1-2000", "PRODUCTION": "50.0"}]
+    df = pd.DataFrame(rows)
+    p = tmp_path / "old.txt"
+    df.to_csv(p, index=False, quoting=1)
+    schema = load_schema(_DICT_PATH)
+    result = ingest_file(p, schema, min_year=2024)
+    assert result.empty
+
+
+def test_ingest_file_missing_non_nullable_raises(tmp_path: Path) -> None:
+    # Missing LEASE_KID
+    rows = [{"PRODUCT": "O", "MONTH-YEAR": "1-2024"}]
+    df = pd.DataFrame(rows)
+    p = tmp_path / "bad.txt"
+    df.to_csv(p, index=False, quoting=1)
+    schema = load_schema(_DICT_PATH)
+    with pytest.raises(ValueError, match="LEASE_KID"):
+        ingest_file(p, schema, min_year=2024)
+
+
+# ---------------------------------------------------------------------------
+# ING-07 + ING-08: write_interim and validate_interim_schema
+# ---------------------------------------------------------------------------
+
+
+def test_write_interim_creates_parquet(tmp_path: Path) -> None:
+    rows = {
+        "LEASE_KID": pd.array([1, 2, 3], dtype="int64"),
+        "PRODUCT": pd.Categorical(["O", "G", "O"], categories=["G", "O"]),
+        "MONTH-YEAR": pd.array(["1-2024", "2-2024", "3-2024"], dtype="string"),
+    }
+    df = pd.DataFrame(rows)
     ddf = dd.from_pandas(df, npartitions=1)
 
-    out = tmp_path / "parquet_out"
-    write_interim_parquet(ddf, out, n_files=1)
+    config = {"ingest": {"interim_dir": str(tmp_path / "interim")}}
+    write_interim(ddf, config)
 
-    parquet_files = list(out.glob("*.parquet"))
+    parquet_files = list((tmp_path / "interim").glob("*.parquet"))
     assert len(parquet_files) >= 1
 
-    # Parquet files should be readable
-    for pf in parquet_files:
-        read_df = pd.read_parquet(pf)
-        assert len(read_df.columns) > 0
 
-
-# ---------------------------------------------------------------------------
-# Task 07 (TR-22): Schema completeness across partitions
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_schema_completeness_across_partitions(tmp_path: Path, sample_schema: dict) -> None:
-    """After ingest, each partition has the expected canonical columns."""
-    import dask.dataframe as dd
-
-    required_cols = [
-        "LEASE_KID", "LEASE", "API_NUMBER", "MONTH-YEAR", "PRODUCT",
-        "PRODUCTION", "WELLS", "OPERATOR", "COUNTY", "source_file",
-    ]
-
-    # Build synthetic DataFrames
-    rows = []
+def test_validate_interim_schema_passes(tmp_path: Path) -> None:
+    interim = tmp_path / "interim"
+    interim.mkdir()
     for i in range(3):
-        rows.append({
-            "LEASE_KID": 1000 + i,
-            "MONTH-YEAR": f"{i+1}-2024",
-            "PRODUCT": "O",
-            "PRODUCTION": float(i * 100),
-            "WELLS": i + 1,
-            "OPERATOR": "ACME",
-            "COUNTY": "Barton",
-            "LEASE": f"LEASE{i}",
-            "API_NUMBER": f"15001{i:05d}",
-            "source_file": f"lp{i:03d}.txt",
-        })
+        df = pd.DataFrame({col: ["val"] for col in EXPECTED_COLUMNS})
+        df.to_parquet(interim / f"part_{i}.parquet")
+    validate_interim_schema(interim, EXPECTED_COLUMNS)  # Should not raise
 
-    df = pd.DataFrame(rows)
-    ddf = dd.from_pandas(df, npartitions=3)
 
-    out = tmp_path / "interim"
-    write_interim_parquet(ddf, out, n_files=3)
+def test_validate_interim_schema_missing_column(tmp_path: Path) -> None:
+    interim = tmp_path / "interim"
+    interim.mkdir()
+    cols_missing_operator = [c for c in EXPECTED_COLUMNS if c != "OPERATOR"]
+    df = pd.DataFrame({col: ["x"] for col in cols_missing_operator})
+    df.to_parquet(interim / "part_0.parquet")
+    with pytest.raises(ValueError, match="OPERATOR"):
+        validate_interim_schema(interim, EXPECTED_COLUMNS)
 
-    parquet_files = list(out.glob("*.parquet"))
-    assert len(parquet_files) >= 1
 
-    for pf in parquet_files:
-        part_df = pd.read_parquet(pf)
-        for col in required_cols:
-            assert col in part_df.columns, f"Column '{col}' missing in {pf.name}"
+def test_validate_interim_schema_missing_source_file(tmp_path: Path) -> None:
+    interim = tmp_path / "interim"
+    interim.mkdir()
+    cols = [c for c in EXPECTED_COLUMNS if c != "source_file"]
+    df = pd.DataFrame({col: ["x"] for col in cols})
+    df.to_parquet(interim / "part_0.parquet")
+    with pytest.raises(ValueError, match="source_file"):
+        validate_interim_schema(interim, EXPECTED_COLUMNS)

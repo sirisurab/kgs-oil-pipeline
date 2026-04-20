@@ -1,318 +1,384 @@
-"""Ingest stage: load raw KGS lease production files and write consolidated Parquet."""
+"""Ingest stage — read raw KGS files, enforce schema, write interim Parquet."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import dask.bag as db
 import dask.dataframe as dd
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Canonical non-nullable columns (absent → raise ValueError)
-_NON_NULLABLE = {"LEASE_KID", "MONTH-YEAR", "PRODUCT"}
-
-# Column to drop from source files (not part of canonical monthly schema)
-_DROP_COLS = {"URL"}
-
-
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class IngestConfig:
-    """Configuration for the ingest stage."""
-
-    input_dir: Path
-    output_dir: Path
-    dict_path: Path
-
-
-@dataclass
-class IngestSummary:
-    """Summary of an ingest stage run."""
-
-    n_files_ingested: int
-    output_dir: Path
-    partition_count: int
-
+# Canonical expected columns (schema + source_file)
+EXPECTED_COLUMNS: list[str] = [
+    "LEASE_KID",
+    "LEASE",
+    "DOR_CODE",
+    "API_NUMBER",
+    "FIELD",
+    "PRODUCING_ZONE",
+    "OPERATOR",
+    "COUNTY",
+    "TOWNSHIP",
+    "TWN_DIR",
+    "RANGE",
+    "RANGE_DIR",
+    "SECTION",
+    "SPOT",
+    "LATITUDE",
+    "LONGITUDE",
+    "MONTH-YEAR",
+    "PRODUCT",
+    "WELLS",
+    "PRODUCTION",
+    "source_file",
+]
 
 # ---------------------------------------------------------------------------
-# Task 01: Schema loader
+# ING-01: Data dictionary schema loader
 # ---------------------------------------------------------------------------
 
 
-def load_schema(dict_path: str | Path) -> dict[str, dict]:
-    """Read the data dictionary CSV and return column schema metadata.
+def load_schema(dict_path: str) -> dict[str, dict]:
+    """Load the KGS monthly data dictionary and return a schema dict.
+
+    Each value has keys: ``dtype``, ``nullable``, ``categories``.
 
     Args:
-        dict_path: Path to the data dictionary CSV file.
+        dict_path: Path to ``kgs_monthly_data_dictionary.csv``.
 
     Returns:
-        Mapping from column name to {dtype, nullable, categories}.
+        Schema dict keyed by column name.
 
     Raises:
-        FileNotFoundError: If dict_path does not exist.
-        ValueError: If required columns are absent from the CSV.
+        FileNotFoundError: If ``dict_path`` does not exist.
+        ValueError: If required columns are missing from the CSV.
     """
-    path = Path(dict_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Data dictionary not found: {path}")
+    p = Path(dict_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Data dictionary not found: {dict_path}")
 
-    df = pd.read_csv(path)
+    df = pd.read_csv(dict_path)
     required = {"column", "dtype", "nullable"}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"Data dictionary missing required columns: {sorted(missing)}")
+        raise ValueError(f"Data dictionary missing columns: {missing}")
+
+    _dtype_map = {
+        ("int", "no"): "int64",
+        ("int", "yes"): "Int64",
+        ("float", "no"): "float64",
+        ("float", "yes"): "Float64",
+        ("string", "no"): "string",
+        ("string", "yes"): "string",
+        ("categorical", "no"): "category",
+        ("categorical", "yes"): "category",
+    }
 
     schema: dict[str, dict] = {}
     for _, row in df.iterrows():
-        col_name: str = str(row["column"])
-        dtype_str: str = str(row["dtype"])
-        nullable: bool = str(row["nullable"]).strip().lower() == "yes"
-        cats_raw = str(row.get("categories", "")).strip()
-        categories: list[str] | None = cats_raw.split("|") if cats_raw else None
-        schema[col_name] = {
-            "dtype": dtype_str,
-            "nullable": nullable,
+        col = str(row["column"])
+        raw_dtype = str(row["dtype"]).strip().lower()
+        nullable = str(row["nullable"]).strip().lower()
+        cats_raw = row.get("categories", "")
+        categories: list[str] | None = None
+        if isinstance(cats_raw, str) and cats_raw.strip():
+            categories = [c.strip() for c in cats_raw.split("|")]
+
+        pandas_dtype = _dtype_map.get((raw_dtype, nullable), "string")
+        schema[col] = {
+            "dtype": pandas_dtype,
+            "nullable": nullable == "yes",
             "categories": categories,
         }
+
     return schema
 
 
 # ---------------------------------------------------------------------------
-# Task 02: Pandas dtype resolver
+# ING-02: Raw file reader
 # ---------------------------------------------------------------------------
 
 
-def resolve_pandas_dtype(
-    dtype_str: str,
-    nullable: bool,
-    categories: list[str] | None,
-) -> Any:
-    """Convert data dictionary dtype string to the correct pandas dtype.
+def read_raw_file(file_path: Path) -> pd.DataFrame:
+    """Read a single KGS lease production .txt file.
+
+    All columns are read as ``object`` dtype; type enforcement happens later.
 
     Args:
-        dtype_str: One of "int", "float", "string", "categorical".
-        nullable: Whether the column is nullable.
-        categories: List of allowed category values for categorical dtype.
+        file_path: Path to the .txt (comma-separated, quoted) file.
 
     Returns:
-        Pandas dtype object.
+        DataFrame with all columns as object dtype plus a ``source_file`` column.
 
     Raises:
-        ValueError: If dtype_str is not recognized.
-    """
-    if dtype_str == "int":
-        return pd.Int64Dtype()
-    elif dtype_str == "float":
-        return np.float64
-    elif dtype_str == "string":
-        return pd.StringDtype()
-    elif dtype_str == "categorical":
-        if categories:
-            return pd.CategoricalDtype(categories=categories, ordered=False)
-        return pd.CategoricalDtype()
-    else:
-        raise ValueError(f"Unrecognized dtype string: '{dtype_str}'")
-
-
-# ---------------------------------------------------------------------------
-# Task 03: Single-file reader
-# ---------------------------------------------------------------------------
-
-
-def read_raw_file(file_path: Path, schema: dict[str, dict]) -> pd.DataFrame:
-    """Read one raw KGS .txt file into a pandas DataFrame with canonical schema.
-
-    Args:
-        file_path: Path to the raw .txt file.
-        schema: Column schema from load_schema().
-
-    Returns:
-        DataFrame with canonical schema, source_file column, and year >= 2024 rows.
-
-    Raises:
-        FileNotFoundError: If file_path does not exist.
-        ValueError: If file cannot be parsed or a non-nullable column is absent.
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the file cannot be parsed as CSV.
     """
     if not file_path.exists():
-        raise FileNotFoundError(f"Raw file not found: {file_path}")
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    file_size = file_path.stat().st_size
+    if file_size == 0:
+        return pd.DataFrame()
 
     try:
-        df = pd.read_csv(file_path, low_memory=False)
-    except pd.errors.ParserError as exc:
-        raise ValueError(f"Failed to parse {file_path.name}: {exc}") from exc
+        df = pd.read_csv(file_path, dtype=str, quoting=0, on_bad_lines="warn")
+    except Exception as exc:
+        logger.warning("Cannot parse %s as CSV: %s", file_path.name, exc)
+        raise ValueError(f"Cannot parse {file_path.name}: {exc}") from exc
 
-    # Drop URL column if present
-    for col in _DROP_COLS:
-        if col in df.columns:
-            df = df.drop(columns=[col])
+    if df.empty:
+        return df
 
-    # Check non-nullable columns — absent → raise immediately
-    non_nullable_absent = [
-        col
-        for col, meta in schema.items()
-        if not meta["nullable"] and col not in df.columns and col != "source_file"
-    ]
-    if non_nullable_absent:
-        raise ValueError(
-            f"Non-nullable columns absent from {file_path.name}: {non_nullable_absent}"
-        )
-
-    # Add absent nullable columns as all-NA at the resolved dtype
-    for col, meta in schema.items():
-        if col == "source_file":
-            continue
-        if col in _DROP_COLS:
-            continue
-        if col not in df.columns and meta["nullable"]:
-            resolved = resolve_pandas_dtype(meta["dtype"], meta["nullable"], meta["categories"])
-            if pd.api.types.is_float_dtype(resolved):
-                df[col] = np.nan
-            elif pd.api.types.is_integer_dtype(resolved):
-                df[col] = pd.array([pd.NA] * len(df), dtype=resolved)
-            else:
-                df[col] = pd.NA
-
-    # Cast each column to its resolved dtype
-    for col, meta in schema.items():
-        if col == "source_file" or col not in df.columns:
-            continue
-        resolved = resolve_pandas_dtype(meta["dtype"], meta["nullable"], meta["categories"])
-        if meta["dtype"] == "categorical" and meta["categories"]:
-            # Replace out-of-set values with NA before casting
-            valid = set(meta["categories"])
-            df[col] = df[col].where(df[col].astype(str).isin(valid), other=None)  # type: ignore[call-overload]
-        try:
-            df[col] = df[col].astype(resolved)
-        except (ValueError, TypeError):
-            logger.warning("Could not cast column %s in %s to %s", col, file_path.name, resolved)
-
-    # Add source_file column
-    df["source_file"] = pd.array([file_path.name] * len(df), dtype=pd.StringDtype())
-
-    # Year filter: extract year from MONTH-YEAR
-    if "MONTH-YEAR" in df.columns:
-        year_parts = df["MONTH-YEAR"].astype(str).str.split("-").str[-1]
-        numeric_mask = year_parts.str.isnumeric()
-        year_ints = pd.to_numeric(year_parts.where(numeric_mask), errors="coerce")
-        keep_mask = numeric_mask & (year_ints >= 2024)
-        df = df[keep_mask].reset_index(drop=True)
-
+    df["source_file"] = file_path.name
     return df
 
 
 # ---------------------------------------------------------------------------
-# Task 04: Dask-based parallel file ingestion
+# ING-03: Date filter
 # ---------------------------------------------------------------------------
 
 
-def _build_meta_schema(schema: dict[str, dict]) -> pd.DataFrame:
-    """Build an empty pandas DataFrame with the canonical schema plus source_file."""
-    cols: dict[str, Any] = {}
-    for col, meta in schema.items():
-        if col == "URL":
-            continue
-        resolved = resolve_pandas_dtype(meta["dtype"], meta["nullable"], meta["categories"])
-        cols[col] = pd.array([], dtype=resolved)
-    cols["source_file"] = pd.array([], dtype=pd.StringDtype())
-    return pd.DataFrame(cols)
-
-
-def ingest_raw_files(
-    input_dir: Path,
-    schema: dict[str, dict],
-    client: Any,  # distributed.Client
-) -> dd.DataFrame:
-    """Discover .txt files in input_dir and return a lazy Dask DataFrame.
+def filter_by_year(df: pd.DataFrame, min_year: int) -> pd.DataFrame:
+    """Filter a DataFrame to rows with year >= min_year from MONTH-YEAR column.
 
     Args:
-        input_dir: Directory containing raw .txt files.
-        schema: Column schema from load_schema().
-        client: Dask distributed Client for scheduling.
+        df: DataFrame with a ``MONTH-YEAR`` column.
+        min_year: Minimum year (inclusive) to retain.
 
     Returns:
-        Lazy Dask DataFrame (do not call .compute()).
+        Filtered DataFrame.
+    """
+    if df.empty or "MONTH-YEAR" not in df.columns:
+        return df
+
+    def _year(val: object) -> int | None:
+        try:
+            part = str(val).split("-")[-1].strip()
+            return int(part)
+        except (ValueError, AttributeError):
+            return None
+
+    years = df["MONTH-YEAR"].map(_year)
+    return df[years.notna() & (years >= min_year)].copy()
+
+
+# ---------------------------------------------------------------------------
+# ING-04: Schema enforcer
+# ---------------------------------------------------------------------------
+
+
+def enforce_schema(df: pd.DataFrame, schema: dict[str, dict]) -> pd.DataFrame:
+    """Enforce canonical schema on a DataFrame.
+
+    Args:
+        df: Raw DataFrame to cast.
+        schema: Schema dict from ``load_schema``.
+
+    Returns:
+        DataFrame with exactly schema columns in schema order.
 
     Raises:
-        FileNotFoundError: If input_dir does not exist or no .txt files found.
+        ValueError: If a ``nullable=no`` column is absent.
     """
-    if not input_dir.exists():
-        raise FileNotFoundError(f"Input directory not found: {input_dir}")
+    result: dict[str, pd.Series] = {}
 
-    files = sorted(input_dir.glob("*.txt"))
-    n_files = len(files)
-    logger.info("Found %d raw .txt files in %s", n_files, input_dir)
+    for col, spec in schema.items():
+        dtype = spec["dtype"]
+        nullable = spec["nullable"]
+        categories = spec["categories"]
 
-    if n_files == 0:
-        raise FileNotFoundError(f"No .txt files found in {input_dir}")
+        if col not in df.columns:
+            if not nullable:
+                raise ValueError(f"Non-nullable column '{col}' absent from source data")
+            # Add as all-NA column at correct dtype
+            if dtype == "category" and categories:
+                cat_dtype = pd.CategoricalDtype(categories=categories)
+                result[col] = pd.Categorical([None] * len(df), dtype=cat_dtype)  # type: ignore[assignment]
+            else:
+                result[col] = pd.array([pd.NA] * len(df), dtype=dtype)  # type: ignore[call-overload]
+            continue
 
-    meta = _build_meta_schema(schema)
+        series = df[col].copy()
 
-    # Use Dask bag + distributed client (CPU-bound, ADR-001)
-    bag = db.from_sequence(files, npartitions=max(1, min(n_files, 50)))
-    delayed_dfs = bag.map(lambda fp: read_raw_file(fp, schema)).to_delayed()
-    ddf = dd.from_delayed(delayed_dfs, meta=meta)
+        if dtype == "category" and categories:
+            # Replace out-of-set values with NA before casting
+            valid = set(categories)
+            series = series.where(series.isin(valid), other=pd.NA)  # type: ignore[call-overload]
+            cat_dtype = pd.CategoricalDtype(categories=categories)
+            try:
+                result[col] = series.astype(cat_dtype)
+            except Exception as exc:
+                logger.warning("Cannot cast %s to category: %s", col, exc)
+                if not nullable:
+                    raise
+                result[col] = pd.Categorical([None] * len(df), dtype=cat_dtype)  # type: ignore[assignment]
+        else:
+            try:
+                result[col] = series.astype(dtype)
+            except Exception as exc:
+                logger.warning("Cannot cast %s to %s: %s", col, dtype, exc)
+                if not nullable:
+                    raise
+                if dtype == "string":
+                    result[col] = pd.array([pd.NA] * len(df), dtype="string")  # type: ignore[assignment]
+                else:
+                    result[col] = pd.array([pd.NA] * len(df), dtype=dtype)
+
+    return pd.DataFrame(result, index=df.index)
+
+
+# ---------------------------------------------------------------------------
+# ING-05: Single-file ingest worker
+# ---------------------------------------------------------------------------
+
+
+def ingest_file(
+    file_path: Path,
+    schema: dict[str, dict],
+    min_year: int,
+) -> pd.DataFrame:
+    """Process a single raw lease file into a schema-enforced DataFrame.
+
+    Args:
+        file_path: Path to raw .txt file.
+        schema: Schema dict from ``load_schema``.
+        min_year: Minimum year for date filter.
+
+    Returns:
+        Cleaned, schema-enforced DataFrame (may be empty).
+    """
+    try:
+        df = read_raw_file(file_path)
+        if df.empty:
+            return df
+        df = filter_by_year(df, min_year)
+        if df.empty:
+            return df
+        df = enforce_schema(df, schema)
+        return df
+    except (FileNotFoundError, ValueError):
+        raise
+    except Exception as exc:
+        logger.warning("Unexpected error ingesting %s: %s", file_path, exc)
+        # Return empty DataFrame with schema columns
+        return pd.DataFrame(columns=list(schema.keys()))
+
+
+# ---------------------------------------------------------------------------
+# ING-06: Parallel ingest orchestrator
+# ---------------------------------------------------------------------------
+
+
+def run_ingest(config: dict, client: object) -> dd.DataFrame:
+    """Orchestrate parallel ingestion of all raw files using Dask.
+
+    Args:
+        config: Pipeline configuration dict.
+        client: Dask distributed Client (CPU-bound — ADR-001).
+
+    Returns:
+        Dask DataFrame (lazy — not computed).
+
+    Raises:
+        FileNotFoundError: If no .txt files are found in raw_dir.
+    """
+    ing_cfg = config["ingest"]
+    raw_dir = Path(ing_cfg["raw_dir"])
+    txt_files = sorted(raw_dir.glob("*.txt"))
+
+    if not txt_files:
+        logger.warning("No .txt files found in %s", raw_dir)
+        raise FileNotFoundError(f"No .txt files found in {raw_dir}")
+
+    schema = load_schema(ing_cfg["dict_path"])
+    min_year: int = int(ing_cfg.get("min_year", 2024))
+
+    # Use dask.bag over file paths, map ingest_file over each
+    bag = db.from_sequence(txt_files, npartitions=min(len(txt_files), 10))
+    delayed_dfs = bag.map(lambda fp: ingest_file(fp, schema, min_year)).to_delayed()
+
+    # Build Dask DataFrame from delayed list
+    ddf = dd.from_delayed(delayed_dfs)
+
+    n = len(txt_files)
+    n_partitions = max(10, min(n, 50))
+    ddf = ddf.repartition(npartitions=n_partitions)
+
     return ddf
 
 
 # ---------------------------------------------------------------------------
-# Task 05: Parquet writer
+# ING-07: Parquet writer
 # ---------------------------------------------------------------------------
 
 
-def write_interim_parquet(ddf: dd.DataFrame, output_dir: Path, n_files: int) -> None:
-    """Repartition and write the Dask DataFrame as partitioned Parquet.
+def write_interim(ddf: dd.DataFrame, config: dict) -> None:
+    """Write the ingested Dask DataFrame to partitioned Parquet.
 
     Args:
-        ddf: Lazy Dask DataFrame to write.
-        output_dir: Output directory for Parquet files.
-        n_files: Number of source files (used to compute partition count).
+        ddf: Dask DataFrame to write.
+        config: Pipeline configuration dict.
     """
-    partition_count = max(10, min(n_files, 50))
+    output_dir = Path(config["ingest"]["interim_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    ddf = ddf.repartition(npartitions=partition_count)
-    ddf.to_parquet(str(output_dir), write_index=False, overwrite=True)
-    logger.info("Wrote %d Parquet partitions to %s", partition_count, output_dir)
+
+    try:
+        ddf.to_parquet(str(output_dir), write_index=False, overwrite=True)
+        logger.info("Wrote interim Parquet to %s (%d partitions)", output_dir, ddf.npartitions)
+    except Exception as exc:
+        logger.error("Failed to write interim Parquet: %s", exc)
+        raise
 
 
 # ---------------------------------------------------------------------------
-# Task 06: Ingest stage entry point
+# ING-08: Schema completeness validator
 # ---------------------------------------------------------------------------
 
 
-def run_ingest(config: IngestConfig, client: Any) -> IngestSummary:
-    """Orchestrate the full ingest stage.
+def validate_interim_schema(interim_dir: Path, expected_columns: list[str]) -> None:
+    """Validate that sampled Parquet partitions contain all expected columns.
 
     Args:
-        config: IngestConfig with all ingest settings.
-        client: Dask distributed Client.
+        interim_dir: Directory of interim Parquet files.
+        expected_columns: List of column names that must be present.
 
-    Returns:
-        IngestSummary with file count and partition info.
+    Raises:
+        ValueError: If any expected column is missing from any sampled partition.
     """
-    schema = load_schema(config.dict_path)
+    parquet_files = sorted(interim_dir.glob("*.parquet"))
+    sample = parquet_files[:3]
 
-    input_dir = Path(config.input_dir)
-    files = sorted(input_dir.glob("*.txt"))
-    n_files = len(files)
+    for pf in sample:
+        df_sample = pd.read_parquet(pf)
+        for col in expected_columns:
+            if col not in df_sample.columns:
+                raise ValueError(f"Missing column '{col}' in partition {pf}")
 
-    ddf = ingest_raw_files(input_dir, schema, client)
 
-    output_dir = Path(config.output_dir)
-    write_interim_parquet(ddf, output_dir, n_files)
+# ---------------------------------------------------------------------------
+# ING-09: Stage entry point
+# ---------------------------------------------------------------------------
 
-    partition_count = max(10, min(n_files, 50))
-    return IngestSummary(
-        n_files_ingested=n_files,
-        output_dir=output_dir,
-        partition_count=partition_count,
+
+def ingest(config: dict, client: object) -> None:
+    """Top-level entry point for the ingest stage.
+
+    Args:
+        config: Pipeline configuration dict.
+        client: Dask distributed Client.
+    """
+    ddf = run_ingest(config, client)
+    write_interim(ddf, config)
+
+    interim_dir = Path(config["ingest"]["interim_dir"])
+    validate_interim_schema(interim_dir, EXPECTED_COLUMNS)
+
+    logger.info(
+        "Ingest stage complete: %d partitions written to %s",
+        ddf.npartitions,
+        interim_dir,
     )

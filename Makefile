@@ -1,28 +1,36 @@
-.PHONY: venv install acquire ingest transform features pipeline
+.PHONY: venv install acquire ingest transform features pipeline test clean
 
 PYTHON := python3
 VENV := .venv
 PIP := $(VENV)/bin/pip
+PYTEST := $(VENV)/bin/pytest
+KGS := $(VENV)/bin/kgs-pipeline
 
 venv:
 	$(PYTHON) -m venv $(VENV)
 
 install: venv
 	$(PIP) install --upgrade pip
-	$(PIP) install -e ".[dev]" || $(PIP) install -e .
-	$(PIP) install -r requirements.txt
+	$(PIP) install -e ".[dev]" || $(PIP) install -r requirements.txt
+	$(PIP) install -e .
 
 acquire:
-	$(VENV)/bin/kgs-pipeline --stages acquire
+	$(KGS) --stages acquire
 
 ingest:
-	$(VENV)/bin/kgs-pipeline --stages ingest
+	$(KGS) --stages ingest
 
 transform:
-	$(VENV)/bin/kgs-pipeline --stages transform
+	$(KGS) --stages transform
 
 features:
-	$(VENV)/bin/kgs-pipeline --stages features
+	$(KGS) --stages features
 
 pipeline:
-	$(VENV)/bin/kgs-pipeline
+	$(KGS)
+
+test:
+	$(PYTEST) tests/ -v
+
+clean:
+	rm -rf data/raw/*.txt data/interim/ data/features/ data/processed/

@@ -19,4 +19,3 @@ MONTH-YEAR,Month and Year for the production information. Yearly data is indicat
 PRODUCT,"O = oil, G = gas (including coalbed methane).",categorical,no,O|G
 WELLS,Number of wells contributing to the lease. Of limited quality.,int,yes,
 PRODUCTION,Production of oil is in barrels; production of gas is in MCF (1000 cubic feet).,float,yes,
-URL,Some versions of the file include a URL to the main Lease Production web page.,string,yes,
