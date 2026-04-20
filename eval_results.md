@@ -1,5 +1,241 @@
 
-## Eval Run at 2026-04-16 18:26:55
+## Eval Run at 2026-04-17 00:03:16
+
+**Status:** ❌ FAILED
+
+### Failures:
+- **Linting:**
+```
+Linting failed. Fix these errors:
+F841 Local variable `df` is assigned to but never used
+   --> tests/test_features.py:285:5
+    |
+283 | def test_rolling_per_lease_independent(gas_oil_df: pd.DataFrame) -> None:
+284 |     """Rolling values per lease don't bleed across leases."""
+285 |     df = gas_oil_df.copy()
+    |     ^^
+286 |     # Extend to multi-month for rolling computation
+287 |     rows = []
+    |
+help: Remove assignment to unused variable `df`
+
+F841 Local variable `report_path` is assigned to but never used
+   --> tests/test_pipeline.py:186:5
+    |
+184 | def test_main_writes_pipeline_report(tmp_path: Path) -> None:
+185 |     """Pipeline report is written after run."""
+186 |     report_path = tmp_path / "processed" / "pipeline_report.json"
+    |     ^^^^^^^^^^^
+187 |     cfg = {
+188 |         "acquire": {"index_path": "data/external/x.txt", "output_dir": str(tmp_path / "raw")},
+    |
+help: Remove assignment to unused variable `report_path`
+
+E712 Avoid equality comparisons to `False`; use `not result["has_date_gap"]:` for false checks
+   --> tests/test_transform.py:332:13
+    |
+330 |     )
+331 |     result = check_well_completeness(df)
+332 |     assert (result["has_date_gap"] == False).all()
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: Replace with `not result["has_date_gap"]`
+
+E712 Avoid equality comparisons to `True`; use `result["has_date_gap"]:` for truth checks
+   --> tests/test_transform.py:345:13
+    |
+343 |     result = check_well_completeness(df)
+344 |     # Jan and March present, Feb missing → gap
+345 |     assert (result["has_date_gap"] == True).all()
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: Replace with `result["has_date_gap"]`
+
+E712 Avoid equality comparisons to `False`; use `not result["has_date_gap"].iloc[0]:` for false checks
+   --> tests/test_transform.py:357:12
+    |
+355 |     )
+356 |     result = check_well_completeness(df)
+357 |     assert result["has_date_gap"].iloc[0] == False
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: Replace with `not result["has_date_gap"].iloc[0]`
+
+Found 5 errors.
+No fixes available (5 hidden fixes can be enabled with the `--unsafe-fixes` option).
+
+```
+
+- **Type check:**
+```
+Type check failed. Fix these errors:
+/tests/test_features.py:518: error: Need type annotation for "enc"  [var-annotated]
+/kgs_pipeline/ingest.py:186: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "NAType"  [call-overload]
+/kgs_pipeline/ingest.py:186: note: Possible overload variants:
+/kgs_pipeline/ingest.py:186: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
+/kgs_pipeline/ingest.py:186: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
+/kgs_pipeline/acquire.py:144: error: Invalid index type "str" for "NavigableString"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
+/kgs_pipeline/acquire.py:144: note: Error code "index" not covered by "type: ignore" comment
+Found 3 errors in 3 files (checked 12 source files)
+
+```
+
+- **Unit Tests:**
+```
+Unit Tests failed. Fix these errors:
+........................................................................ [ 53%]
+...........F.FFF.F.....................FF.....................           [100%]Running teardown with pytest sessionfinish...
+
+=================================== FAILURES ===================================
+__________________ test_read_raw_file_absent_nullable_column ___________________
+tests/test_ingest.py:147: in test_read_raw_file_absent_nullable_column
+    df = read_raw_file(p, sample_schema)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/ingest.py:176: in read_raw_file
+    df[col] = pd.array([pd.NA] * len(df), dtype=resolved)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/construction.py:400: in array
+    return NumpyExtensionArray._from_sequence(data, dtype=dtype, copy=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/arrays/numpy_.py:145: in _from_sequence
+    result = np.asarray(scalars, dtype=dtype)  # type: ignore[arg-type]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: float() argument must be a string or a real number, not 'NAType'
+________________________ test_read_raw_file_year_filter ________________________
+tests/test_ingest.py:169: in test_read_raw_file_year_filter
+    df = read_raw_file(p, sample_schema)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/ingest.py:176: in read_raw_file
+    df[col] = pd.array([pd.NA] * len(df), dtype=resolved)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/construction.py:400: in array
+    return NumpyExtensionArray._from_sequence(data, dtype=dtype, copy=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/arrays/numpy_.py:145: in _from_sequence
+    result = np.asarray(scalars, dtype=dtype)  # type: ignore[arg-type]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: float() argument must be a string or a real number, not 'NAType'
+_________________ test_read_raw_file_non_numeric_year_dropped __________________
+tests/test_ingest.py:180: in test_read_raw_file_non_numeric_year_dropped
+    df = read_raw_file(p, sample_schema)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/ingest.py:176: in read_raw_file
+    df[col] = pd.array([pd.NA] * len(df), dtype=resolved)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/construction.py:400: in array
+    return NumpyExtensionArray._from_sequence(data, dtype=dtype, copy=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/arrays/numpy_.py:145: in _from_sequence
+    result = np.asarray(scalars, dtype=dtype)  # type: ignore[arg-type]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: float() argument must be a string or a real number, not 'NAType'
+______________ test_read_raw_file_invalid_categorical_becomes_na _______________
+tests/test_ingest.py:190: in test_read_raw_file_invalid_categorical_becomes_na
+    df = read_raw_file(p, sample_schema)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/ingest.py:176: in read_raw_file
+    df[col] = pd.array([pd.NA] * len(df), dtype=resolved)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/construction.py:400: in array
+    return NumpyExtensionArray._from_sequence(data, dtype=dtype, copy=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/arrays/numpy_.py:145: in _from_sequence
+    result = np.asarray(scalars, dtype=dtype)  # type: ignore[arg-type]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: float() argument must be a string or a real number, not 'NAType'
+____________________ test_read_raw_file_url_column_dropped _____________________
+tests/test_ingest.py:209: in test_read_raw_file_url_column_dropped
+    df = read_raw_file(p, sample_schema)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/ingest.py:176: in read_raw_file
+    df[col] = pd.array([pd.NA] * len(df), dtype=resolved)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/construction.py:400: in array
+    return NumpyExtensionArray._from_sequence(data, dtype=dtype, copy=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/core/arrays/numpy_.py:145: in _from_sequence
+    result = np.asarray(scalars, dtype=dtype)  # type: ignore[arg-type]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: float() argument must be a string or a real number, not 'NAType'
+______________ test_validate_physical_bounds_oil_flag_over_50000 _______________
+tests/test_transform.py:187: in test_validate_physical_bounds_oil_flag_over_50000
+    assert result["production_unit_flag"].iloc[0] is True
+E   assert np.True_ is True
+__________________ test_validate_physical_bounds_gas_no_flag ___________________
+tests/test_transform.py:200: in test_validate_physical_bounds_gas_no_flag
+    assert result["production_unit_flag"].iloc[0] is False
+E   assert np.False_ is False
+=========================== short test summary info ============================
+FAILED tests/test_ingest.py::test_read_raw_file_absent_nullable_column - Type...
+FAILED tests/test_ingest.py::test_read_raw_file_year_filter - TypeError: floa...
+FAILED tests/test_ingest.py::test_read_raw_file_non_numeric_year_dropped - Ty...
+FAILED tests/test_ingest.py::test_read_raw_file_invalid_categorical_becomes_na
+FAILED tests/test_ingest.py::test_read_raw_file_url_column_dropped - TypeErro...
+FAILED tests/test_transform.py::test_validate_physical_bounds_oil_flag_over_50000
+FAILED tests/test_transform.py::test_validate_physical_bounds_gas_no_flag - a...
+7 failed, 127 passed in 8.41s
+
+```
+
+---
+
+## Eval Run at 2026-04-17 00:22:15
+
+**Status:** ❌ FAILED
+
+### Failures:
+- **Linting:**
+```
+Linting failed. Fix these errors:
+E712 Avoid equality comparisons to `False`; use `not result["has_date_gap"]:` for false checks
+   --> tests/test_transform.py:332:13
+    |
+330 |     )
+331 |     result = check_well_completeness(df)
+332 |     assert (result["has_date_gap"] == False).all()
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: Replace with `not result["has_date_gap"]`
+
+Found 1 error.
+No fixes available (1 hidden fix can be enabled with the `--unsafe-fixes` option).
+
+```
+
+- **Type check:**
+```
+Type check failed. Fix these errors:
+/kgs_pipeline/ingest.py:191: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "None"  [call-overload]
+/kgs_pipeline/ingest.py:191: note: Possible overload variants:
+/kgs_pipeline/ingest.py:191: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
+/kgs_pipeline/ingest.py:191: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
+/kgs_pipeline/acquire.py:144: error: Incompatible types in assignment (expression has type "str | list[str]", variable has type "str")  [assignment]
+/kgs_pipeline/acquire.py:144: note: Error code "assignment" not covered by "type: ignore" comment
+Found 2 errors in 2 files (checked 12 source files)
+
+```
+
+- **Unit Tests:**
+```
+Unit Tests failed. Fix these errors:
+........................................................................ [ 53%]
+.................F............................................           [100%]Running teardown with pytest sessionfinish...
+
+=================================== FAILURES ===================================
+____________________ test_read_raw_file_url_column_dropped _____________________
+tests/test_ingest.py:210: in test_read_raw_file_url_column_dropped
+    assert "URL" not in df.columns
+E   AssertionError: assert 'URL' not in Index(['LEASE_KID', 'MONTH-YEAR', 'PRODUCT', 'LEASE', 'DOR_CODE', 'API_NUMBER',\n       'FIELD', 'PRODUCING_ZONE', 'OPE...R', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE',\n       'WELLS', 'PRODUCTION', 'URL', 'source_file'],\n      dtype='str')
+E    +  where Index(['LEASE_KID', 'MONTH-YEAR', 'PRODUCT', 'LEASE', 'DOR_CODE', 'API_NUMBER',\n       'FIELD', 'PRODUCING_ZONE', 'OPE...R', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE',\n       'WELLS', 'PRODUCTION', 'URL', 'source_file'],\n      dtype='str') =    LEASE_KID MONTH-YEAR PRODUCT LEASE  ...  WELLS PRODUCTION   URL source_file\n0       1001     1-2024       O  <NA>  ...   <NA>        NaN  <NA>   lp007.txt\n\n[1 rows x 22 columns].columns
+=========================== short test summary info ============================
+FAILED tests/test_ingest.py::test_read_raw_file_url_column_dropped - Assertio...
+1 failed, 133 passed in 8.79s
+
+```
+
+---
+
+## Eval Run at 2026-04-17 00:31:23
 
 **Status:** ❌ FAILED
 
@@ -7,245 +243,30 @@
 - **Type check:**
 ```
 Type check failed. Fix these errors:
-/kgs_pipeline/transform.py:88: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "None"  [call-overload]
-/kgs_pipeline/transform.py:88: note: Possible overload variants:
-/kgs_pipeline/transform.py:88: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/transform.py:88: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/kgs_pipeline/ingest.py:151: error: No overload variant of "astype" of "Series" matches argument type "object"  [call-overload]
-/kgs_pipeline/ingest.py:151: note: Possible overload variants:
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[builtins.bool] | Literal['bool'] | BooleanDtype | Literal['boolean'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['bool[pyarrow]', 'boolean[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[bool]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['int', 'Int8', 'Int16', 'Int32', 'Int64', 'b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'i8', 'int64', 'int_', 'q', 'longlong', 'p', 'intp', 'int8[pyarrow]', 'int16[pyarrow]', 'int32[pyarrow]', 'int64[pyarrow]', 'UInt8', 'UInt16', 'UInt32', 'UInt64', 'B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'u8', 'uint', 'uint64', 'Q', 'ulonglong', 'P', 'uintp', 'uint8[pyarrow]', 'uint16[pyarrow]', 'uint32[pyarrow]', 'uint64[pyarrow]'] | type[int] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | <14 more items>, copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[int]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[str] | Literal['str'] | StringDtype[None] | Literal['string'] | StringDtype[Literal['python']] | Literal['string[python]'] | Literal['U', 'str_', 'unicode'] | type[str_] | StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[str]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[bytes] | Literal['bytes'] | Literal['S', 'bytes_'] | type[bytes_] | Literal['binary[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[bytes]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[float] | Literal['float'] | Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['float[pyarrow]', 'double[pyarrow]', 'float16[pyarrow]', 'float32[pyarrow]', 'float64[pyarrow]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[float]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: type[complex] | Literal['complex'] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[complex]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]', 'duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]', 'timedelta64[Y]', 'timedelta64[M]', 'timedelta64[W]', 'timedelta64[D]', 'timedelta64[h]', 'timedelta64[m]', 'timedelta64[μs]', 'timedelta64[ps]', 'timedelta64[fs]', 'timedelta64[as]', 'm8[Y]', 'm8[M]', 'm8[W]', 'm8[D]', 'm8[h]', 'm8[m]', 'm8[μs]', 'm8[ps]', 'm8[fs]', 'm8[as]', '<m8[Y]', '<m8[M]', '<m8[W]', '<m8[D]', '<m8[h]', '<m8[m]', '<m8[μs]', '<m8[ps]', '<m8[fs]', '<m8[as]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[Timedelta]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]', 'datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]', 'date32[pyarrow]', 'date64[pyarrow]', 'timestamp[s][pyarrow]', 'timestamp[ms][pyarrow]', 'timestamp[us][pyarrow]', 'timestamp[ns][pyarrow]', 'datetime64[Y]', 'datetime64[M]', 'datetime64[W]', 'datetime64[D]', 'datetime64[h]', 'datetime64[m]', 'datetime64[μs]', 'datetime64[ps]', 'datetime64[fs]', 'datetime64[as]', 'M8[Y]', 'M8[M]', 'M8[W]', 'M8[D]', 'M8[h]', 'M8[m]', 'M8[μs]', 'M8[ps]', 'M8[fs]', 'M8[as]', '<M8[Y]', '<M8[M]', '<M8[W]', '<M8[D]', '<M8[h]', '<M8[m]', '<M8[μs]', '<M8[ps]', '<M8[fs]', '<M8[as]'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[Timestamp]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: CategoricalDtype | Literal['category'], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[CategoricalDtype]
-/kgs_pipeline/ingest.py:151: note:     def astype(self, dtype: Literal['object', 'object_', 'O', 'V', 'void'] | type[object] | type[object_] | type[void] | ExtensionDtype | dtype[generic[Any]], copy: bool = ..., errors: Literal['ignore', 'raise'] = ...) -> Series[Any]
-/kgs_pipeline/ingest.py:166: error: No overload variant of "array" matches argument types "list[NAType]", "object"  [call-overload]
-/kgs_pipeline/ingest.py:166: note: Possible overload variants:
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[Just[float]], dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void], copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[NAType | None], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[Timedelta] | Series[Timedelta] | TimedeltaArray | TimedeltaIndex | ndarray[tuple[int], dtype[timedelta64[timedelta | int | None]]], dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] | None = ..., copy: bool = ...) -> TimedeltaArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | Just[float] | NAType | None], dtype: BooleanDtype | Literal['boolean'], copy: bool = ...) -> BooleanArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | NAType | None], dtype: None = ..., copy: bool = ...) -> BooleanArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | BooleanArray, dtype: BooleanDtype | Literal['boolean'] | None = ..., copy: bool = ...) -> BooleanArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[float | integer[Any] | NAType | None], dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype, copy: bool = ...) -> IntegerArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[int | integer[Any] | NAType | None], dtype: None = ..., copy: bool = ...) -> IntegerArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: ndarray[tuple[Any, ...], dtype[integer[Any]]] | IntegerArray, dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype | None = ..., copy: bool = ...) -> IntegerArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[float | floating[Any] | NAType | None] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None, ...] | MutableSequence[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[Any]] | DatetimeArray, dtype: DatetimeTZDtype | Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | dtype[datetime64[date | int | None]] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'], copy: bool = ...) -> DatetimeArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: Sequence[datetime | NaTType | None] | Sequence[datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, dtype: None = ..., copy: bool = ...) -> DatetimeArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Never], copy: bool = ...) -> BaseStringArray[None]
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ...) -> ArrowStringArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['python']] | Literal['string[python]'], copy: bool = ...) -> StringArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[None] | Literal['string'], copy: bool = ...) -> BaseStringArray[None]
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[str | str_ | NAType | None, ...] | MutableSequence[str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[str_]] | BaseStringArray[None], dtype: None = ..., copy: bool = ...) -> BaseStringArray[None]
-/kgs_pipeline/ingest.py:166: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: None = ..., copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:166: note:     def array(data: ndarray[tuple[Any, ...], dtype[Any]] | NumpyExtensionArray | RangeIndex, dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:173: error: No overload variant of "array" matches argument types "list[NAType]", "object"  [call-overload]
-/kgs_pipeline/ingest.py:173: note: Possible overload variants:
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[Just[float]], dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void], copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[NAType | None], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[Timedelta] | Series[Timedelta] | TimedeltaArray | TimedeltaIndex | ndarray[tuple[int], dtype[timedelta64[timedelta | int | None]]], dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] | None = ..., copy: bool = ...) -> TimedeltaArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | Just[float] | NAType | None], dtype: BooleanDtype | Literal['boolean'], copy: bool = ...) -> BooleanArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | NAType | None], dtype: None = ..., copy: bool = ...) -> BooleanArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | BooleanArray, dtype: BooleanDtype | Literal['boolean'] | None = ..., copy: bool = ...) -> BooleanArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[float | integer[Any] | NAType | None], dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype, copy: bool = ...) -> IntegerArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[int | integer[Any] | NAType | None], dtype: None = ..., copy: bool = ...) -> IntegerArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: ndarray[tuple[Any, ...], dtype[integer[Any]]] | IntegerArray, dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype | None = ..., copy: bool = ...) -> IntegerArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[float | floating[Any] | NAType | None] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None, ...] | MutableSequence[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[Any]] | DatetimeArray, dtype: DatetimeTZDtype | Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | dtype[datetime64[date | int | None]] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'], copy: bool = ...) -> DatetimeArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: Sequence[datetime | NaTType | None] | Sequence[datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, dtype: None = ..., copy: bool = ...) -> DatetimeArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Never], copy: bool = ...) -> BaseStringArray[None]
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ...) -> ArrowStringArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['python']] | Literal['string[python]'], copy: bool = ...) -> StringArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[None] | Literal['string'], copy: bool = ...) -> BaseStringArray[None]
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[str | str_ | NAType | None, ...] | MutableSequence[str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[str_]] | BaseStringArray[None], dtype: None = ..., copy: bool = ...) -> BaseStringArray[None]
-/kgs_pipeline/ingest.py:173: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: None = ..., copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:173: note:     def array(data: ndarray[tuple[Any, ...], dtype[Any]] | NumpyExtensionArray | RangeIndex, dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/kgs_pipeline/ingest.py:196: error: No overload variant of "Series" matches argument type "object"  [call-overload]
-/kgs_pipeline/ingest.py:196: note: Possible overload variants:
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[Never], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Any]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[list[str]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[list[str]]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[str], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: ExtensionDtype | str | dtype[generic[Any]] | type[complex] | type[bool] | type[object] | type[str] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[str]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: DatetimeIndex | Sequence[datetime64[date | int | None] | datetime | date] | dict[HashableT1, datetime64[date | int | None] | datetime | date] | datetime64[date | int | None] | datetime | date, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'] | Literal['date32[pyarrow]', 'date64[pyarrow]', 'timestamp[s][pyarrow]', 'timestamp[ms][pyarrow]', 'timestamp[us][pyarrow]', 'timestamp[ns][pyarrow]'] = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Timestamp]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[datetime | timedelta64[timedelta | int | None]] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., *, dtype: Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'] | Literal['date32[pyarrow]', 'date64[pyarrow]', 'timestamp[s][pyarrow]', 'timestamp[ms][pyarrow]', 'timestamp[us][pyarrow]', 'timestamp[ns][pyarrow]'], name: Hashable = ..., copy: bool | None = ...) -> Series[Timestamp]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | dict[str, ndarray[tuple[Any, ...], dtype[Any]]] | SequenceNotStr[Any], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., *, dtype: CategoricalDtype | Literal['category'], name: Hashable = ..., copy: bool | None = ...) -> Series[CategoricalDtype]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: PeriodIndex | Sequence[Period], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: PeriodDtype = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Period]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[BaseOffset], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: PeriodDtype = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[BaseOffset]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: TimedeltaIndex | Sequence[timedelta64[timedelta | int | None] | timedelta] | dict[HashableT1, timedelta64[timedelta | int | None] | timedelta] | timedelta64[timedelta | int | None] | timedelta, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Timedelta]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, OrderableT: int | float | Timestamp | Timedelta] Series(data: IntervalIndex[Interval[OrderableT]] | Interval[OrderableT] | Sequence[Interval[OrderableT]] | dict[Hashable, Interval[OrderableT]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['Interval'] = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Interval[OrderableT]]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[builtins.bool | numpy.bool[builtins.bool]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['bool', 'boolean', '?', 'b1', 'bool_', 'bool[pyarrow]', 'boolean[pyarrow]'] | type[builtins.bool] | BooleanDtype | type[numpy.bool[builtins.bool]] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[bool]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[int | integer[Any]], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: Literal['int', 'Int8', 'Int16', 'Int32', 'Int64', 'b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'i8', 'int64', 'int_', 'q', 'longlong', 'p', 'intp', 'int8[pyarrow]', 'int16[pyarrow]', 'int32[pyarrow]', 'int64[pyarrow]', 'UInt8', 'UInt16', 'UInt32', 'UInt64', 'B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'u8', 'uint', 'uint64', 'Q', 'ulonglong', 'P', 'uintp', 'uint8[pyarrow]', 'uint16[pyarrow]', 'uint32[pyarrow]', 'uint64[pyarrow]'] | type[int] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | <14 more items> | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[int]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Sequence[float | floating[Any]] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[float]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any], index: None = ..., *, dtype: type[float] | Literal['float'] | Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['float[pyarrow]', 'double[pyarrow]', 'float16[pyarrow]', 'float32[pyarrow]', 'float64[pyarrow]'], name: Hashable = ..., copy: bool | None = ...) -> Series[float]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta] Series(data: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any], dtype: type[float] | Literal['float'] | Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['float[pyarrow]', 'double[pyarrow]', 'float16[pyarrow]', 'float32[pyarrow]', 'float64[pyarrow]'], name: Hashable = ..., copy: bool | None = ...) -> Series[float]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: str | bytes | date | datetime | timedelta | <16 more items> | None, index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., *, dtype: type[S1], name: Hashable = ..., copy: bool | None = ...) -> Series[S1]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: S1 | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | dict[str, ndarray[tuple[Any, ...], dtype[Any]]] | Sequence[S1] | IndexOpsMixin[S1, Any] | dict[HashableT1, S1] | KeysView[S1] | ValuesView[S1], index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: ExtensionDtype | str | dtype[generic[Any]] | type[complex] | type[bool] | type[object] | type[str] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[S1]
-/kgs_pipeline/ingest.py:196: note:     def [S1: str | bytes | bool | int | float | complex | <6 more items> | type[str] | list[str] | date | time | datetime | timedelta, HashableT1: Hashable] Series(data: str | bytes | date | datetime | timedelta | <19 more items> | None = ..., index: Mapping[Any, Any] | ExtensionArray | ndarray[tuple[Any, ...], dtype[Any]] | Index[Any] | Series[Any] | SequenceNotStr[Any] | range | KeysView[Any] | None = ..., dtype: ExtensionDtype | str | dtype[generic[Any]] | type[complex] | type[bool] | type[object] | type[str] | None = ..., name: Hashable = ..., copy: bool | None = ...) -> Series[Any]
-/kgs_pipeline/pipeline.py:146: error: "object" has no attribute "close"  [attr-defined]
-/kgs_pipeline/pipeline.py:146: note: Error code "attr-defined" not covered by "type: ignore" comment
-/tests/test_features.py:354: error: Argument "oil_vals" to "_make_pivoted_partition" has incompatible type "list[int]"; expected "list[float] | None"  [arg-type]
-/tests/test_features.py:354: note: "list" is invariant -- see https://mypy.readthedocs.io/en/stable/common_issues.html#variance
-/tests/test_features.py:354: note: Consider using "Sequence" instead, which is covariant
-/tests/test_features.py:361: error: Argument "oil_vals" to "_make_pivoted_partition" has incompatible type "list[int]"; expected "list[float] | None"  [arg-type]
-/tests/test_features.py:361: note: "list" is invariant -- see https://mypy.readthedocs.io/en/stable/common_issues.html#variance
-/tests/test_features.py:361: note: Consider using "Sequence" instead, which is covariant
-Found 8 errors in 4 files (checked 11 source files)
-
-```
-
-- **Unit Tests:**
-```
-Unit Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, asyncio-1.3.0, rerunfailures-16.1, deepeval-3.9.6, langsmith-0.7.30
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 125 items
-
-tests/test_acquire.py ............F...........                           [ 19%]
-tests/test_features.py ................................................. [ 58%]
-                                                                         [ 58%]
-tests/test_ingest.py ..........F...........F                             [ 76%]
-tests/test_transform.py .............................                    [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-____________ TestDownloadLeaseFile.test_idempotency_skips_existing _____________
-tests/test_acquire.py:163: in test_idempotency_skips_existing
-    result = download_lease_file(self.LEASE_URL, str(tmp_path), self.MONTH_SAVE_BASE, 0.0)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/acquire.py:127: in download_lease_file
-    download_url = parse_download_link(ms_response.text)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/acquire.py:87: in parse_download_link
-    soup = BeautifulSoup(html_content, "html.parser")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/__init__.py:470: in __init__
-    ) in self.builder.prepare_markup(
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/builder/_htmlparser.py:407: in prepare_markup
-    dammit = UnicodeDammit(
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/dammit.py:811: in __init__
-    for encoding in self.detector.encodings:
-                    ^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/dammit.py:623: in encodings
-    self.declared_encoding = self.find_declared_encoding(
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/bs4/dammit.py:722: in find_declared_encoding
-    declared_encoding_match = xml_re.search(markup, endpos=xml_endpos)
-                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E   TypeError: expected string or bytes-like object, got 'MagicMock'
-_____________ TestReadRawFile.test_correct_dtypes_and_source_file ______________
-tests/test_ingest.py:156: in test_correct_dtypes_and_source_file
-    assert df["LEASE_KID"].dtype == pd.Int64Dtype()
-E   AssertionError: assert dtype('int64') == Int64Dtype()
-E    +  where dtype('int64') = 0    1001135839\nName: LEASE_KID, dtype: int64.dtype
-E    +  and   Int64Dtype() = <class 'pandas.Int64Dtype'>()
-E    +    where <class 'pandas.Int64Dtype'> = pd.Int64Dtype
-_____________________ TestRunIngest.test_dtype_validation ______________________
-tests/test_ingest.py:293: in test_dtype_validation
-    assert result["LEASE_KID"].dtype == pd.Int64Dtype()
-E   AssertionError: assert dtype('int64') == Int64Dtype()
-E    +  where dtype('int64') = 0    1001\n0    1002\nName: LEASE_KID, dtype: int64.dtype
-E    +  and   Int64Dtype() = <class 'pandas.Int64Dtype'>()
-E    +    where <class 'pandas.Int64Dtype'> = pd.Int64Dtype
------------------------------ Captured stdout call -----------------------------
-2026-04-16 18:26:48,506 INFO kgs_pipeline.ingest — Ingest complete: 10 partitions written to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-11/test_dtype_validation0/interim
------------------------------- Captured log call -------------------------------
-INFO     kgs_pipeline.ingest:ingest.py:244 Ingest complete: 10 partitions written to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-11/test_dtype_validation0/interim
-=============================== warnings summary ===============================
-tests/test_transform.py::TestCleanCategoricals::test_invalid_product_replaced_with_na
-  /tests/test_transform.py:183: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
-    part = _make_partition(**{"PRODUCT": pd.Categorical(["X"], categories=["O", "G"])})
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_acquire.py::TestDownloadLeaseFile::test_idempotency_skips_existing
-FAILED tests/test_ingest.py::TestReadRawFile::test_correct_dtypes_and_source_file
-FAILED tests/test_ingest.py::TestRunIngest::test_dtype_validation - Assertion...
-================== 3 failed, 122 passed, 1 warning in 20.48s ===================
+/kgs_pipeline/acquire.py:144: error: Invalid index type "str" for "NavigableString"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
+/kgs_pipeline/acquire.py:144: note: Error code "index" not covered by "type: ignore" comment
+Found 1 error in 1 file (checked 12 source files)
 
 ```
 
 ---
 
-## Eval Run at 2026-04-16 18:53:08
+## Eval Run at 2026-04-17 00:37:09
 
 **Status:** ❌ FAILED
 
 ### Failures:
-- **Unit Tests:**
+- **Type check:**
 ```
-Unit Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, asyncio-1.3.0, rerunfailures-16.1, deepeval-3.9.6, langsmith-0.7.30
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 125 items
-
-tests/test_acquire.py ............F...........                           [ 19%]
-tests/test_features.py ................................................. [ 58%]
-                                                                         [ 58%]
-tests/test_ingest.py ....F..................                             [ 76%]
-tests/test_transform.py .............................                    [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-____________ TestDownloadLeaseFile.test_idempotency_skips_existing _____________
-../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:910: in assert_not_called
-    raise AssertionError(msg)
-E   AssertionError: Expected 'get' to not have been called. Called 1 times.
-E   Calls: [call('https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=564', timeout=30)].
-
-During handling of the above exception, another exception occurred:
-tests/test_acquire.py:167: in test_idempotency_skips_existing
-    mock_get.assert_not_called()
-E   AssertionError: Expected 'get' to not have been called. Called 1 times.
-E   Calls: [call('https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=564', timeout=30)].
-E   
-E   pytest introspection follows:
-E   
-E   Args:
-E   assert ('https://cha...ve?f_lc=564',) == ()
-E     
-E     Left contains one more item: 'https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc=564'
-E     Use -v to get more diff
-E   Kwargs:
-E   assert {'timeout': 30} == {}
-E     
-E     Left contains 1 more item:
-E     {'timeout': 30}
-E     Use -v to get more diff
-_________________ TestResolvePandasDtype.test_int_not_nullable _________________
-tests/test_ingest.py:118: in test_int_not_nullable
-    assert result == np.dtype("int64")
-E   AssertionError: assert Int64Dtype() == dtype('int64')
-E    +  where dtype('int64') = <class 'numpy.dtype'>('int64')
-E    +    where <class 'numpy.dtype'> = np.dtype
-=============================== warnings summary ===============================
-tests/test_transform.py::TestCleanCategoricals::test_invalid_product_replaced_with_na
-  /tests/test_transform.py:183: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
-    part = _make_partition(**{"PRODUCT": pd.Categorical(["X"], categories=["O", "G"])})
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_acquire.py::TestDownloadLeaseFile::test_idempotency_skips_existing
-FAILED tests/test_ingest.py::TestResolvePandasDtype::test_int_not_nullable - ...
-================== 2 failed, 123 passed, 1 warning in 19.58s ===================
+Type check failed. Fix these errors:
+/kgs_pipeline/acquire.py:146: error: Incompatible types in assignment (expression has type "str | list[str]", variable has type "str")  [assignment]
+Found 1 error in 1 file (checked 12 source files)
 
 ```
 
 ---
 
-## Eval Run at 2026-04-16 19:00:05
+## Eval Run at 2026-04-17 00:41:29
 
 **Status:** ✅ PASSED
 

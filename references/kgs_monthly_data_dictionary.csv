@@ -1,21 +1,22 @@
-﻿LEASE KID,Unique ID assigned by the Survey. Not necessarily permanent.
-LEASE,Lease name.
-DOR_CODE,ID code assigned by the Kansas Department of Revenue.
-API_NUMBER,"If the Kansas Geological Survey has made a link between one or more wells and the production data shown, then the API number(s) will be listed here."
-FIELD,Oil and gas field name that this production is assigned to.
-PRODUCING_ZONE,Producing formation. May be assigned from the field name or information that is associated with the well.
-OPERATOR,Operator of the lease. Updated by the Dept. of Revenue.
-COUNTY,County where lease is located.
-TOWNSHIP,"Public Land Survey System township number, 1-35 in Kansas."
-TWN_DIR,"Township direction. S (south) or N (north), Always south in Kansas"
-RANGE,"Public Land Survey System range number, 1-43 in west and 1-25 in east."
-RANGE_DIR,Range direction. E (east) or W (west).
-SECTION,The PLSS section the site is located in: 1-36
-SPOT,"The legal quarter description qualifiers list as NE, NW, SE, and SW, etc. May be pulled from well data or DOR information; of limited quality"
-LATITUDE,"NAD 1927, generated from the legal location."
-LONGITUDE,The latitude and longitude for production data is generally not as well defined as the location created for well data.
-MONTH-YEAR,Month and Year for the production information. Yearly data is indicated by Month=0; starting cumulative value indicated by Month=-1.
-PRODUCT,"O = oil, G = gas (including coalbed methane)."
-WELLS,Number of wells contributing to the lease. Of limited quality.
-PRODUCTION,Production of oil is in barrels; production of gas is in MCF (1000 cubic feet).
-URL,Some versions of the file include a URL to the main Lease Production web page.
+column,description,dtype,nullable,categories
+LEASE_KID,Unique ID assigned by the Survey. Not necessarily permanent.,int,no,
+LEASE,Lease name.,string,yes,
+DOR_CODE,ID code assigned by the Kansas Department of Revenue.,int,yes,
+API_NUMBER,"If the Kansas Geological Survey has made a link between one or more wells and the production data shown, then the API number(s) will be listed here.",string,yes,
+FIELD,Oil and gas field name that this production is assigned to.,string,yes,
+PRODUCING_ZONE,Producing formation. May be assigned from the field name or information that is associated with the well.,string,yes,
+OPERATOR,Operator of the lease. Updated by the Dept. of Revenue.,string,yes,
+COUNTY,County where lease is located.,string,yes,
+TOWNSHIP,"Public Land Survey System township number, 1-35 in Kansas.",int,yes,
+TWN_DIR,"Township direction. S (south) or N (north), Always south in Kansas",categorical,yes,S|N
+RANGE,"Public Land Survey System range number, 1-43 in west and 1-25 in east.",int,yes,
+RANGE_DIR,Range direction. E (east) or W (west).,categorical,yes,E|W
+SECTION,The PLSS section the site is located in: 1-36,int,yes,
+SPOT,"The legal quarter description qualifiers list as NE, NW, SE, and SW, etc. May be pulled from well data or DOR information; of limited quality",string,yes,
+LATITUDE,"NAD 1927, generated from the legal location.",float,yes,
+LONGITUDE,The latitude and longitude for production data is generally not as well defined as the location created for well data.,float,yes,
+MONTH-YEAR,Month and Year for the production information. Yearly data is indicated by Month=0; starting cumulative value indicated by Month=-1.,string,no,
+PRODUCT,"O = oil, G = gas (including coalbed methane).",categorical,no,O|G
+WELLS,Number of wells contributing to the lease. Of limited quality.,int,yes,
+PRODUCTION,Production of oil is in barrels; production of gas is in MCF (1000 cubic feet).,float,yes,
+URL,Some versions of the file include a URL to the main Lease Production web page.,string,yes,
