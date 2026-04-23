@@ -1,33 +1,46 @@
-"""Pipeline configuration loader."""
+"""Configuration loading for the KGS pipeline."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+_REQUIRED_SECTIONS = {"acquire", "ingest", "transform", "features", "dask", "logging"}
 
 
-def load_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
-    """Load pipeline configuration from a YAML file.
+def load_config(config_path: str | Path) -> dict[str, Any]:
+    """Read config.yaml and return its contents as a plain dict.
 
     Args:
-        path: Path to config.yaml. Defaults to repo-root config.yaml.
+        config_path: Path to the YAML configuration file.
 
     Returns:
-        Parsed configuration dictionary.
+        Configuration dict with all top-level sections.
 
     Raises:
-        FileNotFoundError: If the config file does not exist.
+        FileNotFoundError: If config_path does not exist.
+        ValueError: If the YAML is malformed or a required section is missing.
     """
-    config_path = Path(path)
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-    with config_path.open() as fh:
-        cfg: dict = yaml.safe_load(fh)
-    logger.debug("Loaded config from %s", config_path)
-    return cfg
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            config: dict[str, Any] = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Malformed YAML in {path}: {exc}") from exc
+
+    if not isinstance(config, dict):
+        raise ValueError(f"Config file {path} must be a YAML mapping at the top level")
+
+    for section in _REQUIRED_SECTIONS:
+        if section not in config:
+            raise ValueError(f"Required section '{section}' is missing from {path}")
+
+    return config

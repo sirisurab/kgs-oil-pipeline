@@ -1,309 +1,306 @@
-"""Tests for kgs_pipeline/ingest.py."""
+"""Unit and integration tests for kgs_pipeline/ingest.py."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import dask.dataframe as dd
 import pandas as pd
 import pytest
 
 from kgs_pipeline.ingest import (
-    EXPECTED_COLUMNS,
-    enforce_schema,
-    filter_by_year,
-    ingest_file,
-    load_schema,
-    read_raw_file,
-    validate_interim_schema,
-    write_interim,
+    build_dtype_map,
+    filter_date_range,
+    parse_raw_file,
 )
+from tests.conftest import make_raw_csv_file
 
-_DICT_PATH = "references/kgs_monthly_data_dictionary.csv"
+DICT_PATH = Path("references/kgs_monthly_data_dictionary.csv")
 
-
-# ---------------------------------------------------------------------------
-# ING-01: load_schema
-# ---------------------------------------------------------------------------
-
-
-def test_load_schema_returns_21_keys() -> None:
-    schema = load_schema(_DICT_PATH)
-    assert len(schema) == 20
-
-
-def test_load_schema_lease_kid_non_nullable_int64() -> None:
-    schema = load_schema(_DICT_PATH)
-    assert schema["LEASE_KID"]["nullable"] is False
-    assert schema["LEASE_KID"]["dtype"] == "int64"
-
-
-def test_load_schema_wells_nullable_int64() -> None:
-    schema = load_schema(_DICT_PATH)
-    assert schema["WELLS"]["nullable"] is True
-    assert schema["WELLS"]["dtype"] == "Int64"
-
-
-def test_load_schema_product_categories() -> None:
-    schema = load_schema(_DICT_PATH)
-    assert schema["PRODUCT"]["categories"] == ["O", "G"]
-
-
-def test_load_schema_township_nullable_int64() -> None:
-    schema = load_schema(_DICT_PATH)
-    assert schema["TOWNSHIP"]["nullable"] is True
-    assert schema["TOWNSHIP"]["dtype"] == "Int64"
-
-
-def test_load_schema_file_not_found() -> None:
-    with pytest.raises(FileNotFoundError):
-        load_schema("/nonexistent/data_dict.csv")
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# ING-02: read_raw_file
+# Task I-01: build_dtype_map
 # ---------------------------------------------------------------------------
 
 
-def _write_kgs_file(tmp_path: Path, rows: list[dict]) -> Path:
-    df = pd.DataFrame(rows)
-    p = tmp_path / "test_lease.txt"
-    df.to_csv(p, index=False, quoting=1)
-    return p
+class TestBuildDtypeMap:
+    def test_contains_all_columns(self) -> None:
+        dtype_map = build_dtype_map(DICT_PATH)
+        expected = [
+            "LEASE_KID", "LEASE", "DOR_CODE", "API_NUMBER", "FIELD",
+            "PRODUCING_ZONE", "OPERATOR", "COUNTY", "TOWNSHIP", "TWN_DIR",
+            "RANGE", "RANGE_DIR", "SECTION", "SPOT", "LATITUDE", "LONGITUDE",
+            "MONTH-YEAR", "PRODUCT", "WELLS", "PRODUCTION",
+        ]
+        for col in expected:
+            assert col in dtype_map, f"Missing column: {col}"
 
+    def test_nullable_int_uses_Int64(self) -> None:
+        dtype_map = build_dtype_map(DICT_PATH)
+        # WELLS is nullable=yes integer
+        assert dtype_map["WELLS"] == pd.Int64Dtype()
 
-def test_read_raw_file_adds_source_file(tmp_path: Path) -> None:
-    rows = [
-        {"LEASE_KID": "1", "PRODUCT": "O", "MONTH-YEAR": "1-2024", "PRODUCTION": "100.0"},
-    ]
-    p = _write_kgs_file(tmp_path, rows)
-    df = read_raw_file(p)
-    assert "source_file" in df.columns
-    assert df["source_file"].iloc[0] == p.name
+    def test_nonnullable_int_uses_int64(self) -> None:
+        dtype_map = build_dtype_map(DICT_PATH)
+        # LEASE_KID is nullable=no integer
+        assert dtype_map["LEASE_KID"] == "int64"
 
+    def test_nullable_string_uses_StringDtype(self) -> None:
+        dtype_map = build_dtype_map(DICT_PATH)
+        # LEASE is nullable=yes string
+        assert dtype_map["LEASE"] == pd.StringDtype()
 
-def test_read_raw_file_empty_bytes(tmp_path: Path) -> None:
-    p = tmp_path / "empty.txt"
-    p.write_bytes(b"")
-    df = read_raw_file(p)
-    assert df.empty
+    def test_float_columns_use_Float64(self) -> None:
+        dtype_map = build_dtype_map(DICT_PATH)
+        # PRODUCTION is float nullable=yes
+        assert dtype_map["PRODUCTION"] == pd.Float64Dtype()
 
+    def test_categorical_columns_use_CategoricalDtype(self) -> None:
+        dtype_map = build_dtype_map(DICT_PATH)
+        assert isinstance(dtype_map["PRODUCT"], pd.CategoricalDtype)
+        assert isinstance(dtype_map["TWN_DIR"], pd.CategoricalDtype)
 
-def test_read_raw_file_header_only(tmp_path: Path) -> None:
-    p = tmp_path / "header.txt"
-    p.write_text("LEASE_KID,PRODUCT\n", encoding="utf-8")
-    df = read_raw_file(p)
-    assert df.empty
-
-
-def test_read_raw_file_not_found(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
-        read_raw_file(tmp_path / "missing.txt")
-
-
-# ---------------------------------------------------------------------------
-# ING-03: filter_by_year
-# ---------------------------------------------------------------------------
-
-
-def test_filter_by_year_keeps_2024_onwards() -> None:
-    df = pd.DataFrame(
-        {
-            "MONTH-YEAR": ["1-2024", "12-2025", "3-2022", "-1-1965", "0-1966"],
-            "val": [1, 2, 3, 4, 5],
-        }
-    )
-    result = filter_by_year(df, min_year=2024)
-    assert set(result["MONTH-YEAR"]) == {"1-2024", "12-2025"}
-
-
-def test_filter_by_year_all_before_2024() -> None:
-    df = pd.DataFrame({"MONTH-YEAR": ["1-2020", "6-2022"], "val": [1, 2]})
-    result = filter_by_year(df, min_year=2024)
-    assert result.empty
-
-
-def test_filter_by_year_no_non_numeric_tokens() -> None:
-    df = pd.DataFrame({"MONTH-YEAR": ["1-2024", "2-2025"], "val": [1, 2]})
-    result = filter_by_year(df, min_year=2024)
-    assert len(result) == 2
+    def test_raises_file_not_found(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            build_dtype_map("/no/such/path.csv")
 
 
 # ---------------------------------------------------------------------------
-# ING-04: enforce_schema
+# Task I-02: parse_raw_file
 # ---------------------------------------------------------------------------
 
 
-def test_enforce_schema_adds_nullable_column() -> None:
-    schema = load_schema(_DICT_PATH)
-    # LEASE is nullable string
-    df = pd.DataFrame({"LEASE_KID": ["1"], "PRODUCT": ["O"], "MONTH-YEAR": ["1-2024"]})
-    result = enforce_schema(df, schema)
-    assert "LEASE" in result.columns
-    assert result["LEASE"].isna().all()
+class TestParseRawFile:
+    def test_returns_correct_dtypes(self, tmp_path: Path) -> None:
+        p = make_raw_csv_file(tmp_path / "lease1.txt")
+        dtype_map = build_dtype_map(DICT_PATH)
+        df = parse_raw_file(p, dtype_map)
+        assert isinstance(df["PRODUCTION"].dtype, pd.Float64Dtype)
+        assert isinstance(df["LEASE"].dtype, pd.StringDtype)
 
-
-def test_enforce_schema_raises_for_non_nullable_absent() -> None:
-    schema = load_schema(_DICT_PATH)
-    df = pd.DataFrame({"PRODUCT": ["O"], "MONTH-YEAR": ["1-2024"]})
-    with pytest.raises(ValueError, match="LEASE_KID"):
-        enforce_schema(df, schema)
-
-
-def test_enforce_schema_product_out_of_set_replaced() -> None:
-    schema = load_schema(_DICT_PATH)
-    df = pd.DataFrame(
-        {
-            "LEASE_KID": ["1"],
-            "PRODUCT": ["X"],
-            "MONTH-YEAR": ["1-2024"],
-        }
-    )
-    result = enforce_schema(df, schema)
-    assert result["PRODUCT"].isna().all()
-
-
-def test_enforce_schema_drops_extra_column() -> None:
-    schema = load_schema(_DICT_PATH)
-    df = pd.DataFrame(
-        {
-            "LEASE_KID": ["1"],
-            "PRODUCT": ["O"],
-            "MONTH-YEAR": ["1-2024"],
-            "URL": ["http://extra.com"],
-        }
-    )
-    result = enforce_schema(df, schema)
-    assert "URL" not in result.columns
-
-
-def test_enforce_schema_twn_dir_categorical() -> None:
-    schema = load_schema(_DICT_PATH)
-    df = pd.DataFrame(
-        {
-            "LEASE_KID": ["1"],
-            "PRODUCT": ["O"],
-            "MONTH-YEAR": ["1-2024"],
+    def test_missing_nullable_column_added_as_na(self, tmp_path: Path) -> None:
+        # Write a CSV without FIELD (nullable=yes)
+        import pandas as _pd
+        rows = {
+            "LEASE_KID": [1001],
+            "LEASE": ["Test"],
+            "DOR_CODE": [99],
+            "API_NUMBER": ["15-001-00001"],
+            # FIELD is omitted
+            "PRODUCING_ZONE": ["Zone A"],
+            "OPERATOR": ["Op"],
+            "COUNTY": ["Douglas"],
+            "TOWNSHIP": [12],
             "TWN_DIR": ["S"],
+            "RANGE": [20],
+            "RANGE_DIR": ["E"],
+            "SECTION": [5],
+            "SPOT": ["NENE"],
+            "LATITUDE": [38.9],
+            "LONGITUDE": [-95.2],
+            "MONTH-YEAR": ["1-2024"],
+            "PRODUCT": ["O"],
+            "WELLS": [2],
+            "PRODUCTION": [150.0],
         }
-    )
-    result = enforce_schema(df, schema)
-    assert hasattr(result["TWN_DIR"], "cat")
-    assert set(result["TWN_DIR"].cat.categories) == {"S", "N"}
+        p = tmp_path / "no_field.txt"
+        _pd.DataFrame(rows).to_csv(p, index=False)
+        dtype_map = build_dtype_map(DICT_PATH)
+        df = parse_raw_file(p, dtype_map)
+        assert "FIELD" in df.columns
+        assert df["FIELD"].isna().all()
 
+    def test_raises_for_missing_non_nullable_column(self, tmp_path: Path) -> None:
+        # Write CSV without LEASE_KID (nullable=no)
+        df = pd.DataFrame({"MONTH-YEAR": ["1-2024"], "PRODUCT": ["O"]})
+        p = tmp_path / "no_lk.txt"
+        df.to_csv(p, index=False)
+        dtype_map = build_dtype_map(DICT_PATH)
+        with pytest.raises(ValueError, match="LEASE_KID"):
+            parse_raw_file(p, dtype_map)
 
-# ---------------------------------------------------------------------------
-# ING-05: ingest_file
-# ---------------------------------------------------------------------------
+    def test_empty_file_returns_empty_dataframe(self, tmp_path: Path) -> None:
+        p = tmp_path / "empty.txt"
+        p.write_text("")
+        dtype_map = build_dtype_map(DICT_PATH)
+        df = parse_raw_file(p, dtype_map)
+        assert len(df) == 0
+        assert "LEASE_KID" in df.columns
 
-
-def _make_full_raw_file(tmp_path: Path) -> Path:
-    rows = [
-        {
-            "LEASE_KID": "1001",
-            "LEASE": "TEST",
-            "DOR_CODE": "5001",
-            "API_NUMBER": "15-001-00001",
-            "FIELD": "KANASKA",
-            "PRODUCING_ZONE": "Lansing",
-            "OPERATOR": "TestCo",
-            "COUNTY": "Ellis",
-            "TOWNSHIP": "1",
-            "TWN_DIR": "S",
-            "RANGE": "14",
-            "RANGE_DIR": "E",
-            "SECTION": "1",
-            "SPOT": "NE",
-            "LATITUDE": "38.5",
-            "LONGITUDE": "-99.0",
-            "MONTH-YEAR": my,
-            "PRODUCT": "O",
-            "WELLS": "2",
-            "PRODUCTION": "100.0",
+    def test_latin1_file_parsed_without_error(self, tmp_path: Path, caplog: Any) -> None:
+        import logging
+        rows = {
+            "LEASE_KID": [1001],
+            "LEASE": ["Sch\xe4fer"],  # latin-1 character
+            "DOR_CODE": [99],
+            "API_NUMBER": ["15-001-00001"],
+            "FIELD": ["Test"],
+            "PRODUCING_ZONE": ["Zone"],
+            "OPERATOR": ["Op"],
+            "COUNTY": ["Douglas"],
+            "TOWNSHIP": [12],
+            "TWN_DIR": ["S"],
+            "RANGE": [20],
+            "RANGE_DIR": ["E"],
+            "SECTION": [5],
+            "SPOT": ["NENE"],
+            "LATITUDE": [38.9],
+            "LONGITUDE": [-95.2],
+            "MONTH-YEAR": ["1-2024"],
+            "PRODUCT": ["O"],
+            "WELLS": [2],
+            "PRODUCTION": [150.0],
         }
-        for my in ["1-2024", "6-2025", "3-2022", "12-2020"]
-    ]
-    df = pd.DataFrame(rows)
-    p = tmp_path / "lease_file.txt"
-    df.to_csv(p, index=False, quoting=1)
-    return p
+        p = tmp_path / "latin1.txt"
+        content = pd.DataFrame(rows).to_csv(index=False).encode("latin-1")
+        p.write_bytes(content)
+        dtype_map = build_dtype_map(DICT_PATH)
+        with caplog.at_level(logging.WARNING):
+            df = parse_raw_file(p, dtype_map)
+        assert len(df) == 1
+        assert any("latin-1" in r.message for r in caplog.records)
 
-
-def test_ingest_file_year_filter(tmp_path: Path) -> None:
-    p = _make_full_raw_file(tmp_path)
-    schema = load_schema(_DICT_PATH)
-    result = ingest_file(p, schema, min_year=2024)
-    assert not result.empty
-    # Only 2024+ rows
-    assert all(int(my.split("-")[-1]) >= 2024 for my in result.get("MONTH-YEAR", pd.Series()))
-
-
-def test_ingest_file_all_before_min_year(tmp_path: Path) -> None:
-    rows = [{"LEASE_KID": "1", "PRODUCT": "O", "MONTH-YEAR": "1-2000", "PRODUCTION": "50.0"}]
-    df = pd.DataFrame(rows)
-    p = tmp_path / "old.txt"
-    df.to_csv(p, index=False, quoting=1)
-    schema = load_schema(_DICT_PATH)
-    result = ingest_file(p, schema, min_year=2024)
-    assert result.empty
-
-
-def test_ingest_file_missing_non_nullable_raises(tmp_path: Path) -> None:
-    # Missing LEASE_KID
-    rows = [{"PRODUCT": "O", "MONTH-YEAR": "1-2024"}]
-    df = pd.DataFrame(rows)
-    p = tmp_path / "bad.txt"
-    df.to_csv(p, index=False, quoting=1)
-    schema = load_schema(_DICT_PATH)
-    with pytest.raises(ValueError, match="LEASE_KID"):
-        ingest_file(p, schema, min_year=2024)
+    def test_source_file_column_present(self, tmp_path: Path) -> None:
+        p = make_raw_csv_file(tmp_path / "myfile.txt")
+        dtype_map = build_dtype_map(DICT_PATH)
+        df = parse_raw_file(p, dtype_map)
+        assert "source_file" in df.columns
+        assert all(df["source_file"] == "myfile")
 
 
 # ---------------------------------------------------------------------------
-# ING-07 + ING-08: write_interim and validate_interim_schema
+# Task I-03: filter_date_range
 # ---------------------------------------------------------------------------
 
 
-def test_write_interim_creates_parquet(tmp_path: Path) -> None:
-    rows = {
-        "LEASE_KID": pd.array([1, 2, 3], dtype="int64"),
-        "PRODUCT": pd.Categorical(["O", "G", "O"], categories=["G", "O"]),
-        "MONTH-YEAR": pd.array(["1-2024", "2-2024", "3-2024"], dtype="string"),
+class TestFilterDateRange:
+    def test_keeps_2024_and_2025(self) -> None:
+        df = pd.DataFrame({
+            "MONTH-YEAR": ["1-2022", "6-2023", "3-2024", "11-2025"],
+        })
+        result = filter_date_range(df)
+        assert set(result["MONTH-YEAR"]) == {"3-2024", "11-2025"}
+
+    def test_drops_malformed_without_exception(self) -> None:
+        df = pd.DataFrame({
+            "MONTH-YEAR": ["-1-1965", "0-1966", "5-2024"],
+        })
+        result = filter_date_range(df)
+        assert len(result) == 1
+
+    def test_min_year_param(self) -> None:
+        df = pd.DataFrame({
+            "MONTH-YEAR": ["1-2024", "1-2025", "1-2023"],
+        })
+        result = filter_date_range(df, min_year=2025)
+        assert set(result["MONTH-YEAR"]) == {"1-2025"}
+
+    def test_all_before_min_year_returns_empty(self) -> None:
+        df = pd.DataFrame({
+            "MONTH-YEAR": ["1-2022", "2-2023"],
+            "X": [1, 2],
+        })
+        result = filter_date_range(df)
+        assert len(result) == 0
+        assert list(result.columns) == list(df.columns)
+
+    def test_raises_keyerror_on_missing_column(self) -> None:
+        df = pd.DataFrame({"OTHER": ["1-2024"]})
+        with pytest.raises(KeyError):
+            filter_date_range(df)
+
+
+# ---------------------------------------------------------------------------
+# Task I-04: ingest (integration)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestIngest:
+    def test_returns_dask_dataframe(self, tmp_path: Path) -> None:
+        from kgs_pipeline.ingest import ingest
+
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        make_raw_csv_file(raw / "lease1.txt")
+        make_raw_csv_file(raw / "lease2.txt", lease_kids=[2001, 2002])
+        interim = tmp_path / "interim"
+
+        cfg = _make_ingest_config(str(raw), str(interim))
+        result = ingest(cfg)
+        assert isinstance(result, dd.DataFrame)
+
+    def test_raises_when_no_txt_files(self, tmp_path: Path) -> None:
+        from kgs_pipeline.ingest import ingest
+
+        raw = tmp_path / "raw_empty"
+        raw.mkdir()
+        interim = tmp_path / "interim"
+        cfg = _make_ingest_config(str(raw), str(interim))
+        with pytest.raises(FileNotFoundError):
+            ingest(cfg)
+
+    def test_parquet_is_readable_after_ingest(self, tmp_path: Path) -> None:
+        from kgs_pipeline.ingest import ingest
+
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        make_raw_csv_file(raw / "lease1.txt")
+        interim = tmp_path / "interim"
+
+        cfg = _make_ingest_config(str(raw), str(interim))
+        ingest(cfg)
+
+        read_back = dd.read_parquet(str(interim))
+        assert isinstance(read_back, dd.DataFrame)
+
+    def test_schema_completeness(self, tmp_path: Path) -> None:
+        from kgs_pipeline.ingest import ingest
+
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        make_raw_csv_file(raw / "lease1.txt")
+        make_raw_csv_file(raw / "lease2.txt", lease_kids=[2001])
+        make_raw_csv_file(raw / "lease3.txt", lease_kids=[3001])
+        interim = tmp_path / "interim"
+
+        cfg = _make_ingest_config(str(raw), str(interim))
+        ingest(cfg)
+
+        read_back = dd.read_parquet(str(interim)).compute()
+        required_cols = [
+            "LEASE_KID", "LEASE", "API_NUMBER", "MONTH-YEAR", "PRODUCT",
+            "PRODUCTION", "WELLS", "OPERATOR", "COUNTY", "source_file",
+        ]
+        for col in required_cols:
+            assert col in read_back.columns, f"Missing column: {col}"
+
+    def test_malformed_file_skipped_valid_processed(self, tmp_path: Path) -> None:
+        from kgs_pipeline.ingest import ingest
+
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        make_raw_csv_file(raw / "good.txt")
+        # Malformed file — missing required LEASE_KID column
+        bad = raw / "bad.txt"
+        bad.write_text("MONTH-YEAR,PRODUCT\n1-2024,O\n")
+        interim = tmp_path / "interim"
+
+        cfg = _make_ingest_config(str(raw), str(interim))
+        # Should not raise — bad file is logged and skipped
+        result = ingest(cfg)
+        assert isinstance(result, dd.DataFrame)
+
+
+def _make_ingest_config(raw_dir: str, interim_path: str) -> dict[str, Any]:
+    return {
+        "ingest": {
+            "raw_dir": raw_dir,
+            "interim_path": interim_path,
+            "min_year": 2024,
+            "dict_path": str(Path("references/kgs_monthly_data_dictionary.csv")),
+        }
     }
-    df = pd.DataFrame(rows)
-    ddf = dd.from_pandas(df, npartitions=1)
-
-    config = {"ingest": {"interim_dir": str(tmp_path / "interim")}}
-    write_interim(ddf, config)
-
-    parquet_files = list((tmp_path / "interim").glob("*.parquet"))
-    assert len(parquet_files) >= 1
-
-
-def test_validate_interim_schema_passes(tmp_path: Path) -> None:
-    interim = tmp_path / "interim"
-    interim.mkdir()
-    for i in range(3):
-        df = pd.DataFrame({col: ["val"] for col in EXPECTED_COLUMNS})
-        df.to_parquet(interim / f"part_{i}.parquet")
-    validate_interim_schema(interim, EXPECTED_COLUMNS)  # Should not raise
-
-
-def test_validate_interim_schema_missing_column(tmp_path: Path) -> None:
-    interim = tmp_path / "interim"
-    interim.mkdir()
-    cols_missing_operator = [c for c in EXPECTED_COLUMNS if c != "OPERATOR"]
-    df = pd.DataFrame({col: ["x"] for col in cols_missing_operator})
-    df.to_parquet(interim / "part_0.parquet")
-    with pytest.raises(ValueError, match="OPERATOR"):
-        validate_interim_schema(interim, EXPECTED_COLUMNS)
-
-
-def test_validate_interim_schema_missing_source_file(tmp_path: Path) -> None:
-    interim = tmp_path / "interim"
-    interim.mkdir()
-    cols = [c for c in EXPECTED_COLUMNS if c != "source_file"]
-    df = pd.DataFrame({col: ["x"] for col in cols})
-    df.to_parquet(interim / "part_0.parquet")
-    with pytest.raises(ValueError, match="source_file"):
-        validate_interim_schema(interim, EXPECTED_COLUMNS)

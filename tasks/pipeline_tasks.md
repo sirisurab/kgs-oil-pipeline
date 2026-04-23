@@ -1,265 +1,202 @@
-# Pipeline Orchestrator Component Tasks
+# Pipeline Orchestration Tasks
 
-**Module:** `kgs_pipeline/pipeline.py`
+**Modules:** `kgs_pipeline/pipeline.py`, `kgs_pipeline/config.py`
 **Test file:** `tests/test_pipeline.py`
 
-## Overview
-
-The pipeline orchestrator ties all four stages (acquire, ingest, transform, features) into
-a single end-to-end runnable entry point. It accepts CLI arguments controlling which years
-to process, which stages to run, and how many parallel workers to use. It logs structured
-per-stage timing information and handles stage-level errors gracefully, reporting which
-stage failed without crashing the entire process.
-
-The full pipeline can be invoked as:
-
-```
-python -m kgs_pipeline.pipeline --min-year 2024 --workers 5
-```
-
-or via the registered console script:
-
-```
-kgs-pipeline --min-year 2024 --workers 5
-```
-
-## Design Decisions
-
-- Package name: `kgs_pipeline`; orchestrator lives at `kgs_pipeline/pipeline.py`.
-- Logging: structured JSON via `kgs_pipeline.logging_utils.get_logger`; log stage name,
-  start time, end time, and duration in seconds for every stage.
-- Stage selection: the `--stages` argument accepts a space-separated list from
-  `["acquire", "ingest", "transform", "features"]`. If omitted, all four stages run.
-- Error handling: each stage is wrapped in a `try/except`. On failure, the error is
-  logged and `SystemExit(1)` is raised. Downstream stages are not run if an upstream
-  stage fails (stages are sequential, not independent).
-- CLI entry point registered in `pyproject.toml`:
-  `kgs-pipeline = "kgs_pipeline.pipeline:main"`
-- All directory paths default to values from `kgs_pipeline.config`.
-- `pyproject.toml` build-backend: `"setuptools.build_meta"` — never
-  `"setuptools.backends.legacy:build"`.
+Read `ADRs.md` (ADR-001, ADR-005, ADR-006, ADR-007, ADR-008) and
+`build-env-manifest.md` in full before implementing any task in this file.
+`build-env-manifest.md` is the authoritative source for all entry point, Makefile,
+configuration structure, Dask scheduler initialization, and logging requirements.
 
 ---
 
-## Task 01: Pipeline orchestrator function
+## Task P-01: Configuration loading
 
-**Module:** `kgs_pipeline/pipeline.py`
-**Function:** `run_pipeline(index_path: str, raw_dir: str, interim_dir: str, processed_dir: str, features_dir: str, min_year: int = 2024, workers: int = 5, stages: list[str] | None = None) -> dict`
+**Module:** `kgs_pipeline/config.py`
+**Function:** `load_config(config_path: str | Path) -> dict`
 
-**Description:**
-Implement the top-level pipeline runner that chains all four stages in order. When
-`stages` is `None`, all four stages run. When `stages` is provided, only the listed
-stages run (in pipeline order, regardless of the order they are listed in the argument).
-
-Stage execution order (when included):
-1. `"acquire"` — calls `run_acquire(index_path, raw_dir, min_year, workers)` → list of
-   downloaded `Path` objects.
-2. `"ingest"` — calls `run_ingest(raw_dir, interim_dir, min_year)` → interim file count
-   (integer).
-3. `"transform"` — calls `run_transform(interim_dir, processed_dir)` → processed file
-   count (integer).
-4. `"features"` — calls `run_features(processed_dir, features_dir)` → manifest `Path`.
-
-Return a summary dict with keys populated for the stages that were run:
-- `"acquired"`: count of downloaded paths (acquire stage), or `None` if skipped.
-- `"interim_files"`: interim file count (ingest stage), or `None` if skipped.
-- `"processed_files"`: processed file count (transform stage), or `None` if skipped.
-- `"manifest"`: string path to manifest JSON (features stage), or `None` if skipped.
-
-Timing: record `time.perf_counter()` before and after each stage call. Log a JSON
-message per stage: `{"stage": "acquire", "status": "completed", "duration_seconds": N}`.
+**Description:** Read `config.yaml` from `config_path` and return its contents as a
+plain Python dict. The configuration structure must conform to the top-level sections
+defined in `build-env-manifest.md`: `acquire`, `ingest`, `transform`, `features`,
+`dask`, and `logging`. All configurable values for every pipeline stage must be read
+from this file — no configurable values may be hardcoded in pipeline code
+(`build-env-manifest.md`).
 
 **Error handling:**
-- Catch any exception raised by a stage function. Log `{"stage": name, "status": "failed",
-  "error": str(e)}`. Re-raise as `RuntimeError` so `main()` can catch it and exit with
-  code 1.
-- Validate that every element of `stages` is one of the four valid stage names. Raise
-  `ValueError` for unrecognised stage names.
+- If `config_path` does not exist, raise `FileNotFoundError` with a descriptive
+  message.
+- If the YAML is malformed or missing a required top-level section, raise
+  `ValueError` with the name of the missing section.
 
-**Dependencies:** `time`, `kgs_pipeline.acquire`, `kgs_pipeline.ingest`,
-`kgs_pipeline.transform`, `kgs_pipeline.features`, `kgs_pipeline.logging_utils`,
-`kgs_pipeline.config`
+**Dependencies:** PyYAML, pathlib
 
-**Test cases:**
+**Test cases (unit):**
+- Given a valid `config.yaml` with all required sections, assert the returned dict
+  contains all six top-level keys.
+- Given a config file missing the `dask` section, assert `ValueError` is raised.
+- Given a path to a non-existent file, assert `FileNotFoundError` is raised.
+- Given a malformed YAML file, assert an appropriate exception is raised.
 
-- `@pytest.mark.unit` — Mock all four `run_*` functions. Call `run_pipeline` with
-  `stages=None` (all stages). Assert all four mocks were called exactly once and the
-  returned dict contains keys `"acquired"`, `"interim_files"`, `"processed_files"`,
-  `"manifest"`.
-- `@pytest.mark.unit` — Mock all four `run_*` functions. Call `run_pipeline` with
-  `stages=["ingest", "transform"]`. Assert only `run_ingest` and `run_transform` mocks
-  were called; `run_acquire` and `run_features` mocks were not called.
-- `@pytest.mark.unit` — Given `stages=["acquire", "ingest", "transform", "features"]`,
-  assert they execute in pipeline order regardless of the list order provided (test by
-  checking mock call order using `unittest.mock.call_args_list`).
-- `@pytest.mark.unit` — Given `run_acquire` raises `RuntimeError("network error")`,
-  assert `run_pipeline` raises `RuntimeError` and `run_ingest` is never called.
-- `@pytest.mark.unit` — Given `stages=["unknown_stage"]`, assert `ValueError` is raised
-  before any stage mock is called.
-- `@pytest.mark.unit` — Assert each stage's duration is logged (check that the logger
-  receives a message containing `"duration_seconds"` after each stage completes).
-
-**Definition of done:** Function implemented, all tests pass, `ruff` and `mypy` report
-no errors. `requirements.txt` updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 02: CLI entry point for full pipeline
+## Task P-02: Logging setup
 
 **Module:** `kgs_pipeline/pipeline.py`
-**Entry point:** `main()` function and `if __name__ == "__main__"` block
+**Function:** `setup_logging(config: dict) -> None`
 
-**Description:**
-Implement `main()` as the CLI entry point for the full pipeline using `argparse`.
+**Description:** Configure the root logger to write to both the console and a log
+file simultaneously (ADR-006). The log file path and log level must be read from the
+`logging` section of `config` — not hardcoded. Create the log output directory if it
+does not exist before opening the file handler. This function must be called at
+pipeline startup before any stage runs — stages must not configure their own handlers
+(ADR-006).
 
-Arguments:
-- `--index-path`: path to the lease index file (default from `config.LEASE_INDEX_PATH`).
-- `--raw-dir`: directory for raw downloaded files (default from `config.RAW_DATA_DIR`).
-- `--interim-dir`: directory for interim Parquet output (default from
-  `config.INTERIM_DATA_DIR`).
-- `--processed-dir`: directory for processed Parquet output (default from
-  `config.PROCESSED_DATA_DIR`).
-- `--features-dir`: directory for feature Parquet output (default from
-  `config.FEATURES_DATA_DIR`).
-- `--min-year`: integer, minimum year to include in the pipeline (default `2024`). Also
-  accepted as `--start-year` (alias).
-- `--end-year`: integer, reserved for future use. If provided, log a warning that
-  `--end-year` is not yet implemented and the argument is ignored.
-- `--workers`: integer, number of parallel download workers (default `5`).
-- `--stages`: zero or more stage names from `["acquire", "ingest", "transform",
-  "features"]`. If not provided, all stages run. Example:
-  `--stages acquire ingest` runs only the first two stages.
+**Error handling:**
+- If the `logging` key or required sub-keys (`log_file`, `level`) are absent from
+  `config`, raise `KeyError`.
+- If the log directory cannot be created (e.g. permission error), let the OS
+  exception propagate.
 
-Behaviour:
-1. Parse arguments.
-2. Log pipeline start: `{"event": "pipeline_start", "min_year": N, "stages": [...], "workers": W}`.
-3. Call `run_pipeline(...)` with the parsed arguments.
-4. Log pipeline completion: `{"event": "pipeline_complete", "summary": {...}}`.
-5. Exit with code `0` on success, `1` on `RuntimeError` or unhandled exception.
+**Dependencies:** logging, pathlib
 
-Register in `pyproject.toml` under `[project.scripts]`:
-`kgs-pipeline = "kgs_pipeline.pipeline:main"`
+**Test cases (unit):**
+- Given a config with `log_file` and `level` set, assert both a `StreamHandler`
+  and a `FileHandler` are attached to the root logger after the call.
+- Assert the log directory is created if it does not exist.
+- Given a config missing the `logging` key, assert `KeyError` is raised.
 
-**Dependencies:** `argparse`, `sys`, `kgs_pipeline.config`, `kgs_pipeline.logging_utils`
-
-**Test cases:**
-
-- `@pytest.mark.unit` — Patch `run_pipeline`. Set `sys.argv` to
-  `["pipeline", "--workers", "3", "--min-year", "2024"]`. Assert `run_pipeline` was
-  called with `workers=3` and `min_year=2024`.
-- `@pytest.mark.unit` — Patch `run_pipeline`. Set `sys.argv` to
-  `["pipeline", "--stages", "acquire", "ingest"]`. Assert `run_pipeline` was called with
-  `stages=["acquire", "ingest"]`.
-- `@pytest.mark.unit` — Patch `run_pipeline` to raise `RuntimeError("stage failed")`.
-  Assert `main()` catches it and raises `SystemExit` with code `1`.
-- `@pytest.mark.unit` — Set `sys.argv` to include `--end-year 2025`. Assert `main()`
-  does not raise and a warning is logged about `--end-year` being ignored.
-- `@pytest.mark.unit` — Set `sys.argv` to `["pipeline"]` (no arguments). Assert
-  `main()` runs without error and calls `run_pipeline` with all four stages.
-
-**Definition of done:** `main()` implemented, console script registered in
-`pyproject.toml`, all tests pass, `ruff` and `mypy` report no errors.
-`requirements.txt` updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 03: README and requirements.txt
+## Task P-03: Dask scheduler initialization
 
-**Files:** `README.md`, `requirements.txt`
+**Module:** `kgs_pipeline/pipeline.py`
+**Function:** `init_scheduler(config: dict) -> distributed.Client`
 
-**Description:**
-Write the project `README.md` and ensure `requirements.txt` is complete.
+**Description:** Initialize the Dask distributed scheduler after acquire completes
+and before ingest begins, using the `dask` section of `config`
+(`build-env-manifest.md`). If `config["dask"]["scheduler"]` is `"local"`, create a
+local `distributed.LocalCluster` with `n_workers`, `threads_per_worker`, and
+`memory_limit` from config and return a `distributed.Client` connected to it. If
+`config["dask"]["scheduler"]` is a URL string, connect to the remote scheduler at
+that address and return the `Client`. Log the dashboard URL after initialization
+(`build-env-manifest.md`). Individual stages must reuse an existing client — they
+must not initialize their own cluster when invoked through the pipeline entry point.
 
-`README.md` must include the following sections:
+**Error handling:**
+- If the `dask` key or required sub-keys are absent from `config`, raise `KeyError`.
+- If a remote scheduler URL is unreachable, let the `distributed` exception
+  propagate — do not silently swallow it.
 
-1. **Project Overview** — one-paragraph description of the KGS oil & gas production data
-   pipeline, its purpose (ingest 2024-2025 KGS Kansas lease production data for ML and
-   analytics workflows), and the data source (KGS public data portal).
+**Dependencies:** dask, distributed
 
-2. **Directory Structure** — a tree diagram showing:
-   ```
-   kgs_pipeline/       <- pipeline package
-   tests/              <- pytest test suite
-   data/
-     external/         <- lease index
-     raw/              <- downloaded lease files
-     interim/          <- ingested Parquet
-     processed/        <- cleaned Parquet
-     features/         <- ML-ready Parquet + manifest.json
-   references/         <- data dictionaries
-   logs/               <- pipeline log files
-   ```
+**Test cases (unit):**
+- Given a config with `scheduler: "local"`, assert `init_scheduler` returns a
+  `distributed.Client` instance.
+- Assert the dashboard URL is logged after initialization.
+- Given a config missing `dask.n_workers`, assert `KeyError` is raised.
 
-3. **Setup** — step-by-step instructions:
-   - Requires Python 3.11+
-   - `make env` to create the virtual environment
-   - `make install` to install all dependencies
-   - Place the lease index file at `data/external/oil_leases_2020_present.txt`
-
-4. **Usage** — command examples:
-   - Run the full pipeline:
-     `kgs-pipeline --min-year 2024 --workers 5`
-   - Run individual stages:
-     `kgs-acquire --min-year 2024 --workers 5`
-     `kgs-ingest --min-year 2024`
-     `kgs-transform`
-     `kgs-features`
-   - Run tests: `make test`
-   - Run linter: `make lint`
-   - Run type checker: `make typecheck`
-
-5. **Pipeline Stages** — a table with one row per stage describing its input, output,
-   and key operations:
-   | Stage | Input | Output | Key operations |
-   |-------|-------|--------|----------------|
-   | Acquire | `data/external/oil_leases_2020_present.txt` | `data/raw/*.txt` | HTTP two-step download, Dask parallel |
-   | Ingest | `data/raw/*.txt` | `data/interim/*.parquet` | CSV parse, year filter, Parquet write |
-   | Transform | `data/interim/*.parquet` | `data/processed/*.parquet` | Pivot, type cast, deduplicate, outlier flag |
-   | Features | `data/processed/*.parquet` | `data/features/*.parquet` + `manifest.json` | GOR, water cut, cumulative, rolling, lag |
-
-6. **Data Dictionary** — a note directing the reader to `references/kgs_monthly_data_dictionary.csv`
-   for column descriptions of the raw KGS lease files.
-
-7. **Configuration** — description of all tuneable parameters in `kgs_pipeline/config.py`,
-   including environment variable overrides.
-
-`requirements.txt` must list every third-party package used across all pipeline modules
-with pinned or minimum-version constraints. It must include at minimum:
-`requests`, `beautifulsoup4`, `lxml`, `dask[complete]`, `pandas`, `pyarrow`,
-`scikit-learn`, `numpy`, `urllib3`, `pytest`, `pytest-mock`, `ruff`, `mypy`,
-`pandas-stubs`, `types-requests`.
-
-**Test cases:** None for this task (documentation only).
-
-**Definition of done:** `README.md` written with all six sections above. `requirements.txt`
-present and complete. `ruff` reports no errors on the pipeline package.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task 04: End-to-end integration test
+## Task P-04: Pipeline entry point and stage orchestration
 
-**Module:** `tests/test_pipeline.py`
+**Module:** `kgs_pipeline/pipeline.py`
+**Function:** `main(stages: list[str] | None = None) -> None`
 
-**Description:**
-Implement integration and orchestration tests for the pipeline module in
-`tests/test_pipeline.py`. These complement the unit tests in Tasks 01 and 02.
+**Description:** Implement the CLI entry point that chains all pipeline stages in
+order: `acquire → ingest → transform → features`. The `stages` argument is an
+optional list of stage names to run; if `None` or empty, all four stages are run in
+order (`build-env-manifest.md`). The entry point must:
+1. Read all settings from `config.yaml` via `load_config`.
+2. Call `setup_logging` before any stage runs (ADR-006).
+3. Run the `acquire` stage first.
+4. Call `init_scheduler` after acquire completes and before ingest begins
+   (`build-env-manifest.md`).
+5. Run `ingest`, `transform`, and `features` in order, reusing the scheduler client
+   initialized in step 4.
+6. Log per-stage timing and errors (ADR-006).
+7. Stop execution on stage failure — downstream stages must not run if an upstream
+   stage fails (`build-env-manifest.md`).
 
-**Test cases:**
+The entry point must be registered in the package configuration so it is runnable as
+a CLI command (`build-env-manifest.md`). Independent computations within the same
+stage must be batched into a single Dask compute call — sequential `.compute()` calls
+on independent results are prohibited (ADR-005).
 
-- `@pytest.mark.unit` — Call `run_pipeline` with all four stage mocks returning valid
-  values (acquire returns `[Path("data/raw/lp1.txt")]`, ingest returns `2`, transform
-  returns `3`, features returns `Path("data/features/manifest.json")`). Assert the
-  returned summary dict is:
-  `{"acquired": 1, "interim_files": 2, "processed_files": 3, "manifest": "data/features/manifest.json"}`.
-- `@pytest.mark.unit` — Assert that when `stages=["transform", "features"]` only, the
-  returned dict has `"acquired": None` and `"interim_files": None`.
-- `@pytest.mark.unit` — Assert that calling `run_pipeline` with `workers=10` passes
-  `max_workers=10` (or `workers=10`) through to `run_acquire`.
-- `@pytest.mark.integration` — Given a fully populated pipeline run (all stages have
-  previously executed successfully and `data/features/` contains Parquet files and a
-  `manifest.json`), call `run_pipeline` with `stages=["features"]` only and assert the
-  manifest `Path` returned exists on disk and is valid JSON.
+**Error handling:**
+- If a stage raises an exception, log it at ERROR level with the stage name and
+  elapsed time, then re-raise to stop execution.
+- If `config.yaml` is not found, raise `FileNotFoundError` before any stage runs.
 
-**Definition of done:** All test cases implemented in `tests/test_pipeline.py`, all unit
-tests pass without network access, `ruff` and `mypy` report no errors.
-`requirements.txt` updated with all third-party packages imported in this task.
+**Dependencies:** dask, distributed, logging, time, pathlib
+
+**Test cases (unit):**
+- Given a config that specifies `stages: ["acquire"]`, assert only the acquire
+  function is called and the scheduler is not initialized.
+- Given a config that specifies all stages, assert the stages are called in order
+  and each stage's elapsed time is logged.
+- Given a stage that raises an exception, assert the subsequent stages are not
+  called and the exception is re-raised.
+- Assert `setup_logging` is called before any stage function.
+
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
+
+---
+
+## Task P-05: Package configuration and build artefacts
+
+**Module:** `pyproject.toml`, `Makefile`, `config.yaml`, `.gitignore`, `requirements.txt`
+**Function:** N/A (configuration and build artefacts)
+
+**Description:** Create all build and environment artefacts required by
+`build-env-manifest.md`:
+
+**`pyproject.toml`:**
+- Declare the build backend explicitly — do not rely on setuptools defaults
+  (`build-env-manifest.md`).
+- Register the CLI entry point so the pipeline is runnable as a command.
+- List all runtime and development dependencies.
+- Runtime dependencies must include the Dask dashboard library
+  (`build-env-manifest.md`).
+- Development dependencies must include type stub packages for pandas and the HTTP
+  request library (`build-env-manifest.md`).
+
+**`Makefile`:**
+- Provide targets: `venv`, `install`, `acquire`, `ingest`, `transform`, `features`,
+  `pipeline`.
+- The `pipeline` target must run all four stages in order using exactly one
+  invocation approach — not both chained targets and an entry point call in the same
+  recipe (a dual invocation runs every stage twice, `build-env-manifest.md`).
+- The `install` target must bootstrap the package installer before installing
+  project dependencies (`build-env-manifest.md`).
+
+**`config.yaml`:**
+- Must contain all six top-level sections defined in `build-env-manifest.md`:
+  `acquire`, `ingest`, `transform`, `features`, `dask`, `logging`.
+- Must contain all stage-specific settings consumed by each stage's `config` dict.
+
+**`.gitignore`:**
+- Must exclude: `data/`, `logs/`, `large_tool_results/`, `conversation_history/`
+  (`build-env-manifest.md`).
+
+**`requirements.txt`:**
+- Must list all third-party runtime packages imported anywhere in the pipeline.
+
+**Test cases (unit):**
+- Assert `pyproject.toml` declares a build backend explicitly.
+- Assert the CLI entry point is registered in `pyproject.toml`.
+- Assert `config.yaml` contains all six required top-level sections.
+- Assert `.gitignore` contains entries for `data/` and `logs/`.
+
+**Definition of done:** All artefacts are present and valid, the package installs
+cleanly via `pip install -e .`, the CLI entry point is runnable, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.

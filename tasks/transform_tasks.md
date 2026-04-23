@@ -1,383 +1,261 @@
-# Transform Stage — Task Specifications
+# Transform Stage Tasks
 
 **Module:** `kgs_pipeline/transform.py`
-**Stage manifest:** `agent_docs/stage-manifest-transform.md`
-**Boundary contracts:** `agent_docs/boundary-ingest-transform.md` (input),
-`agent_docs/boundary-transform-features.md` (output)
-**ADRs in force:** ADR-001, ADR-002, ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-008
+**Test file:** `tests/test_transform.py`
+
+Read `stage-manifest-transform.md`, `boundary-ingest-transform.md`,
+`boundary-transform-features.md`, `ADRs.md` (ADR-001, ADR-002, ADR-003, ADR-004,
+ADR-005, ADR-007, ADR-008), and `build-env-manifest.md` before implementing any
+task in this file.
+
+Input state is defined in `boundary-ingest-transform.md`. Output state is defined
+in `boundary-transform-features.md`. Every task must satisfy both contracts at its
+respective stage boundary.
 
 ---
 
-## Task TRN-01: Implement production date parser
+## Task T-01: Parse and validate the production date column
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `parse_production_date(df: pandas.DataFrame) -> pandas.DataFrame`
+**Function:** `parse_production_date(df: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Convert the `MONTH-YEAR` string column to a `production_date` datetime column and
-add it to the DataFrame. The `MONTH-YEAR` format is `"M-YYYY"` (e.g. `"1-2024"`).
+**Description:** Operate on a single pandas partition. Derive a `production_date`
+column of dtype `datetime64[ns]` from the `MONTH-YEAR` column (format `"M-YYYY"`).
+Rows where `MONTH-YEAR` has a month component of `0` (yearly summary rows) or `-1`
+(starting cumulative rows) must be dropped — they do not represent monthly
+production records. Rows where the parsed date is invalid must be dropped and a
+count logged at WARNING level. Return the partition with the `production_date`
+column added; the `MONTH-YEAR` column must be retained as-is.
 
-The function must:
-1. Split `MONTH-YEAR` on `"-"` to extract month (first element) and year (last
-   element).
-2. Construct a date as the first day of the given month and year
-   (e.g. `"1-2024"` → `2024-01-01`).
-3. Cast to `datetime64[ns]`.
-4. Add the resulting series as the `production_date` column.
-5. Drop the original `MONTH-YEAR` column.
-6. Return the modified DataFrame.
-
-Rows where `MONTH-YEAR` has month value `0` (yearly summary records indicated by
-the data dictionary) must be dropped before parsing — they are not monthly
-production records and must not be passed downstream.
+Row filtering using string operations must be done inside a partition-level function
+(ADR-004 consequence).
 
 **Error handling:**
-- Rows where parsing fails after the month-0 filter must be replaced with `NaT` and
-  logged at WARNING level — do not raise; NaT rows will be dropped in TRN-02.
+- If `MONTH-YEAR` is absent from `df`, raise `KeyError`.
+- Date parsing errors on individual rows must be dropped without raising; log the
+  count at WARNING.
 
-**Dependencies:** pandas
+**Dependencies:** pandas, logging
 
 **Test cases (unit):**
-- Given a DataFrame with `MONTH-YEAR` values `"1-2024"` and `"12-2025"`, assert the
-  `production_date` column contains `2024-01-01` and `2025-12-01` as datetime values.
-- Given a row with `MONTH-YEAR` of `"0-2024"` (monthly=0, yearly summary), assert
-  it is dropped from the result.
-- Assert that the returned DataFrame does not contain the `MONTH-YEAR` column.
-- Given a malformed `MONTH-YEAR` value that cannot be parsed, assert the row
-  receives `NaT` (not an exception).
+- Given a partition with valid `MONTH-YEAR` values `"1-2024"` and `"12-2024"`,
+  assert `production_date` is parsed correctly to `datetime64` for both.
+- Given rows with `MONTH-YEAR` month component `"0"` and `"-1"`, assert those rows
+  are dropped.
+- Given a row with an unparseable `MONTH-YEAR` value, assert it is dropped and no
+  exception is raised.
+- Assert `MONTH-YEAR` is still present in the returned DataFrame.
+- Given a partition with `MONTH-YEAR` absent, assert `KeyError` is raised.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task TRN-02: Implement null and invalid value cleaner
+## Task T-02: Validate and clean production values
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `clean_invalid_values(df: pandas.DataFrame) -> pandas.DataFrame`
+**Function:** `clean_production_values(df: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Remove rows with invalid or unresolvable values that must not propagate to the
-features stage. The function must:
+**Description:** Operate on a single pandas partition. Apply the following cleaning
+rules to the `PRODUCTION` column, logging all decisions (TR-12):
+- Negative `PRODUCTION` values are physically invalid (TR-01) — replace them with
+  `NA` and log the count at WARNING.
+- Zero `PRODUCTION` values are valid measurements and must be preserved as `0.0`,
+  not converted to `NA` (TR-05).
+- Oil rates above 50,000 BBL/month for a single lease are treated as probable unit
+  errors (TR-02) — replace with `NA` and log at WARNING; this bound applies only to
+  rows where `PRODUCT == "O"`.
+- Rows where `PRODUCT == "O"` and `PRODUCTION` is not in BBL units, or where
+  `PRODUCT == "G"` and `PRODUCTION` is not in MCF units, must be flagged; the
+  pipeline does not perform unit conversion — it replaces suspect values with `NA`
+  and logs a WARNING.
+- Do not modify the `WELLS` column in this function.
 
-1. Drop rows where `production_date` is `NaT`.
-2. Drop rows where `LEASE_KID` is null (non-nullable column — its absence indicates
-   a structural problem per stage-manifest-ingest.md H3 semantics).
-3. Drop rows where `PRODUCT` is null (non-nullable column).
-4. Retain rows where `PRODUCTION` is `0.0` — zero production is a valid measurement
-   distinguishable from missing data (TR-05). Do not drop or impute zero production
-   values.
-5. Where `PRODUCTION` is null (not zero), impute with `0.0` only if the row has a
-   valid `WELLS` count greater than 0 (the lease was active but production was not
-   reported). Otherwise leave as null.
-6. Validate that `PRODUCTION` values are non-negative. Rows with `PRODUCTION < 0`
-   must be dropped and logged at WARNING level (TR-01 — production volumes cannot
-   be negative).
-7. Return the cleaned DataFrame.
+Return the cleaned partition with identical schema to the input.
 
 **Error handling:**
-- All row-drop operations must be logged at DEBUG level with a count of dropped rows.
+- If `PRODUCTION` or `PRODUCT` columns are absent, raise `KeyError`.
 
 **Dependencies:** pandas, logging
 
-**Test cases (unit — TR-01, TR-05):**
-- Given a row with `PRODUCTION = 0.0`, assert it is retained in the output (TR-05).
-- Given a row with `PRODUCTION = None`, assert it is handled per the imputation rule
-  and not silently promoted to zero for inactive leases.
-- Given a row with `PRODUCTION = -50.0`, assert it is dropped and a WARNING is
-  logged (TR-01).
-- Given a row with `NaT` in `production_date`, assert it is dropped.
-- Given a row with null `LEASE_KID`, assert it is dropped.
+**Test cases (unit — TR-01, TR-02, TR-05, TR-12):**
+- Given a row with `PRODUCTION = -100`, assert it is replaced with `NA` (TR-01).
+- Given a row with `PRODUCTION = 0.0`, assert it remains `0.0` and is not nulled
+  (TR-05).
+- Given a row with `PRODUCT = "O"` and `PRODUCTION = 60000.0`, assert it is
+  replaced with `NA` (TR-02 unit error bound).
+- Given a row with `PRODUCT = "G"` and `PRODUCTION = 60000.0`, assert it is
+  retained (the 50,000 bound applies to oil only).
+- Assert a WARNING is logged for each replacement operation.
+- Given a partition with `PRODUCTION` absent, assert `KeyError` is raised.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task TRN-03: Implement unit range validator
+## Task T-03: Deduplicate records
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `validate_production_units(df: pandas.DataFrame) -> pandas.DataFrame`
+**Function:** `deduplicate(df: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Validate that production volumes fall within realistic physical ranges. Oil
-production is in BBL and gas production is in MCF. The function must:
+**Description:** Operate on a single pandas partition. Drop duplicate rows where
+the combination of `LEASE_KID`, `MONTH-YEAR`, and `PRODUCT` is identical; keep the
+first occurrence. Log the count of dropped duplicate rows at INFO level. Return the
+deduplicated partition with the same schema as the input.
 
-1. For rows where `PRODUCT = "O"` (oil): flag rows where `PRODUCTION > 50000` as
-   likely unit errors (TR-02 — oil rates above 50,000 BBL/month for a single well
-   are almost certainly a unit error). Log these rows at WARNING level with the
-   `LEASE_KID` and value. Do not drop them — log and retain for domain review.
-2. For rows where `PRODUCT = "G"` (gas): no upper bound flagging is required (gas
-   volumes in MCF can legitimately be large).
-3. Return the DataFrame unchanged except for the log warnings emitted.
-
-This function enforces the domain constraint in TR-02 without silent suppression.
+**Error handling:**
+- If any of `LEASE_KID`, `MONTH-YEAR`, or `PRODUCT` are absent, raise `KeyError`.
 
 **Dependencies:** pandas, logging
 
-**Test cases (unit — TR-02):**
-- Given an oil row with `PRODUCTION = 60000`, assert a WARNING is logged containing
-  the lease ID and production value.
-- Given an oil row with `PRODUCTION = 49000`, assert no WARNING is logged.
-- Given a gas row with `PRODUCTION = 200000`, assert no WARNING is logged.
-- Assert the returned DataFrame has the same number of rows as the input regardless
-  of flagged values.
+**Test cases (unit — TR-15):**
+- Given a partition with two identical rows for the same `LEASE_KID`/`MONTH-YEAR`/
+  `PRODUCT` combination, assert one is dropped.
+- Assert the result row count is <= the input row count (TR-15).
+- Assert that calling `deduplicate` twice on the same partition produces the same
+  result as calling it once — idempotency (TR-15).
+- Given a partition with no duplicates, assert no rows are dropped.
+- Given a partition missing `LEASE_KID`, assert `KeyError` is raised.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task TRN-04: Implement deduplicator
+## Task T-04: Cast categorical columns
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `deduplicate(df: pandas.DataFrame) -> pandas.DataFrame`
+**Function:** `cast_categoricals(df: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Remove duplicate rows from a partition-level DataFrame. A duplicate is defined as
-a row with identical values in `(LEASE_KID, PRODUCT, production_date)`. On
-duplicates, retain the first occurrence. The function must:
+**Description:** Operate on a single pandas partition. Cast `PRODUCT`, `TWN_DIR`,
+and `RANGE_DIR` to `pd.CategoricalDtype` using their declared category sets from
+`kgs_monthly_data_dictionary.csv` (`PRODUCT`: `["O", "G"]`; `TWN_DIR`: `["S", "N"]`;
+`RANGE_DIR`: `["E", "W"]`). Values outside the declared set must be replaced with the
+appropriate null sentinel before casting — never allowed to propagate (ADR-003).
+Return the partition with the three columns recast and all other columns unchanged.
 
-1. Identify duplicate rows on the composite key `(LEASE_KID, PRODUCT,
-   production_date)`.
-2. Drop all but the first occurrence per group.
-3. Return the deduplicated DataFrame.
-
-The deduplication operation must be idempotent — running it twice on the same data
-must produce the same result as running it once (TR-15).
+**Error handling:**
+- If any of the three categorical columns is absent, raise `KeyError`.
 
 **Dependencies:** pandas
 
-**Test cases (unit — TR-15):**
-- Given a DataFrame with 3 rows where 2 share the same `(LEASE_KID, PRODUCT,
-  production_date)`, assert the returned DataFrame has 2 rows.
-- Assert that running `deduplicate` twice on the same output produces the same row
-  count as running it once (idempotency — TR-15).
-- Given a DataFrame with no duplicates, assert the returned DataFrame has the same
-  row count as the input.
-- Assert the output row count is always <= the input row count (TR-15).
+**Test cases (unit — ADR-003, stage-manifest-transform.md H2):**
+- Given a partition with only valid `PRODUCT` values `"O"` and `"G"`, assert
+  `PRODUCT` is dtype `CategoricalDtype` with categories `["O", "G"]`.
+- Given a partition with a `PRODUCT` value of `"X"` (outside the declared set),
+  assert it is replaced with `NA` before the cast — not allowed to propagate as an
+  unknown category.
+- Assert `TWN_DIR` and `RANGE_DIR` are cast with their declared category sets.
+- Given a partition with a categorical column absent, assert `KeyError` is raised.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task TRN-05: Implement entity indexer and temporal sorter
+## Task T-05: Fill gaps for continuous well date ranges
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `index_and_sort(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
+**Function:** `fill_date_gaps(df: pd.DataFrame) -> pd.DataFrame`
 
-**Description:**
-Set the entity index and sort by production date per the transform output state in
-stage-manifest-transform.md. The function must:
+**Description:** Operate on a single pandas partition that has been grouped by
+`LEASE_KID` and `PRODUCT`. For each such group, generate a complete monthly
+`production_date` range spanning from the group's first to last observed date. For
+months with no production record, insert a row with `PRODUCTION = 0.0` (zero is a
+valid measurement for a shut-in month, not missing data — TR-05, TR-04). All other
+columns for inserted rows must carry the appropriate null sentinel for their dtype.
+Return the filled partition with the same schema as the input.
 
-1. Set `LEASE_KID` as the Dask DataFrame index using `ddf.set_index("LEASE_KID",
-   drop=False, sorted=False)`. This triggers a distributed shuffle.
-2. Sort rows by `production_date` within each partition using
-   `ddf.map_partitions(lambda df: df.sort_values("production_date"))`.
-3. Return the resulting Dask DataFrame.
-
-The shuffle in step 1 destroys prior row ordering; the sort in step 2 re-establishes
-temporal ordering per the stage-manifest-transform.md H1 hazard.
-
-The `meta` argument for `map_partitions` must be derived by calling the actual sort
-function on `ddf._meta.copy()` — not constructed separately (ADR-003).
+Per ADR-002 all per-entity aggregations must use vectorized grouped transformations.
+Per-row iteration is prohibited.
 
 **Error handling:**
-- If `LEASE_KID` is not present as a column, raise `KeyError`.
-- If `production_date` is not present, raise `KeyError`.
-
-**Dependencies:** dask, pandas
-
-**Test cases (unit — TR-16, TR-17):**
-- Given a synthetic Dask DataFrame with rows in unsorted temporal order, assert
-  that after `index_and_sort` the rows within each partition are sorted by
-  `production_date` ascending.
-- Assert the return type is `dask.dataframe.DataFrame` (not pandas — TR-17).
-- Assert that sort stability is maintained: the last row date of one partition is
-  <= the first row date of the next partition when the data is sorted globally
-  (TR-16, verified on the computed result of a small synthetic dataset).
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
-
----
-
-## Task TRN-06: Implement well completeness checker
-
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `check_well_completeness(df: pandas.DataFrame) -> pandas.DataFrame`
-
-**Description:**
-For each `(LEASE_KID, PRODUCT)` group, verify that the production record has no
-unexpected gaps in its monthly sequence. A gap is defined as a span between two
-consecutive `production_date` values that exceeds one calendar month. The function
-must:
-
-1. Group by `(LEASE_KID, PRODUCT)` and sort by `production_date` within each group.
-2. Compute the difference between consecutive dates.
-3. For any gap larger than 31 days, log a WARNING containing `LEASE_KID`, `PRODUCT`,
-   and the date range of the gap.
-4. Return the DataFrame unchanged — this function is diagnostic, not filtering.
-
-This function implements TR-04 as a diagnostic validation. It does not modify data.
+- If `production_date`, `LEASE_KID`, or `PRODUCT` are absent, raise `KeyError`.
 
 **Dependencies:** pandas, logging
 
-**Test cases (unit — TR-04):**
-- Given a lease with monthly records from January to December 2024 (12 rows), assert
-  no WARNING is logged.
-- Given a lease with records for January, February, and April 2024 (gap in March),
-  assert a WARNING is logged identifying the gap.
-- Assert the returned DataFrame has the same shape as the input.
+**Test cases (unit — TR-04, TR-05):**
+- Given a well with records for January and March 2024 (February absent), assert
+  the returned DataFrame contains a February row with `PRODUCTION = 0.0`.
+- Assert the inserted row has `PRODUCTION = 0.0`, not `NA` (TR-05).
+- Given a well with a continuous date range, assert no rows are inserted.
+- Assert total row count per well equals the number of months between first and
+  last date inclusive (TR-04).
+- Given a partition missing `production_date`, assert `KeyError` is raised.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
-
----
-
-## Task TRN-07: Implement transform map_partitions orchestrator
-
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `apply_partition_transforms(ddf: dask.dataframe.DataFrame) -> dask.dataframe.DataFrame`
-
-**Description:**
-Chain all partition-level transform operations into a single `map_partitions` call
-per logical step, keeping the Dask task graph lazy. The function must:
-
-1. Apply `parse_production_date` via `map_partitions`.
-2. Apply `clean_invalid_values` via `map_partitions`.
-3. Apply `validate_production_units` via `map_partitions`.
-4. Apply `deduplicate` via `map_partitions`.
-5. Apply `check_well_completeness` via `map_partitions`.
-6. Return the resulting Dask DataFrame without calling `.compute()` (ADR-005, TR-17).
-
-For each `map_partitions` call, the `meta` argument must be derived by calling the
-actual partition function on `ddf._meta.copy()` (ADR-003, TR-23).
-
-Row filtering using string operations (e.g. filtering on `PRODUCT`) must be
-performed inside the partition-level function, not on the Dask DataFrame directly
-(ADR-004).
-
-**Dependencies:** dask, pandas
-
-**Test cases (unit — TR-17, TR-23):**
-- Assert the return type is `dask.dataframe.DataFrame`.
-- For each `map_partitions` call: assert that calling the wrapped function on
-  `ddf._meta.copy()` produces output whose column names and dtypes match the `meta`
-  passed to `map_partitions` (TR-23).
-- Given a small synthetic Dask DataFrame, assert the task graph contains the
-  expected number of `map_partitions` nodes (one per applied function).
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task TRN-08: Implement transform Parquet writer
+## Task T-06: Orchestrate transform stage
 
 **Module:** `kgs_pipeline/transform.py`
-**Function:** `write_transform(ddf: dask.dataframe.DataFrame, config: dict) -> None`
+**Function:** `transform(config: dict) -> dask.dataframe.DataFrame`
 
-**Description:**
-Write the transformed Dask DataFrame to partitioned Parquet files in the transform
-output directory. The function must:
-
-1. Resolve the output directory from `config["transform"]["processed_dir"]`; create
-   it if absent.
-2. Apply repartition to `max(10, min(n, 50))` where `n` is `ddf.npartitions`.
-   Repartition must be the last operation before writing (ADR-004).
-3. Write using `ddf.to_parquet(output_dir, write_index=True, overwrite=True)`.
-4. Log the output path and partition count at INFO level.
+**Description:** Orchestrate the full transform stage. Read the interim Parquet from
+the path in `config`. Per `boundary-ingest-transform.md`, the input carries
+canonical schema, data-dictionary dtypes, and `max(10, min(n, 50))` partitions —
+no schema reconciliation or re-partitioning is needed on read. Apply
+`parse_production_date`, `clean_production_values`, `deduplicate`,
+`cast_categoricals`, and `fill_date_gaps` via `map_partitions` in the order that
+satisfies `stage-manifest-transform.md` H1 (sort after indexing) and H4 (`set_index`
+is last structural operation before write). For every `map_partitions` call, derive
+`meta` by calling the actual function on a zero-row copy of `_meta` — no
+independently constructed meta is permitted (ADR-003). Sort each partition by
+`production_date` within the Dask graph. Set the entity index to `LEASE_KID`
+(`set_index` must be the last structural operation before write — H4). Repartition
+to `max(10, min(n, 50))` and write to the processed Parquet path in `config`.
+Return the Dask DataFrame (lazy — do not call `.compute()`, per TR-17 and ADR-005).
 
 **Error handling:**
-- Propagate disk or permission errors with logging.
+- If the interim Parquet path does not exist or is empty, raise `FileNotFoundError`.
+- Per-partition errors must be surfaced; do not silently swallow partition-level
+  exceptions.
 
-**Dependencies:** dask, pathlib, logging
+**Dependencies:** dask, dask.dataframe, pandas, pyarrow, logging, pathlib
 
-**Test cases (integration — TR-13, TR-14, TR-18):**
-- Given a small synthetic Dask DataFrame, assert written Parquet files are readable
-  by `pandas.read_parquet` (TR-18).
-- Assert that each Parquet partition contains only one unique `LEASE_KID` value if
-  the DataFrame was partitioned per entity — or more precisely, assert no partition
-  contains rows from well IDs that would be unexpected given the partition structure
-  (TR-13).
-- Assert that the schema (column names and dtypes) of two randomly sampled partitions
-  are identical (TR-14).
+**Test cases (unit — TR-17):**
+- Assert the return type is `dask.dataframe.DataFrame`, not `pd.DataFrame`.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Test cases (TR-11 — data integrity, unit):**
+- For a statistically meaningful sample of synthetic wells and months, assert
+  that `PRODUCTION` values in the transform output match the input values for
+  rows that are not cleaned (spot-check).
 
----
+**Test cases (TR-12 — data cleaning validation, unit):**
+- Assert nulls, missing values, outliers, and duplicates are handled per T-02
+  and T-03 rules.
+- Assert data types in the processed output match the expected types (datetime,
+  float, string).
 
-## Task TRN-09: Implement data integrity spot-checker
+**Test cases (TR-13 — partition correctness, unit):**
+- Assert that for a synthetic dataset with multiple `LEASE_KID` values, no single
+  Parquet partition contains rows from multiple `LEASE_KID` values after
+  `set_index`.
 
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `spot_check_integrity(interim_dir: Path, processed_dir: Path, sample_size: int) -> None`
+**Test cases (TR-14 — schema stability, unit):**
+- Assert that the column names and dtypes of a partition sampled from one well's
+  data match those of a partition sampled from another well's data.
 
-**Description:**
-Perform a spot-check comparing raw ingested data to transformed output for a random
-sample of `(LEASE_KID, PRODUCT, production_date)` tuples. For each sampled tuple:
+**Test cases (TR-16 — sort stability, unit):**
+- Given a dataset partitioned across multiple files for the same well, assert that
+  the last `production_date` in one partition is earlier than the first
+  `production_date` in the next partition.
 
-1. Locate the corresponding row in the interim Parquet files.
-2. Locate the corresponding row in the processed Parquet files.
-3. Assert that the `PRODUCTION` value in the processed file matches the raw interim
-   value (no production value should be altered by cleaning unless it was invalid).
-4. Log any mismatches at WARNING level.
+**Test cases (TR-23 — map_partitions meta consistency, unit):**
+- For every `map_partitions` call wrapping `parse_production_date`,
+  `clean_production_values`, `deduplicate`, `cast_categoricals`, and `fill_date_gaps`,
+  assert the `meta=` argument matches the function output in column names, column
+  order, and dtypes by calling the function on `ddf._meta.copy()`.
 
-This function implements TR-11. It is a diagnostic function — it logs mismatches but
-does not raise.
+**Test cases (TR-25 — transform integration test, integration):**
+- Run `transform()` on the interim Parquet output of TR-24 using a config dict with
+  all output paths pointing to pytest's `tmp_path`.
+- Assert processed Parquet is readable.
+- Assert output satisfies all upstream guarantees in `boundary-transform-features.md`.
 
-**Dependencies:** dask, pandas, pathlib, logging
-
-**Test cases (integration — TR-11):**
-- Given synthetic interim and processed Parquet directories with matching data,
-  assert the function completes with no WARNING logs.
-- Given a processed file where a production value differs from interim, assert a
-  WARNING is logged identifying the lease, product, date, and values.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
-
----
-
-## Task TRN-10: Wire transform stage entry point
-
-**Module:** `kgs_pipeline/transform.py`
-**Function:** `transform(config: dict, client) -> None`
-
-**Description:**
-Top-level entry point for the transform stage, called by the pipeline orchestrator.
-The function must:
-
-1. Load the interim Parquet using `dask.dataframe.read_parquet` from
-   `config["transform"]["interim_dir"]`.
-2. Call `apply_partition_transforms(ddf)` to chain partition-level transforms.
-3. Call `index_and_sort(ddf)` to set the entity index and sort by date.
-4. Call `write_transform(ddf, config)` to write output Parquet.
-5. Call `spot_check_integrity` for diagnostic logging.
-6. Log a stage-complete summary at INFO level.
-
-The task graph must remain lazy until `write_transform` triggers computation
-(ADR-005). No intermediate `.compute()` calls are permitted between steps 1–4.
-
-**Dependencies:** dask, logging
-
-**Test cases (unit — all mocked):**
-- Given mocked reads and writes, assert `transform` completes without error and
-  logs a stage-complete message.
-- Assert that no `.compute()` call is made before `write_transform` is invoked
-  (TR-17 — verify return type of intermediate results is `dask.dataframe.DataFrame`).
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.

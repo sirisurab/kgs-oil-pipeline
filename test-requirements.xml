@@ -226,4 +226,54 @@
 		DataFrame to catch regressions when functions are modified.
 		</description>
 	</test-requirement>
+	<!-- ============================================================ -->
+	<!-- INTEGRATION TESTS — per-stage and end-to-end                 -->
+	<!-- ============================================================ -->
+
+	<test-requirement id="TR-24" stages="ingest" type="integration">
+		<n>Ingest stage integration test</n>
+		<description>Run `ingest()` on 2–3 real raw source files using a config dict
+		with all output paths pointing to pytest's `tmp_path`. Assert: (a) interim
+		Parquet files are written and readable; (b) all columns carry data-dictionary
+		dtypes; (c) output satisfies all upstream guarantees defined in
+		`boundary-ingest-transform.md`; (d) all schema-required columns are present.
+		This test catches structural errors (wrong parallelization mechanism, early
+		returns bypassing schema enforcement) that unit tests miss because they use
+		synthetic typed DataFrames. Output directories must use `tmp_path` — not the
+		project's `data/` directories (ADR-008).
+		</description>
+	</test-requirement>
+
+	<test-requirement id="TR-25" stages="transform" type="integration">
+		<n>Transform stage integration test</n>
+		<description>Run `transform()` on the interim Parquet output of TR-24 using
+		a config dict with all output paths pointing to pytest's `tmp_path`. Assert:
+		(a) processed Parquet is readable; (b) output satisfies all upstream guarantees
+		defined in `boundary-transform-features.md` — entity index, sort order,
+		partition count, categorical cast, null sentinels. Output directories must use
+		`tmp_path` (ADR-008).
+		</description>
+	</test-requirement>
+
+	<test-requirement id="TR-26" stages="features" type="integration">
+		<n>Features stage integration test</n>
+		<description>Run `features()` on the transform Parquet output of TR-25 using
+		a config dict with all output paths pointing to pytest's `tmp_path`. Assert:
+		(a) features Parquet is readable; (b) all derived feature columns defined in
+		`stage-manifest-features.md` are present; (c) schema is consistent across a
+		sample of partitions. Output directories must use `tmp_path` (ADR-008).
+		</description>
+	</test-requirement>
+
+	<test-requirement id="TR-27" stages="all" type="integration">
+		<n>End-to-end pipeline integration test</n>
+		<description>Run the full pipeline (ingest → transform → features) on 2–3
+		real raw source files using a config dict with all output paths pointing to
+		pytest's `tmp_path`. Assert: (a) ingest output satisfies all guarantees in
+		`boundary-ingest-transform.md`; (b) transform output satisfies all guarantees
+		in `boundary-transform-features.md`; (c) features output satisfies TR-26;
+		(d) no unhandled exceptions are raised across the full run. Output directories
+		must use `tmp_path` — not the project's `data/` directories (ADR-008).
+		</description>
+	</test-requirement>
 </test-requirements>

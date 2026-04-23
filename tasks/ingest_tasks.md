@@ -1,348 +1,191 @@
-# Ingest Stage — Task Specifications
+# Ingest Stage Tasks
 
 **Module:** `kgs_pipeline/ingest.py`
-**Stage manifest:** `agent_docs/stage-manifest-ingest.md`
-**Boundary contract:** `agent_docs/boundary-ingest-transform.md`
-**ADRs in force:** ADR-001, ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-008
+**Test file:** `tests/test_ingest.py`
+
+Read `stage-manifest-ingest.md`, `boundary-ingest-transform.md`, `ADRs.md`
+(ADR-001, ADR-003, ADR-004, ADR-005, ADR-007, ADR-008), and
+`build-env-manifest.md` before implementing any task in this file.
+
+The canonical schema and all dtype/nullable mappings are defined in
+`references/kgs_monthly_data_dictionary.csv` — this is the authoritative source
+per ADR-003. Do not infer schema from data.
 
 ---
 
-## Task ING-01: Implement data dictionary schema loader
+## Task I-01: Build the dtype map from the data dictionary
 
 **Module:** `kgs_pipeline/ingest.py`
-**Function:** `load_schema(dict_path: str) -> dict[str, dict]`
+**Function:** `build_dtype_map(dict_path: str | Path) -> dict[str, Any]`
 
-**Description:**
-Read `references/kgs_monthly_data_dictionary.csv` and return a dict keyed by column
-name. Each value is a dict with keys `"dtype"`, `"nullable"`, and `"categories"`.
-The categories value is either a list of strings (if the data dictionary row has
-a non-empty categories cell) or `None`. This schema dict is the single source of
-truth for all downstream type enforcement in the ingest stage (ADR-003).
-
-The mapping from data-dictionary `dtype` strings to pandas-compatible types is:
-- `"int"` + `nullable=yes` → `"Int64"` (nullable integer)
-- `"int"` + `nullable=no` → `"int64"` (non-nullable integer)
-- `"float"` + `nullable=yes` → `"Float64"` (nullable float)
-- `"float"` + `nullable=no` → `"float64"`
-- `"string"` → `"string"` (pandas StringDtype)
-- `"categorical"` → `"category"`
-
-Apply this mapping within `load_schema` so callers receive resolved pandas dtype
-strings, not raw data dictionary strings.
+**Description:** Read `references/kgs_monthly_data_dictionary.csv` and construct a
+mapping from column name to pandas dtype. Apply the nullable-aware type mapping
+required by ADR-003: columns marked `nullable=yes` in the dictionary must use
+nullable-aware pandas dtype variants (e.g. `pd.Int64Dtype()` for integers,
+`pd.StringDtype()` for strings). Columns marked `nullable=no` must use standard
+non-nullable variants. The mapping must cover every column listed in
+`kgs_monthly_data_dictionary.csv`. Return the mapping as a plain Python dict.
 
 **Error handling:**
 - If `dict_path` does not exist, raise `FileNotFoundError`.
-- If required columns (`column`, `dtype`, `nullable`) are absent from the CSV,
-  raise `ValueError`.
-
-**Dependencies:** pandas
-
-**Test cases (unit — ADR-003):**
-- Assert the function returns a dict with 21 keys matching the column names in
-  `kgs_monthly_data_dictionary.csv`.
-- Assert that `LEASE_KID` maps to `nullable=no` and dtype `"int64"`.
-- Assert that `WELLS` maps to `nullable=yes` and dtype `"Int64"`.
-- Assert that `PRODUCT` has categories `["O", "G"]`.
-- Assert that `TOWNSHIP` maps to `nullable=yes` and dtype `"Int64"`.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
-
----
-
-## Task ING-02: Implement raw file reader
-
-**Module:** `kgs_pipeline/ingest.py`
-**Function:** `read_raw_file(file_path: Path) -> pandas.DataFrame`
-
-**Description:**
-Read a single KGS lease production `.txt` file (comma-separated, quoted strings)
-into a pandas DataFrame. All columns must be read as `object` dtype at this stage —
-type enforcement is handled in a separate step. Add a `source_file` column
-containing the filename (not the full path) of the source file.
-
-**Error handling:**
-- If the file does not exist, raise `FileNotFoundError`.
-- If the file cannot be parsed as CSV (e.g. malformed quoting), log a warning with
-  the filename and raise `ValueError`.
-- An empty file (0 bytes or header-only) must not raise — return an empty DataFrame
-  with the expected column names.
+- If any `dtype` value in the dictionary is unrecognised, raise `ValueError` with
+  the offending column name and value.
 
 **Dependencies:** pandas, pathlib
 
 **Test cases (unit):**
-- Given a synthetic `.txt` file with valid KGS-format rows, assert the returned
-  DataFrame has a `source_file` column equal to the filename.
-- Given an empty file (0 bytes), assert the function returns an empty DataFrame
-  without raising.
-- Given a file with only a header row, assert the function returns an empty DataFrame
-  without raising.
-- Given a non-existent path, assert `FileNotFoundError` is raised.
+- Assert the returned dict contains an entry for every column in
+  `kgs_monthly_data_dictionary.csv`.
+- Assert that `nullable=yes` integer columns map to `pd.Int64Dtype()`, not `int64`.
+- Assert that `nullable=no` integer columns map to `int64`.
+- Assert that `nullable=yes` string columns map to `pd.StringDtype()`.
+- Assert that `float` columns (all nullable in the dictionary) map to `Float64` or
+  `float64` as appropriate.
+- Assert that `categorical` columns map to `pd.CategoricalDtype()`.
+- Given a dict_path that does not exist, assert `FileNotFoundError` is raised.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
-
----
-
-## Task ING-03: Implement date filter
-
-**Module:** `kgs_pipeline/ingest.py`
-**Function:** `filter_by_year(df: pandas.DataFrame, min_year: int) -> pandas.DataFrame`
-
-**Description:**
-Apply the data-filtering constraint from task-writer-kgs.md to a DataFrame that has
-a `MONTH-YEAR` column. The filtering logic must:
-
-1. Extract the year component by splitting `MONTH-YEAR` on `"-"` and taking the last
-   element.
-2. Drop rows where the year element is not a numeric string (e.g. `"-1-1965"` splits
-   to last element `"1965"` which is numeric, but `"0-1966"` must also be
-   evaluated — the rule is: rows where the year component, after stripping, is not
-   convertible to int are dropped).
-3. Drop rows where the parsed year integer is less than `min_year`.
-4. Return the filtered DataFrame.
-
-Note: The raw KGS lease files contain full production history going back to the
-1960s. This filter is the authoritative post-read filter applied before any schema
-enforcement.
-
-**Dependencies:** pandas
-
-**Test cases (unit — from data-filtering constraint in task-writer-kgs.md):**
-- Given a DataFrame with `MONTH-YEAR` values `"1-2024"`, `"12-2025"`, `"3-2022"`,
-  `"-1-1965"`, `"0-1966"`, assert that with `min_year=2024` only `"1-2024"` and
-  `"12-2025"` rows are retained.
-- Given a DataFrame where all rows are before 2024, assert the returned DataFrame
-  is empty.
-- Given a DataFrame with no non-numeric year tokens, assert no rows are dropped
-  beyond those failing the year >= min_year check.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task ING-04: Implement schema enforcer
+## Task I-02: Parse a single raw lease file
 
 **Module:** `kgs_pipeline/ingest.py`
-**Function:** `enforce_schema(df: pandas.DataFrame, schema: dict[str, dict]) -> pandas.DataFrame`
+**Function:** `parse_raw_file(file_path: str | Path, dtype_map: dict[str, Any]) -> pd.DataFrame`
 
-**Description:**
-Apply the canonical schema from the data dictionary to a DataFrame, enforcing
-column presence, naming, and dtypes. The function must:
+**Description:** Read the raw lease `.txt` file at `file_path` as a CSV (the format
+is CSV despite the `.txt` extension, per `task-writer-kgs.md`). Apply `dtype_map`
+to enforce column types on read. Add a `source_file` column containing the filename
+(stem only, not the full path) of `file_path` to support downstream traceability.
+Return the resulting pandas DataFrame.
 
-1. For every column in the schema:
-   - If the column is present, cast it to the schema-specified pandas dtype. For
-     categorical columns, replace values outside the declared category set with
-     `pd.NA` before casting (ADR-003).
-   - If the column is absent and `nullable=yes`: add the column as an all-`NA`
-     column at the correct dtype. Do not raise.
-   - If the column is absent and `nullable=no`: raise `ValueError` immediately.
-     These two cases must not be collapsed (stage-manifest-ingest.md H3).
-2. Drop columns not present in the schema (e.g. the `URL` column in the lease index
-   is not in the monthly data dictionary schema and must not pass downstream).
-3. Return the DataFrame with only schema columns in schema-defined order.
+Schema enforcement requirements (per `stage-manifest-ingest.md` H1, H2, H3 and
+ADR-003):
+- All column names must conform to the canonical names in
+  `kgs_monthly_data_dictionary.csv` regardless of how the source file names them.
+- Columns marked `nullable=no` that are absent from the file must cause an immediate
+  `ValueError` — their absence indicates a structural problem.
+- Columns marked `nullable=yes` that are absent from the file must be added as
+  all-NA columns at the correct dtype — their absence is expected and valid.
+- An empty file (zero data rows) must return a zero-row DataFrame with the full
+  canonical column set and correct dtypes, not raise an exception.
 
 **Error handling:**
-- Raise `ValueError` if a `nullable=no` column is absent.
-- Casting errors for individual columns must be caught, logged at WARNING level, and
-  the column set to all-`NA` if nullable, or re-raised if non-nullable.
-
-**Dependencies:** pandas
-
-**Test cases (unit — ADR-003):**
-- Given a DataFrame missing a `nullable=yes` column (`LEASE`), assert the returned
-  DataFrame contains `LEASE` as an all-`NA` string column.
-- Given a DataFrame missing a `nullable=no` column (`LEASE_KID`), assert
-  `ValueError` is raised.
-- Given a DataFrame with `PRODUCT` containing values `"O"`, `"G"`, and `"X"`, assert
-  the returned DataFrame has `"X"` replaced with `pd.NA` before the category cast.
-- Given a DataFrame with a column not in the schema (e.g. `URL`), assert it is
-  absent from the returned DataFrame.
-- Assert that `TWN_DIR` column is returned as pandas `CategoricalDtype` with
-  categories `["S", "N"]`.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
-
----
-
-## Task ING-05: Implement single-file ingest worker
-
-**Module:** `kgs_pipeline/ingest.py`
-**Function:** `ingest_file(file_path: Path, schema: dict[str, dict], min_year: int) -> pandas.DataFrame`
-
-**Description:**
-Process a single raw lease file into a schema-enforced, year-filtered pandas
-DataFrame. The function must:
-
-1. Call `read_raw_file(file_path)` to load the raw data.
-2. Call `filter_by_year(df, min_year)` to apply the date filter.
-3. Call `enforce_schema(df, schema)` to enforce column names and dtypes.
-4. Return the resulting DataFrame.
-
-If the file yields an empty DataFrame after filtering (e.g. all rows pre-2024),
-return the empty DataFrame — do not raise.
-
-**Error handling:**
-- Propagate `FileNotFoundError` from `read_raw_file`.
-- Propagate `ValueError` from `enforce_schema` for missing non-nullable columns.
-- Catch and log any other exception, return an empty DataFrame with schema columns.
+- Encoding errors must be handled by falling back to `latin-1` after a failed
+  `utf-8` attempt; log a warning when the fallback is used.
+- If a `nullable=no` column is absent from the parsed file, raise `ValueError`.
 
 **Dependencies:** pandas, pathlib, logging
 
 **Test cases (unit):**
-- Given a synthetic file with rows spanning 2020–2025, assert the returned DataFrame
-  contains only rows with year >= 2024 and all schema columns present.
-- Given a synthetic file with all rows before 2024, assert an empty DataFrame is
-  returned without raising.
-- Given a synthetic file missing the non-nullable `LEASE_KID` column, assert
-  `ValueError` propagates.
+- Given a synthetic CSV with all canonical columns present, assert the returned
+  DataFrame has the expected dtypes on all columns per `kgs_monthly_data_dictionary.csv`.
+- Given a synthetic CSV missing a `nullable=yes` column, assert the column is
+  present in the result as an all-NA column at the correct dtype.
+- Given a synthetic CSV missing a `nullable=no` column, assert `ValueError` is raised.
+- Given a zero-byte file, assert an empty DataFrame is returned with correct column
+  names and dtypes.
+- Given a file encoded in `latin-1`, assert it is parsed without error and a warning
+  is logged.
+- Assert the `source_file` column is present in every return path.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task ING-06: Implement parallel ingest orchestrator
+## Task I-03: Filter rows to target date range
 
 **Module:** `kgs_pipeline/ingest.py`
-**Function:** `run_ingest(config: dict, client) -> dask.dataframe.DataFrame`
+**Function:** `filter_date_range(df: pd.DataFrame, min_year: int = 2024) -> pd.DataFrame`
 
-**Description:**
-Orchestrate parallel ingestion of all raw files using Dask. The function must:
+**Description:** Filter the DataFrame to rows where the year component of
+`MONTH-YEAR` is >= `min_year`. The `MONTH-YEAR` column has format `"M-YYYY"` —
+extract the year by splitting on `"-"` and taking the last element. Drop rows where
+the year component is not numeric (e.g. `"-1-1965"`, `"0-1966"`). This filter
+implements the constraint in `task-writer-kgs.md` under `<data-filtering>`. Return
+the filtered DataFrame with the same schema as the input.
 
-1. Resolve the raw data directory from `config["ingest"]["raw_dir"]`.
-2. Glob all `.txt` files in that directory.
-3. Load the schema using `load_schema`.
-4. Use `dask.bag.from_sequence` over the list of file paths, then map
-   `ingest_file` over each path (with `schema` and `min_year` bound from config).
-   The Dask distributed scheduler (CPU-bound — ADR-001) is used — the `client`
-   argument is the already-initialized Dask distributed `Client` passed in from the
-   pipeline entry point (build-env-manifest.md).
-5. Convert the resulting bag of DataFrames to a Dask DataFrame using
-   `dask.dataframe.from_delayed`.
-6. Apply repartition to `max(10, min(n, 50))` where `n` is the number of input
-   files (ADR-004).
-7. Return the Dask DataFrame without calling `.compute()` (ADR-005, TR-17).
+Row filtering using string operations must be done inside a partition-level function
+(ADR-004) — this function operates on a pandas partition, not a Dask DataFrame.
 
 **Error handling:**
-- If no `.txt` files are found in `raw_dir`, log a warning and raise `FileNotFoundError`.
+- If `MONTH-YEAR` is absent from `df`, raise `KeyError`.
+- Malformed year values (non-numeric) must be dropped without raising an exception;
+  log the count of dropped rows at DEBUG level.
 
-**Dependencies:** dask, pathlib, logging
+**Dependencies:** pandas, logging
 
-**Test cases (unit — TR-17):**
-- Given a config pointing to a temp directory containing 3 synthetic raw files,
-  assert the function returns a `dask.dataframe.DataFrame` (not a pandas DataFrame).
-- Assert the returned Dask DataFrame has the expected schema columns (TR-22).
-- Given a config pointing to an empty directory, assert `FileNotFoundError` is
-  raised.
+**Test cases (unit):**
+- Given rows with years 2022, 2023, 2024, 2025, assert only 2024 and 2025 rows are
+  returned.
+- Given rows with malformed `MONTH-YEAR` values `"-1-1965"` and `"0-1966"`, assert
+  they are dropped and no exception is raised.
+- Given a DataFrame with `min_year=2025`, assert only 2025 rows are returned.
+- Given a DataFrame where all rows are before 2024, assert an empty DataFrame is
+  returned with the same columns and dtypes as the input.
+- Given a DataFrame with `MONTH-YEAR` absent, assert `KeyError` is raised.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.
 
 ---
 
-## Task ING-07: Implement Parquet writer
+## Task I-04: Ingest all raw files in parallel and write interim Parquet
 
 **Module:** `kgs_pipeline/ingest.py`
-**Function:** `write_interim(ddf: dask.dataframe.DataFrame, config: dict) -> None`
+**Function:** `ingest(config: dict) -> dask.dataframe.DataFrame`
 
-**Description:**
-Write the ingested Dask DataFrame to partitioned Parquet files in the interim
-directory. The function must:
+**Description:** Orchestrate the full ingest stage. Discover all `.txt` files in
+the raw data directory specified by `config`. For each file, call `parse_raw_file`
+and `filter_date_range` inside a Dask `map_partitions` or by constructing a
+`dask.dataframe.from_delayed` graph — use the Dask distributed scheduler per
+ADR-001 (CPU-bound stage). Concatenate all per-file results into a single Dask
+DataFrame. Repartition to `max(10, min(n, 50))` partitions as required by ADR-004
+and `boundary-ingest-transform.md`. Write the result to the interim Parquet path
+specified in `config` using `dask.dataframe.to_parquet`. Return the Dask DataFrame
+(lazy — do not call `.compute()` before returning, per TR-17 and ADR-005).
 
-1. Resolve the output directory from `config["ingest"]["interim_dir"]`; create it
-   if absent.
-2. Write using `ddf.to_parquet(output_dir, write_index=False, overwrite=True)`.
-3. The repartition step was applied in `run_ingest` — do not re-repartition here
-   (ADR-004: repartition is the last operation before writing).
-4. Log the output path and partition count at INFO level.
+The task graph must remain lazy until the Parquet write — no intermediate
+`.compute()` calls are permitted inside this function.
+
+All path settings must be read from `config`.
 
 **Error handling:**
-- If the write fails due to a disk or permission error, log and re-raise.
+- If no `.txt` files are found in the raw directory, raise `FileNotFoundError`.
+- Per-file parse errors must be logged and that file skipped; they must not abort
+  the run.
 
-**Dependencies:** dask, pathlib, logging
+**Dependencies:** dask, dask.dataframe, pandas, pyarrow, logging, pathlib
 
-**Test cases (integration — TR-18):**
-- Given a small synthetic Dask DataFrame (3 partitions), assert that after
-  `write_interim` the output directory contains `.parquet` files.
-- Assert that each written file is readable by `pandas.read_parquet` without error.
-- Assert that the schema of a file read back matches the schema of the input
-  DataFrame.
+**Test cases (unit):**
+- Given a config pointing to a directory with synthetic `.txt` files, assert the
+  returned object is a `dask.dataframe.DataFrame` (TR-17).
+- Assert the return type is `dask.dataframe.DataFrame`, not `pd.DataFrame`.
+- Given a config pointing to an empty raw directory, assert `FileNotFoundError`
+  is raised.
+- Given one malformed file among otherwise valid files, assert the run completes
+  with the valid files and logs a warning for the malformed one.
 
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Test cases (TR-22 — schema completeness, unit):**
+- Read at least 3 sample interim Parquet partitions after a mocked ingest run;
+  assert all expected columns are present in every partition:
+  `LEASE_KID`, `LEASE`, `API_NUMBER`, `MONTH-YEAR`, `PRODUCT`, `PRODUCTION`,
+  `WELLS`, `OPERATOR`, `COUNTY`, `source_file`.
+- Assert no expected column is missing or renamed in any sampled partition.
 
----
+**Test cases (TR-18 — Parquet readability, integration):**
+- Assert every Parquet file written to `tmp_path` by `ingest` is readable by a
+  fresh `dask.dataframe.read_parquet` call without error.
 
-## Task ING-08: Implement schema completeness validator
+**Test cases (TR-24 — ingest integration test, integration):**
+- Run `ingest()` on 2–3 real raw source files using a config dict with all output
+  paths pointing to pytest's `tmp_path`.
+- Assert interim Parquet files are written and readable.
+- Assert all columns carry data-dictionary dtypes.
+- Assert the output satisfies all upstream guarantees in `boundary-ingest-transform.md`.
+- Assert all schema-required columns are present.
 
-**Module:** `kgs_pipeline/ingest.py`
-**Function:** `validate_interim_schema(interim_dir: Path, expected_columns: list[str]) -> None`
-
-**Description:**
-Read a sample of up to 3 Parquet partitions from `interim_dir` and assert that
-every expected column is present in every sampled partition. If any column is
-missing from any partition, raise `ValueError` with the partition path and missing
-column name. This implements TR-22.
-
-**Expected columns** (from kgs_monthly_data_dictionary.csv canonical schema plus
-the `source_file` column added in ING-02):
-`LEASE_KID, LEASE, DOR_CODE, API_NUMBER, FIELD, PRODUCING_ZONE, OPERATOR, COUNTY,
-TOWNSHIP, TWN_DIR, RANGE, RANGE_DIR, SECTION, SPOT, LATITUDE, LONGITUDE,
-MONTH-YEAR, PRODUCT, WELLS, PRODUCTION, source_file`
-
-**Dependencies:** pandas, pathlib
-
-**Test cases (unit — TR-22):**
-- Given a temp directory with 3 synthetic Parquet files each containing all
-  expected columns, assert the function returns without raising.
-- Given a Parquet file missing the `OPERATOR` column, assert `ValueError` is raised
-  naming the missing column.
-- Given a Parquet file missing the `source_file` column, assert `ValueError` is
-  raised.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
-
----
-
-## Task ING-09: Wire ingest stage entry point
-
-**Module:** `kgs_pipeline/ingest.py`
-**Function:** `ingest(config: dict, client) -> None`
-
-**Description:**
-Top-level entry point for the ingest stage, called by the pipeline orchestrator.
-The function must:
-
-1. Call `run_ingest(config, client)` to produce a Dask DataFrame.
-2. Call `write_interim(ddf, config)` to write Parquet output.
-3. Call `validate_interim_schema` on the output directory with the canonical
-   expected column list.
-4. Log a stage-complete summary at INFO level including row count estimate and
-   partition count (using graph-level properties — do not call `.compute()` for
-   these, use `ddf.npartitions` and `len(ddf)` only if Dask can resolve it lazily,
-   otherwise log partition count only).
-
-**Dependencies:** dask, logging
-
-**Test cases (unit — all mocked):**
-- Given mocked `run_ingest` returning a synthetic Dask DataFrame and mocked
-  `write_interim` that is a no-op, assert `ingest` completes without error and logs
-  a stage-complete message.
-- Given mocked `validate_interim_schema` raising `ValueError`, assert the exception
-  propagates and is not swallowed.
-
-**Definition of done:** Function is implemented, all test cases pass, ruff and mypy
-report no errors, requirements.txt updated with all third-party packages imported in
-this task.
+**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported in this task.

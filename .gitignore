@@ -1,6 +1,16 @@
+# Pipeline data and logs (runtime artifacts)
+data/
+logs/
+
+# Tool result caches
+large_tool_results/
+conversation_history/
+
 # Python
 __pycache__/
 *.py[cod]
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
@@ -8,21 +18,27 @@ build/
 
 # Virtual environment
 .venv/
+venv/
 env/
 
-# Data (keep .gitkeep stubs)
-data/raw/*.txt
-data/raw/*.csv
-data/interim/
-data/features/
-data/processed/
-logs/
+# IDE
+.idea/
+.vscode/
+*.swp
 
 # OS
 .DS_Store
-*.swp
 
-# pytest / mypy
+# Pytest
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Mypy
 .mypy_cache/
+
+# Ruff
 .ruff_cache/
+
+# Dask
+dask-worker-space/

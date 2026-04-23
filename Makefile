@@ -1,36 +1,39 @@
-.PHONY: venv install acquire ingest transform features pipeline test clean
+.PHONY: venv install acquire ingest transform features pipeline test lint typecheck
 
 PYTHON := python3
-VENV := .venv
-PIP := $(VENV)/bin/pip
-PYTEST := $(VENV)/bin/pytest
-KGS := $(VENV)/bin/kgs-pipeline
+VENV   := .venv
+PIP    := $(VENV)/bin/pip
 
 venv:
 	$(PYTHON) -m venv $(VENV)
 
 install: venv
-	$(PIP) install --upgrade pip
-	$(PIP) install -e ".[dev]" || $(PIP) install -r requirements.txt
-	$(PIP) install -e .
+	$(VENV)/bin/pip install --upgrade pip
+	$(VENV)/bin/pip install -e ".[dev]"
 
 acquire:
-	$(KGS) --stages acquire
+	$(VENV)/bin/kgs-pipeline --stages acquire
 
 ingest:
-	$(KGS) --stages ingest
+	$(VENV)/bin/kgs-pipeline --stages ingest
 
 transform:
-	$(KGS) --stages transform
+	$(VENV)/bin/kgs-pipeline --stages transform
 
 features:
-	$(KGS) --stages features
+	$(VENV)/bin/kgs-pipeline --stages features
 
 pipeline:
-	$(KGS)
+	$(VENV)/bin/kgs-pipeline
 
 test:
-	$(PYTEST) tests/ -v
+	$(VENV)/bin/pytest tests/ -m "not integration" -v
 
-clean:
-	rm -rf data/raw/*.txt data/interim/ data/features/ data/processed/
+test-all:
+	$(VENV)/bin/pytest tests/ -v
+
+lint:
+	$(VENV)/bin/ruff check kgs_pipeline/ tests/
+
+typecheck:
+	$(VENV)/bin/mypy kgs_pipeline/
