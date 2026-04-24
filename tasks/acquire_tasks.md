@@ -1,187 +1,232 @@
-# Acquire Stage Tasks
+# Acquire Stage — Task Specifications
 
-**Module:** `kgs_pipeline/acquire.py`
-**Test file:** `tests/test_acquire.py`
+All tasks in this file implement the acquire stage for the `kgs_pipeline`
+package. Read the following authoritative documents before starting:
+- `/agent_docs/ADRs.md` (all ADRs)
+- `/agent_docs/build-env-manifest.md`
+- `/agent_docs/stage-manifest-acquire.md`
+- `/task-writer-kgs.md` (project context, dataset instructions)
+- `/test-requirements.xml` (test requirements TR-20, TR-21, TR-27)
 
-Read `stage-manifest-acquire.md`, `ADRs.md` (ADR-001, ADR-007, ADR-008), and
-`build-env-manifest.md` before implementing any task in this file.
+All design decisions are governed by the above documents. Where those documents
+speak, cite them by name — do not restate. Where a decision is not covered, the
+coder may decide but must explain the choice in a module docstring.
+
+## Context
+
+The acquire stage downloads per-lease monthly production files from the KGS
+chasm portal. It is driven by the lease index file located at
+`data/external/oil_leases_2020_present.txt` (see `<datasets>` block in
+`task-writer-kgs.md`). Raw files are written to `data/raw/`.
+
+Scheduler choice, filtering rules, parallelism limit, and polite-scraping
+sleep are all specified in `task-writer-kgs.md` under `<instructions>` and
+`<data-filtering>`. Do not re-specify those values in code — read them from
+`config.yaml` per build-env-manifest.md.
 
 ---
 
-## Task A-01: Load and filter the lease index
+## Task A1: Build the download manifest from the lease index
 
 **Module:** `kgs_pipeline/acquire.py`
-**Function:** `load_lease_index(index_path: str | Path) -> pd.DataFrame`
 
-**Description:** Read the lease index file at `index_path`
-(`data/external/oil_leases_2020_present.txt`) into a pandas DataFrame. Filter rows
-to those where the year component of `MONTH-YEAR` is >= 2024. The `MONTH-YEAR`
-column has the format `"M-YYYY"` — extract the year by splitting on `"-"` and
-taking the last element; discard rows where that element is not numeric. After
-filtering, deduplicate by the `URL` column so that each unique lease URL appears
-exactly once. Return the deduplicated DataFrame with the full set of columns from
-the source file.
+**Function:** a manifest-builder that reads the lease index file and returns
+the deduplicated list of lease records to download.
+
+**Inputs:**
+- Path to the lease index file (from `config.yaml` → `acquire`)
+- Minimum year threshold (from `config.yaml` → `acquire`)
+
+**Output contract:**
+- A structure (list of records or DataFrame) containing at least the lease ID
+  and the MainLease URL for every lease whose index contains at least one
+  MONTH-YEAR row with year component `>= min_year`.
+- Deduplicated by URL (one entry per lease), per the `<instructions>` block
+  in `task-writer-kgs.md`.
+- Rows whose MONTH-YEAR year component is not numeric are excluded before
+  deduplication — see the `<data-filtering>` block in `task-writer-kgs.md`
+  for the rule.
+
+**Design decisions governed by docs:**
+- Year extraction rule → `task-writer-kgs.md` `<data-filtering>`
+- Deduplication key → `task-writer-kgs.md` `<instructions>`
+- Data-dictionary column names (LEASE_KID, URL, MONTH-YEAR) →
+  `references/kgs_archives_data_dictionary.csv`
+- Nullable / non-nullable column handling → ADR-003
 
 **Error handling:**
-- If `index_path` does not exist, raise `FileNotFoundError` with a descriptive message.
-- If the `URL` column is absent from the file, raise `ValueError`.
-- If the `MONTH-YEAR` column is absent from the file, raise `ValueError`.
-
-**Dependencies:** pandas, pathlib
+- Index file missing or unreadable → raise with a clear message naming the
+  expected path; do not silently return an empty manifest.
 
 **Test cases (unit):**
-- Given a synthetic lease index with rows spanning 2022–2025, assert the returned
-  DataFrame contains only rows where the parsed year >= 2024.
-- Given rows with malformed `MONTH-YEAR` values such as `"-1-1965"` and `"0-1966"`,
-  assert those rows are dropped and no exception is raised.
-- Given a lease index where the same URL appears in multiple rows (one per month),
-  assert the returned DataFrame contains that URL exactly once.
-- Given a file path that does not exist, assert `FileNotFoundError` is raised.
-- Given a file missing the `URL` column, assert `ValueError` is raised.
+- Given a synthetic index fixture with leases in 2020, 2023, 2024, and 2025,
+  assert only leases with at least one row at year ≥ 2024 appear in the
+  manifest.
+- Given duplicate rows (same URL, many months), assert one entry per URL is
+  returned.
+- Given rows where the year component is not numeric (e.g. "-1-1965",
+  "0-1966"), assert those rows are excluded.
+- Given a missing index file, assert a clear error is raised.
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, all test cases pass, ruff
+and mypy report no errors, requirements.txt updated with all third-party
+packages imported in this task.
 
 ---
 
-## Task A-02: Extract lease ID from URL
+## Task A2: Resolve a lease's MonthSave download URL
 
 **Module:** `kgs_pipeline/acquire.py`
-**Function:** `extract_lease_id(url: str) -> str`
 
-**Description:** Extract the lease ID from a KGS lease URL. The lease ID is the
-value of the `f_lc` query parameter. For example, given the URL
-`"https://chasm.kgs.ku.edu/ords/oil.ogl5.MainLease?f_lc=1001135839"`, return
-`"1001135839"`.
+**Function:** given a lease ID, returns the direct download URL for the
+lease's production text file by fetching the MonthSave HTML page and
+extracting the anchor whose href contains `anon_blobber.download`.
+
+**Inputs:**
+- Lease ID (string)
+
+**Output contract:**
+- The fully-qualified download URL (string). The URL includes a
+  `p_file_name` query parameter whose value is the raw filename (e.g.
+  `lp564.txt`) to be used when saving the file locally.
+- If the MonthSave page returns 200 but contains no matching anchor, the
+  function signals "no download available" in a way the caller can detect
+  without raising (see "Error handling").
+
+**Design decisions governed by docs:**
+- URL template and anchor identification rule → `task-writer-kgs.md`
+  `<instructions>` steps 2 and 3.
+- HTTP library and HTML parsing library → ADR-007, build-env-manifest
+  "HTTP library for acquire". Browser automation is prohibited.
 
 **Error handling:**
-- If the `f_lc` parameter is absent from the URL, raise `ValueError` with a
-  descriptive message including the URL.
-
-**Dependencies:** urllib.parse
+- HTTP errors (non-2xx, connection error, timeout) → retry with backoff
+  up to a bounded attempt count configured in `config.yaml`, then log a
+  warning and signal failure to the caller.
+- Missing download anchor → return a sentinel (e.g. `None`) so the caller
+  can record the lease as unavailable without aborting the whole batch.
+  Acquire-stage output state in `stage-manifest-acquire.md` permits missing
+  files — downstream stages handle gaps.
 
 **Test cases (unit):**
-- Given the example URL above, assert the return value is `"1001135839"`.
-- Given a URL with no `f_lc` parameter, assert `ValueError` is raised.
-- Given a URL with multiple query parameters where `f_lc` is not first, assert the
-  correct value is extracted.
+- Given a fixture HTML page containing an `anon_blobber.download` anchor,
+  assert the function returns the expected URL and the `p_file_name`
+  value is extractable from it.
+- Given an HTML page with no matching anchor, assert the function returns
+  the documented sentinel and does not raise.
+- Given an HTTP error that persists through retries (use a mocked
+  transport), assert the function returns the documented sentinel and
+  logs a warning.
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
-
----
-
-## Task A-03: Fetch the MonthSave download link
-
-**Module:** `kgs_pipeline/acquire.py`
-**Function:** `fetch_download_link(lease_id: str, session: requests.Session) -> str`
-
-**Description:** Make an HTTP GET request to the MonthSave page for the given
-`lease_id` at `https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc={lease_id}`.
-Parse the HTML response using BeautifulSoup to find the anchor tag whose `href`
-contains `"anon_blobber.download"`. Return the full URL of that anchor tag as a
-string.
-
-**Error handling:**
-- If the HTTP request fails (non-2xx status), raise `requests.HTTPError`.
-- If no anchor tag matching the pattern is found in the page, raise `ValueError`
-  with a message that includes the `lease_id`.
-
-**Dependencies:** requests, beautifulsoup4
-
-**Test cases (unit — all HTTP calls mocked):**
-- Given a mocked HTML response containing one matching anchor tag, assert the
-  returned URL string equals the expected download URL.
-- Given a mocked HTML response with no matching anchor tag, assert `ValueError`
-  is raised.
-- Given a mocked HTTP response with status 404, assert `requests.HTTPError` is raised.
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, all test cases pass, ruff
+and mypy report no errors, requirements.txt updated with all third-party
+packages imported in this task.
 
 ---
 
-## Task A-04: Download a single lease data file
+## Task A3: Download a single lease production file
 
 **Module:** `kgs_pipeline/acquire.py`
-**Function:** `download_lease_file(download_url: str, output_dir: str | Path, session: requests.Session) -> Path | None`
 
-**Description:** Make an HTTP GET request to `download_url`. Extract the target
-filename from the `p_file_name` query parameter of `download_url`. If a file with
-that name already exists in `output_dir` and is non-empty, skip the download and
-return the existing `Path` — this is the caching behaviour described in
-`stage-manifest-acquire.md` H2. Otherwise, write the response content to
-`output_dir / filename`. Return the `Path` of the written file. If the response
-body is empty (zero bytes), do not write a file; log a warning and return `None`.
-Sleep for 0.5 seconds after each download attempt to respect the rate-limit
-requirement in `task-writer-kgs.md`.
+**Function:** given a resolved download URL and a target directory,
+downloads the file and writes it to the target directory using the
+`p_file_name` value from the URL as the filename.
+
+**Inputs:**
+- Download URL (from Task A2)
+- Target directory (from `config.yaml` → `acquire`, nominally `data/raw/`)
+
+**Output contract:**
+- On success: returns the path to the written file. The file exists, is
+  non-empty, and is decodable as text — per test requirement TR-21.
+- On failure: returns a sentinel (e.g. `None`) and logs a warning. A file
+  that cannot be validated must not be left behind on disk — this is the
+  shared-state hazard H2 in `stage-manifest-acquire.md`.
+
+**Idempotency requirement:**
+- If the target file already exists on disk and is non-empty, the function
+  skips the download and returns the existing path. Test requirement TR-20
+  defines the exact idempotency contract.
+
+**Design decisions governed by docs:**
+- Polite-scraping sleep and concurrency ceiling → `task-writer-kgs.md`
+  `<instructions>` (0.5s per worker, max 5 workers). Sleep is applied per
+  download worker, not per caller.
+- Browser automation prohibited → ADR-007.
+- File integrity contract → TR-21.
+- Idempotency contract → TR-20.
 
 **Error handling:**
-- If `output_dir` does not exist, create it before writing.
-- If the HTTP request raises a connection or timeout error, log a warning and
-  return `None` — do not propagate the exception.
-- If the `p_file_name` parameter is absent from `download_url`, raise `ValueError`.
+- HTTP failures (non-2xx, timeout, connection error) → retry per config,
+  then return sentinel.
+- Write succeeds but result is empty or not text-decodable → delete the
+  partial file and return sentinel (H2).
 
-**Dependencies:** requests, pathlib, time, logging
+**Test cases (unit):**
+- Given a mocked HTTP transport that returns valid text content, assert
+  the file is written with the `p_file_name` filename and is non-empty.
+- Given an existing file at the target path, assert the function does not
+  re-download and does not corrupt the existing file (TR-20 a, b, c).
+- Given a mocked transport returning empty content, assert no file is
+  left behind and a sentinel is returned.
+- Given a mocked transport returning non-UTF-8 bytes that fail the text
+  validation, assert no file is left behind and a sentinel is returned.
 
-**Test cases (unit — all HTTP calls mocked):**
-- Given a mocked download response with valid content and a filename derived from
-  `p_file_name`, assert the file is written to `output_dir` and the returned `Path`
-  points to it.
-- Given a pre-existing non-empty file at the expected path, assert no HTTP request
-  is made and the existing `Path` is returned (idempotency — TR-20).
-- Given a mocked response with a zero-byte body, assert no file is written, a
-  warning is logged, and `None` is returned (H2 from `stage-manifest-acquire.md`).
-- Given a mocked connection error on the download request, assert a warning is
-  logged and `None` is returned.
-- Given a `download_url` with no `p_file_name` parameter, assert `ValueError` is raised.
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, all test cases pass, ruff
+and mypy report no errors, requirements.txt updated with all third-party
+packages imported in this task.
 
 ---
 
-## Task A-05: Orchestrate parallel acquire with Dask
+## Task A4: Orchestrate parallel acquisition of the full manifest
 
 **Module:** `kgs_pipeline/acquire.py`
-**Function:** `acquire(config: dict) -> list[Path]`
 
-**Description:** Orchestrate the full acquire workflow for all lease URLs derived
-from the filtered lease index. Load the lease index using `load_lease_index`,
-extract all lease URLs, and for each URL: extract the lease ID, fetch the download
-link, then download the file. Execute the per-URL download workflow in parallel
-using the Dask threaded scheduler (I/O-bound — ADR-001). Limit concurrency to a
-maximum of 5 workers as specified in `task-writer-kgs.md`. Return a list of `Path`
-objects for all successfully downloaded files (i.e. non-`None` results).
+**Function:** the stage entry point `acquire(config: dict) -> None` that
+builds the manifest (A1), resolves download URLs (A2), and downloads files
+(A3) in parallel.
 
-All path and URL settings must be read from `config` — no hardcoded paths or URLs.
-The relevant config keys are defined in `build-env-manifest.md` under the `acquire`
-section.
+**Inputs:**
+- The full pipeline config dict (parsed `config.yaml`)
+
+**Output contract:**
+- Writes raw lease files to `data/raw/` (or the path configured in
+  `config.yaml`).
+- Returns nothing. Summary counts (attempted, succeeded, skipped as
+  already-present, failed) are logged at INFO level.
+
+**Design decisions governed by docs:**
+- Scheduler for acquire must match the I/O-bound workload — see
+  stage-manifest-acquire.md hazard H1 and ADR-001 (Dask threaded scheduler
+  for acquire). The distributed client initialized in the pipeline entry
+  point (build-env-manifest "Dask scheduler initialization") is for the
+  CPU-bound stages and is started AFTER acquire completes — acquire must
+  not depend on it.
+- Concurrency limit and per-worker sleep → `task-writer-kgs.md`
+  `<instructions>` (max 5 workers, 0.5s sleep per worker).
+- Logging → ADR-006, dual-channel.
+- Config sourcing → build-env-manifest "Configuration structure".
 
 **Error handling:**
-- Per-lease errors must not abort the run; log each failure and continue.
-- If the lease index file is missing, raise `FileNotFoundError` and abort.
+- Individual lease failures (A2 or A3 sentinel) must not abort the batch.
+  They are counted and logged, not raised.
+- Only configuration or input-file errors that make the whole run
+  impossible (missing index file, missing `acquire` section in config)
+  propagate as raised exceptions.
 
-**Dependencies:** dask, requests, logging, pathlib
+**Test cases:**
+- Unit: Given a manifest with 3 leases (all mocked), assert all 3 files
+  are written to the target directory and the function returns cleanly.
+- Unit: Given a manifest with 3 leases where 1 resolver and 1 downloader
+  fail, assert 1 file is written and the function returns cleanly with
+  the failures logged.
+- Integration (TR-20): Run `acquire(config)` twice with `tmp_path` as the
+  output directory (ADR-008); assert the file count is identical after the
+  second run and file contents are unchanged.
+- Integration (TR-21): After an acquire run to `tmp_path`, assert every
+  file in the raw directory has size > 0, is decodable as text, and
+  contains at least one row beyond the header line.
 
-**Test cases (unit — all HTTP calls mocked):**
-- Given a config pointing to a synthetic lease index with 3 URLs and mocked HTTP
-  responses, assert that `acquire` returns a list of 3 `Path` objects.
-- Given one URL that produces a download failure, assert the returned list contains
-  2 paths (the successful ones) and a warning is logged for the failed one.
-- Given a config where the lease index file does not exist, assert `FileNotFoundError`
-  is raised.
-
-**Test cases (TR-20 — idempotency, unit):**
-- Run `acquire` twice against the same `output_dir`; assert the file count does not
-  increase on the second run.
-- Assert the content of a pre-existing file is unchanged after the second run.
-- Assert no exception is raised when target files already exist.
-
-**Test cases (TR-21 — file integrity, unit with mocked acquire):**
-- Assert every file in `output_dir` after a mocked acquire run has size > 0 bytes.
-- Assert every file is readable as UTF-8 text without `UnicodeDecodeError`.
-- Assert every file contains at least one data row beyond the header line.
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, all test cases pass, ruff
+and mypy report no errors, requirements.txt updated with all third-party
+packages imported in this task.

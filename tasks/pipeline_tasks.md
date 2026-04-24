@@ -1,202 +1,241 @@
-# Pipeline Orchestration Tasks
+# Pipeline Orchestration, Logging, Entry Point — Task Specifications
 
-**Modules:** `kgs_pipeline/pipeline.py`, `kgs_pipeline/config.py`
-**Test file:** `tests/test_pipeline.py`
+All tasks in this file implement the pipeline-level (cross-stage) concerns
+for the `kgs_pipeline` package: configuration loading, logging setup, Dask
+client initialization, stage orchestration, CLI entry point, build/env
+artifacts, and end-to-end integration tests.
 
-Read `ADRs.md` (ADR-001, ADR-005, ADR-006, ADR-007, ADR-008) and
-`build-env-manifest.md` in full before implementing any task in this file.
-`build-env-manifest.md` is the authoritative source for all entry point, Makefile,
-configuration structure, Dask scheduler initialization, and logging requirements.
+**Governing documents (read before implementing any task in this file):**
+- `/agent_docs/ADRs.md` — especially ADR-001, ADR-005, ADR-006, ADR-007,
+  ADR-008
+- `/agent_docs/build-env-manifest.md` — entry point, config structure,
+  Makefile targets, scheduler initialization, dependencies, gitignore
+- `/agent_docs/stage-manifest-acquire.md`, `stage-manifest-ingest.md`,
+  `stage-manifest-transform.md`, `stage-manifest-features.md`
+- `/agent_docs/boundary-ingest-transform.md`,
+  `/agent_docs/boundary-transform-features.md`
+- `/test-requirements.xml` — TR-17, TR-24, TR-25, TR-26, TR-27
 
----
-
-## Task P-01: Configuration loading
-
-**Module:** `kgs_pipeline/config.py`
-**Function:** `load_config(config_path: str | Path) -> dict`
-
-**Description:** Read `config.yaml` from `config_path` and return its contents as a
-plain Python dict. The configuration structure must conform to the top-level sections
-defined in `build-env-manifest.md`: `acquire`, `ingest`, `transform`, `features`,
-`dask`, and `logging`. All configurable values for every pipeline stage must be read
-from this file — no configurable values may be hardcoded in pipeline code
-(`build-env-manifest.md`).
-
-**Error handling:**
-- If `config_path` does not exist, raise `FileNotFoundError` with a descriptive
-  message.
-- If the YAML is malformed or missing a required top-level section, raise
-  `ValueError` with the name of the missing section.
-
-**Dependencies:** PyYAML, pathlib
-
-**Test cases (unit):**
-- Given a valid `config.yaml` with all required sections, assert the returned dict
-  contains all six top-level keys.
-- Given a config file missing the `dask` section, assert `ValueError` is raised.
-- Given a path to a non-existent file, assert `FileNotFoundError` is raised.
-- Given a malformed YAML file, assert an appropriate exception is raised.
-
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+All design decisions are governed by those documents. Where they speak,
+cite by name — do not restate.
 
 ---
 
-## Task P-02: Logging setup
+## Task P1: Configuration loader
 
-**Module:** `kgs_pipeline/pipeline.py`
-**Function:** `setup_logging(config: dict) -> None`
+**Module:** `kgs_pipeline/pipeline.py` (or a small supporting module
+imported by it).
 
-**Description:** Configure the root logger to write to both the console and a log
-file simultaneously (ADR-006). The log file path and log level must be read from the
-`logging` section of `config` — not hardcoded. Create the log output directory if it
-does not exist before opening the file handler. This function must be called at
-pipeline startup before any stage runs — stages must not configure their own handlers
-(ADR-006).
+**Function:** loads `config.yaml` into a Python dict usable by every stage.
 
-**Error handling:**
-- If the `logging` key or required sub-keys (`log_file`, `level`) are absent from
-  `config`, raise `KeyError`.
-- If the log directory cannot be created (e.g. permission error), let the OS
-  exception propagate.
+**Output contract:**
+- Returns a dict with the top-level sections described in
+  `build-env-manifest.md` "Configuration structure": `acquire`, `ingest`,
+  `transform`, `features`, `dask`, `logging`. If any required top-level
+  section is missing, raise a clear error naming which section is missing.
+- No default values are injected for configurable settings — all values
+  come from `config.yaml` per `build-env-manifest.md` "Configuration
+  structure".
 
-**Dependencies:** logging, pathlib
+**Design decisions governed by docs:**
+- Configuration structure → `build-env-manifest.md`.
+- No hardcoded configurables, no env-var reads → `build-env-manifest.md`.
 
 **Test cases (unit):**
-- Given a config with `log_file` and `level` set, assert both a `StreamHandler`
-  and a `FileHandler` are attached to the root logger after the call.
-- Assert the log directory is created if it does not exist.
-- Given a config missing the `logging` key, assert `KeyError` is raised.
+- Given a minimal valid `config.yaml` in `tmp_path`, assert the returned
+  dict has all six top-level sections.
+- Given a `config.yaml` missing the `dask` section, assert a clear error
+  naming `dask` is raised.
+- Given a non-existent path, assert `FileNotFoundError` is raised.
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, tests pass, ruff and
+mypy report no errors, requirements.txt updated with all third-party
+packages imported in this task.
 
 ---
 
-## Task P-03: Dask scheduler initialization
+## Task P2: Logging setup
 
-**Module:** `kgs_pipeline/pipeline.py`
-**Function:** `init_scheduler(config: dict) -> distributed.Client`
+**Module:** `kgs_pipeline/pipeline.py` (or a small supporting module).
 
-**Description:** Initialize the Dask distributed scheduler after acquire completes
-and before ingest begins, using the `dask` section of `config`
-(`build-env-manifest.md`). If `config["dask"]["scheduler"]` is `"local"`, create a
-local `distributed.LocalCluster` with `n_workers`, `threads_per_worker`, and
-`memory_limit` from config and return a `distributed.Client` connected to it. If
-`config["dask"]["scheduler"]` is a URL string, connect to the remote scheduler at
-that address and return the `Client`. Log the dashboard URL after initialization
-(`build-env-manifest.md`). Individual stages must reuse an existing client — they
-must not initialize their own cluster when invoked through the pipeline entry point.
+**Function:** configures the Python `logging` module for the whole run
+based on the `logging` section of `config.yaml`.
 
-**Error handling:**
-- If the `dask` key or required sub-keys are absent from `config`, raise `KeyError`.
-- If a remote scheduler URL is unreachable, let the `distributed` exception
-  propagate — do not silently swallow it.
+**Behavior:**
+- Writes logs to both the console and the file at the path in
+  `config.yaml` → `logging.log_file` (ADR-006 dual-channel).
+- Log level is read from `config.yaml` → `logging.level`.
+- The parent directory of the log file is created if absent (ADR-006 —
+  log directory must exist at startup).
+- Must be called exactly once at pipeline startup; stages do not configure
+  their own handlers (ADR-006).
 
-**Dependencies:** dask, distributed
+**Design decisions governed by docs:**
+- Dual-channel logging → ADR-006.
+- Log file and level from config, not hardcoded → ADR-006.
+- Log directory created at startup → ADR-006.
 
 **Test cases (unit):**
-- Given a config with `scheduler: "local"`, assert `init_scheduler` returns a
-  `distributed.Client` instance.
-- Assert the dashboard URL is logged after initialization.
-- Given a config missing `dask.n_workers`, assert `KeyError` is raised.
+- Given a `logging` config pointing to a file under a non-existent
+  `tmp_path` subdirectory, assert the directory is created and log lines
+  appear in the file.
+- Assert the configured level is applied (a DEBUG-only log line is
+  absent when level = INFO, present when level = DEBUG).
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, tests pass, ruff and
+mypy report no errors, requirements.txt updated with all third-party
+packages imported in this task.
 
 ---
 
-## Task P-04: Pipeline entry point and stage orchestration
+## Task P3: Dask client initialization
 
-**Module:** `kgs_pipeline/pipeline.py`
-**Function:** `main(stages: list[str] | None = None) -> None`
+**Module:** `kgs_pipeline/pipeline.py`.
 
-**Description:** Implement the CLI entry point that chains all pipeline stages in
-order: `acquire → ingest → transform → features`. The `stages` argument is an
-optional list of stage names to run; if `None` or empty, all four stages are run in
-order (`build-env-manifest.md`). The entry point must:
-1. Read all settings from `config.yaml` via `load_config`.
-2. Call `setup_logging` before any stage runs (ADR-006).
-3. Run the `acquire` stage first.
-4. Call `init_scheduler` after acquire completes and before ingest begins
-   (`build-env-manifest.md`).
-5. Run `ingest`, `transform`, and `features` in order, reusing the scheduler client
-   initialized in step 4.
-6. Log per-stage timing and errors (ADR-006).
-7. Stop execution on stage failure — downstream stages must not run if an upstream
-   stage fails (`build-env-manifest.md`).
+**Function:** initializes the Dask scheduler client per the `dask` section
+of `config.yaml`, after the acquire stage completes and before ingest
+begins, per `build-env-manifest.md` "Dask scheduler initialization".
 
-The entry point must be registered in the package configuration so it is runnable as
-a CLI command (`build-env-manifest.md`). Independent computations within the same
-stage must be batched into a single Dask compute call — sequential `.compute()` calls
-on independent results are prohibited (ADR-005).
+**Behavior:**
+- If `dask.scheduler == "local"`, initialize a local distributed cluster
+  using `n_workers`, `threads_per_worker`, `memory_limit`, and
+  `dashboard_port` from the `dask` section.
+- If `dask.scheduler` is a URL, connect to that remote scheduler.
+- Log the dashboard URL after initialization.
+- Stages (ingest, transform, features) must reuse this client when
+  invoked through the pipeline entry point — they must not initialize
+  their own cluster (`build-env-manifest.md`).
 
-**Error handling:**
-- If a stage raises an exception, log it at ERROR level with the stage name and
-  elapsed time, then re-raise to stop execution.
-- If `config.yaml` is not found, raise `FileNotFoundError` before any stage runs.
-
-**Dependencies:** dask, distributed, logging, time, pathlib
+**Design decisions governed by docs:**
+- Distributed client for CPU-bound stages, threaded for acquire →
+  ADR-001 and acquire stage manifest H1.
+- Scheduler initialization source → `build-env-manifest.md`.
+- Client reuse across stages → `build-env-manifest.md`.
 
 **Test cases (unit):**
-- Given a config that specifies `stages: ["acquire"]`, assert only the acquire
-  function is called and the scheduler is not initialized.
-- Given a config that specifies all stages, assert the stages are called in order
-  and each stage's elapsed time is logged.
-- Given a stage that raises an exception, assert the subsequent stages are not
-  called and the exception is re-raised.
-- Assert `setup_logging` is called before any stage function.
+- Given a `dask.scheduler == "local"` config, assert a client is
+  initialized and the function returns a handle the pipeline can pass to
+  stages.
+- Assert the dashboard URL is emitted to the logger after init.
+- (No unit test required for the remote URL branch — integration only.)
 
-**Definition of done:** Function is implemented, test cases pass, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, tests pass, ruff and
+mypy report no errors, requirements.txt updated with all third-party
+packages imported in this task.
 
 ---
 
-## Task P-05: Package configuration and build artefacts
+## Task P4: Pipeline orchestrator and CLI entry point
 
-**Module:** `pyproject.toml`, `Makefile`, `config.yaml`, `.gitignore`, `requirements.txt`
-**Function:** N/A (configuration and build artefacts)
+**Module:** `kgs_pipeline/pipeline.py`.
 
-**Description:** Create all build and environment artefacts required by
-`build-env-manifest.md`:
+**Function:** the command-line entry point declared in the package
+configuration per `build-env-manifest.md` "Pipeline entry point". Runs the
+configured stages in order: acquire → ingest → transform → features.
 
-**`pyproject.toml`:**
-- Declare the build backend explicitly — do not rely on setuptools defaults
-  (`build-env-manifest.md`).
-- Register the CLI entry point so the pipeline is runnable as a command.
-- List all runtime and development dependencies.
-- Runtime dependencies must include the Dask dashboard library
-  (`build-env-manifest.md`).
-- Development dependencies must include type stub packages for pandas and the HTTP
-  request library (`build-env-manifest.md`).
+**Behavior (from `build-env-manifest.md` "Pipeline entry point"):**
+- Accepts an optional list of stages to run; defaults to all four when
+  not specified.
+- Reads all settings from `config.yaml` (P1).
+- Sets up logging before any stage runs (P2).
+- Initializes the Dask client between acquire and ingest (P3), per
+  `build-env-manifest.md` "Dask scheduler initialization".
+- Runs each stage in order with per-stage timing and error logging.
+- Stops execution on stage failure; downstream stages do not run.
 
-**`Makefile`:**
-- Provide targets: `venv`, `install`, `acquire`, `ingest`, `transform`, `features`,
-  `pipeline`.
-- The `pipeline` target must run all four stages in order using exactly one
-  invocation approach — not both chained targets and an entry point call in the same
-  recipe (a dual invocation runs every stage twice, `build-env-manifest.md`).
-- The `install` target must bootstrap the package installer before installing
-  project dependencies (`build-env-manifest.md`).
-
-**`config.yaml`:**
-- Must contain all six top-level sections defined in `build-env-manifest.md`:
-  `acquire`, `ingest`, `transform`, `features`, `dask`, `logging`.
-- Must contain all stage-specific settings consumed by each stage's `config` dict.
-
-**`.gitignore`:**
-- Must exclude: `data/`, `logs/`, `large_tool_results/`, `conversation_history/`
-  (`build-env-manifest.md`).
-
-**`requirements.txt`:**
-- Must list all third-party runtime packages imported anywhere in the pipeline.
+**Design decisions governed by docs:**
+- Entry point contract → `build-env-manifest.md` "Pipeline entry point".
+- Stage ordering → `build-env-manifest.md` "Pipeline targets".
+- Single-invocation rule for the Makefile full-pipeline target →
+  `build-env-manifest.md` "Pipeline targets".
+- No hardcoded config → `build-env-manifest.md` "Configuration structure".
+- Logging and Dask init sequencing → ADR-006, `build-env-manifest.md`.
 
 **Test cases (unit):**
-- Assert `pyproject.toml` declares a build backend explicitly.
-- Assert the CLI entry point is registered in `pyproject.toml`.
-- Assert `config.yaml` contains all six required top-level sections.
-- Assert `.gitignore` contains entries for `data/` and `logs/`.
+- Given a list `["ingest", "transform"]`, assert only those two stages
+  are invoked in that order; acquire and features are not.
+- Given no stage argument, assert all four stages are invoked in order.
+- Given a mocked ingest that raises, assert transform and features are
+  not invoked and the exception is logged.
+- Assert that the Dask client is initialized between acquire and ingest
+  (not before acquire, not after ingest).
 
-**Definition of done:** All artefacts are present and valid, the package installs
-cleanly via `pip install -e .`, the CLI entry point is runnable, ruff and mypy report
-no errors, requirements.txt updated with all third-party packages imported in this task.
+**Definition of done:** Function is implemented, CLI entry point is
+registered in the package configuration, tests pass, ruff and mypy report
+no errors, requirements.txt updated with all third-party packages imported
+in this task.
+
+---
+
+## Task P5: Build configuration, Makefile, and environment artifacts
+
+**Artifacts:**
+- Package build configuration (choose backend per
+  `build-env-manifest.md` "Build backend" — stable / established API).
+- `Makefile` with targets per `build-env-manifest.md` "Pipeline targets":
+  a target per stage (runnable independently) and a full-pipeline target
+  that runs acquire → ingest → transform → features.
+- Environment setup targets per `build-env-manifest.md` "Environment
+  setup": a target to create a clean virtual environment, and a target
+  to install all dependencies including dev tools. The install sequence
+  must bootstrap the installer itself first.
+- `requirements.txt` and a dev-dependencies requirements file (or
+  equivalent in the build configuration), including the Dask dashboard
+  library at runtime and the pandas / HTTP-library type stubs for
+  development (`build-env-manifest.md` "Dependencies").
+- `.gitignore` entries per `build-env-manifest.md` "Version control
+  exclusions": `data/`, `logs/`, `large_tool_results/`,
+  `conversation_history/`.
+
+**Design decisions governed by docs:**
+- Backend stability preference → `build-env-manifest.md` "Build backend".
+- Makefile single-invocation rule for the full-pipeline target →
+  `build-env-manifest.md` "Pipeline targets" (never both chain
+  dependencies and invoke the entry point in the recipe body — that runs
+  every stage twice).
+- Runtime vs dev dependency split → `build-env-manifest.md` "Dependencies".
+- Python version floor → ADR-007 (3.11+).
+
+**Test cases (unit):**
+- Assert the full-pipeline Makefile target does not both chain stage
+  targets as dependencies AND invoke the entry point in its recipe body
+  (a textual check on the Makefile contents is sufficient).
+- Assert the package configuration declares the CLI entry point.
+- Assert `.gitignore` contains the four required entries.
+
+**Definition of done:** Artifacts exist and are correct, tests pass, ruff
+and mypy report no errors, requirements.txt updated with all third-party
+packages used at runtime.
+
+---
+
+## Task P6: End-to-end integration test
+
+**Module:** `tests/test_pipeline.py`.
+
+**Test (TR-27, integration marker):**
+Run the full pipeline (ingest → transform → features) on 2–3 real raw
+source files using a config dict whose output paths (interim, processed,
+features) all point inside pytest's `tmp_path`. Acquire may be skipped or
+mocked to stage the fixture files in `tmp_path/data/raw/`.
+
+**Assertions:**
+- Ingest output satisfies every upstream guarantee in
+  `boundary-ingest-transform.md`.
+- Transform output satisfies every upstream guarantee in
+  `boundary-transform-features.md`.
+- Features output satisfies TR-26 — all expected derived columns present,
+  schema consistent across a sample of partitions.
+- No unhandled exception is raised across the full run.
+
+**Design decisions governed by docs:**
+- tmp_path for all stage outputs → ADR-008. Stage functions under test
+  must accept a config dict with output paths overridden to `tmp_path` —
+  the test must never write under the project's `data/` directory.
+- Integration marker → ADR-008 (exactly one of `unit` or `integration`
+  per test).
+
+**Definition of done:** Test is implemented, passes with `pytest -m
+integration` when fixture files are present, is skipped cleanly when
+they are not, ruff and mypy report no errors, requirements.txt updated
+with all third-party packages imported in this task.

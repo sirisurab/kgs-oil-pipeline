@@ -1,44 +1,30 @@
-# Pipeline data and logs (runtime artifacts)
 data/
 logs/
-
-# Tool result caches
 large_tool_results/
 conversation_history/
 
 # Python
 __pycache__/
 *.py[cod]
-*.so
-*.egg
 *.egg-info/
 dist/
 build/
 .eggs/
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 env/
 
-# IDE
-.idea/
-.vscode/
-*.swp
-
-# OS
-.DS_Store
-
-# Pytest
+# Testing and tooling
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
-# Mypy
-.mypy_cache/
-
-# Ruff
-.ruff_cache/
-
-# Dask
-dask-worker-space/
+# IDE
+.vscode/
+.idea/
+*.swp
+*~

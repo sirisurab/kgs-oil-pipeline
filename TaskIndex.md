@@ -1,7 +1,7 @@
 # Task Index
 
-- `tasks/acquire_tasks.md`   <- acquire stage: lease index filtering, lease ID extraction, MonthSave link fetching, parallel file download with Dask threaded scheduler and caching
-- `tasks/ingest_tasks.md`    <- ingest stage: dtype map from data dictionary, raw file parsing, date-range filtering, parallel Dask-distributed consolidation to interim Parquet
-- `tasks/transform_tasks.md` <- transform stage: production date parsing, production value cleaning, deduplication, categorical casting, date-gap filling, Dask-distributed orchestration to processed Parquet
-- `tasks/features_tasks.md`  <- features stage: cumulative production, GOR and water cut, decline rate, rolling averages and lag features, Dask-distributed orchestration to ML-ready Parquet
-- `tasks/pipeline_tasks.md`  <- pipeline orchestration: config loading, dual-channel logging, Dask scheduler initialization, CLI entry point, build artefacts (pyproject.toml, Makefile, config.yaml, .gitignore, requirements.txt)
+- tasks/acquire_tasks.md    <- all acquire tasks (lease-index filter, MonthSave resolve, single-file download, parallel orchestration)
+- tasks/ingest_tasks.md     <- all ingest tasks (schema from data dictionary, per-file typed read, interim Parquet write)
+- tasks/transform_tasks.md  <- all transform tasks (partition-level cleaning, meta derivation, entity-indexed Parquet write)
+- tasks/features_tasks.md   <- all features tasks (product reshape, cumulative/GOR/water-cut/decline, rolling and lag, stage entry point)
+- tasks/pipeline_tasks.md   <- pipeline orchestration, config loader, logging, Dask client init, CLI entry point, build/env artifacts, end-to-end integration test
