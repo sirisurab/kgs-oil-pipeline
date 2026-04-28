@@ -1,7 +1,16 @@
-pandas>=2.0
-dask[distributed]>=2024.1
-pyarrow>=14.0
-requests>=2.31
-beautifulsoup4>=4.12
-pyyaml>=6.0
-bokeh>=3.0
+# Runtime dependencies
+dask[distributed]
+pandas
+pyarrow
+requests
+beautifulsoup4
+pyyaml
+bokeh
+
+# Development dependencies
+pytest
+pytest-cov
+mypy
+ruff
+types-requests
+pandas-stubs

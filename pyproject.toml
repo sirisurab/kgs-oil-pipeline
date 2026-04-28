@@ -1,51 +1,48 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kgs_pipeline"
+name = "kgs-pipeline"
 version = "0.1.0"
-description = "KGS oil production data pipeline"
+description = "KGS Oil Production Data Pipeline"
 requires-python = ">=3.11"
 dependencies = [
-    "pandas>=2.0",
-    "dask[distributed]>=2024.1",
-    "pyarrow>=14.0",
-    "requests>=2.31",
-    "beautifulsoup4>=4.12",
-    "pyyaml>=6.0",
-    "bokeh>=3.0",
+    "dask[distributed]",
+    "pandas",
+    "pyarrow",
+    "requests",
+    "beautifulsoup4",
+    "pyyaml",
+    "bokeh",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4",
-    "pytest-cov>=4.1",
-    "ruff>=0.3",
-    "mypy>=1.8",
-    "pandas-stubs>=2.0",
-    "types-requests>=2.31",
-    "types-PyYAML>=6.0",
-    "types-beautifulsoup4>=4.12",
+    "pytest",
+    "pytest-cov",
+    "mypy",
+    "ruff",
+    "types-requests",
+    "pandas-stubs",
 ]
 
 [project.scripts]
-kgs-pipeline = "kgs_pipeline.pipeline:main"
+kgs-pipeline = "kgs_pipeline.pipeline:_cli_entry"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["kgs_pipeline*"]
+[tool.mypy]
+python_version = "3.11"
+files = ["kgs_pipeline/"]
+strict = false
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
+[tool.setuptools.packages.find]
+include = ["kgs_pipeline*"]
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
-
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-ignore_missing_imports = true

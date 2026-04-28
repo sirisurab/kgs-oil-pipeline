@@ -49,6 +49,15 @@
 	the year component is not numeric (e.g. "-1-1965", "0-1966").</constraint>
 </data-filtering>
 
+<deduplication>
+  <rule>
+  KGS lease files do not contain a revision column. If duplicate rows exist for
+  the same (entity, production_date) after set_index, keep the first occurrence
+  per (entity, production_date) — no tie-breaking by a revision field is needed.
+  A bare drop_duplicates() with no subset must not be used.
+  </rule>
+</deduplication>
+
 <data-dictionaries>
   <file>references/kgs_monthly_data_dictionary.csv</file>
   <file>references/kgs_archives_data_dictionary.csv</file>

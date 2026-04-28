@@ -1,7 +1,10 @@
 # Task Index
 
-- tasks/acquire_tasks.md    <- all acquire tasks (lease-index filter, MonthSave resolve, single-file download, parallel orchestration)
-- tasks/ingest_tasks.md     <- all ingest tasks (schema from data dictionary, per-file typed read, interim Parquet write)
-- tasks/transform_tasks.md  <- all transform tasks (partition-level cleaning, meta derivation, entity-indexed Parquet write)
-- tasks/features_tasks.md   <- all features tasks (product reshape, cumulative/GOR/water-cut/decline, rolling and lag, stage entry point)
-- tasks/pipeline_tasks.md   <- pipeline orchestration, config loader, logging, Dask client init, CLI entry point, build/env artifacts, end-to-end integration test
+| File | Description |
+|------|-------------|
+| `tasks/acquire_tasks.md` | Lease index filtering, lease-ID extraction, MonthSave HTML parsing, per-file download, parallel acquisition via Dask threaded scheduler |
+| `tasks/ingest_tasks.md` | Data-dictionary loading, dtype mapping, per-file raw read with schema enforcement, Dask graph construction via `dd.from_delayed`, interim Parquet write |
+| `tasks/transform_tasks.md` | Production date parsing, categorical casting, physical-bounds validation, deduplication, date-gap filling, entity indexing, sort, processed Parquet write |
+| `tasks/features_tasks.md` | Cumulative production, GOR, water cut, decline rate, rolling averages, lag features, ML-ready Parquet write |
+| `tasks/pipeline_tasks.md` | Config loading, dual-channel logging setup, Dask distributed scheduler init, CLI entry point with per-stage orchestration and error handling |
+| `tasks/config_tasks.md` | config.yaml, pyproject.toml, Makefile, .gitignore build and environment artefacts |

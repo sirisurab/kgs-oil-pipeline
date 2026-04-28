@@ -1,51 +1,35 @@
-.PHONY: venv install acquire ingest transform features pipeline test lint typecheck clean
+.PHONY: venv install acquire ingest transform features pipeline test lint typecheck
 
-PYTHON := python3
-VENV   := .venv
-PIP    := $(VENV)/bin/pip
+VENV_DIR := .venv
 
-# Environment setup targets per build-env-manifest.md
 venv:
-	$(PYTHON) -m venv $(VENV)
-	$(VENV)/bin/python -m pip install --upgrade pip
+	python3 -m venv $(VENV_DIR)
 
-install: venv
-	$(PIP) install -e ".[dev]"
+install:
+	pip install --upgrade pip
+	pip install -e .[dev]
 
-# Individual stage targets — each runnable independently
 acquire:
-	$(VENV)/bin/kgs-pipeline --stages acquire
+	kgs-pipeline acquire
 
 ingest:
-	$(VENV)/bin/kgs-pipeline --stages ingest
+	kgs-pipeline ingest
 
 transform:
-	$(VENV)/bin/kgs-pipeline --stages transform
+	kgs-pipeline transform
 
 features:
-	$(VENV)/bin/kgs-pipeline --stages features
+	kgs-pipeline features
 
-# Full pipeline target: single invocation approach — invoke entry point once for all stages.
-# Per build-env-manifest.md: never both chain stage targets as deps AND invoke entry point
-# in the recipe body. This target uses the entry-point-invocation approach only.
+# Full pipeline: single entry-point invocation (no chaining of stage targets)
 pipeline:
-	$(VENV)/bin/kgs-pipeline
+	kgs-pipeline
 
-# Test targets
 test:
-	$(VENV)/bin/pytest tests/ -m "unit" -v
-
-test-integration:
-	$(VENV)/bin/pytest tests/ -m "integration" -v
-
-test-all:
-	$(VENV)/bin/pytest tests/ -v
+	pytest tests
 
 lint:
-	$(VENV)/bin/ruff check kgs_pipeline/ tests/
+	ruff check kgs_pipeline/ tests/
 
 typecheck:
-	$(VENV)/bin/mypy kgs_pipeline/
-
-clean:
-	rm -rf $(VENV) __pycache__ kgs_pipeline/__pycache__ tests/__pycache__ .mypy_cache .ruff_cache .pytest_cache
+	mypy kgs_pipeline/

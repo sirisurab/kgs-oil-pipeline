@@ -1,35 +1,32 @@
 acquire:
-  lease_index_path: "data/external/oil_leases_2020_present.txt"
-  raw_dir: "data/raw"
-  min_year: 2024
+  lease_index_path: data/external/oil_leases_2020_present.txt
+  data_dict_path: references/kgs_archives_data_dictionary.csv
+  raw_dir: data/raw
+  target_year: 2024
   max_workers: 5
-  sleep_per_worker: 0.5
-  retry_attempts: 3
-  retry_backoff_base: 2.0
-  monthsave_url_template: "https://chasm.kgs.ku.edu/ords/oil.ogl5.MonthSave?f_lc={lease_id}"
-  download_timeout: 30
 
 ingest:
-  raw_dir: "data/raw"
-  interim_dir: "data/interim"
-  data_dictionary_path: "references/kgs_monthly_data_dictionary.csv"
+  raw_dir: data/raw
+  data_dict_path: references/kgs_monthly_data_dictionary.csv
+  interim_dir: data/interim
 
 transform:
-  interim_dir: "data/interim"
-  processed_dir: "data/processed/transform"
-  unit_error_threshold: 1000000.0
+  interim_dir: data/interim
+  processed_dir: data/processed/transform
+  data_dict_path: references/kgs_monthly_data_dictionary.csv
 
 features:
-  processed_dir: "data/processed/transform"
-  features_dir: "data/processed/features"
+  processed_dir: data/processed/transform
+  output_dir: data/processed/features
+  data_dict_path: references/kgs_monthly_data_dictionary.csv
 
 dask:
-  scheduler: "local"
+  scheduler: local
   n_workers: 4
   threads_per_worker: 2
   memory_limit: "3GB"
   dashboard_port: 8787
 
 logging:
-  log_file: "logs/pipeline.log"
-  level: "INFO"
+  log_file: logs/pipeline.log
+  level: INFO

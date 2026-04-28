@@ -1,3 +1,4 @@
+# Data and runtime artifacts
 data/
 logs/
 large_tool_results/
@@ -5,26 +6,22 @@ conversation_history/
 
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-.eggs/
+*.pyc
+*.pyo
+*.pyd
+.Python
 
 # Virtual environments
 .venv/
 venv/
 env/
 
-# Testing and tooling
+# Package build artifacts
+*.egg-info/
+dist/
+build/
+
+# Tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*~

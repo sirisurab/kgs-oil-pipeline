@@ -1,236 +1,233 @@
-"""
-Transform stage: clean, reshape, entity-index, and sort the interim Parquet data.
-
-Design decisions per ADRs and stage manifests:
-- Scheduler reuse: stages reuse the pipeline's client (build-env-manifest).
-- Laziness: no .compute() before final write (ADR-005).
-- Partition count: max(10, min(n, 50)) as last operation before write (ADR-004).
-- Vectorization: no per-row iteration (ADR-002).
-- Null sentinel and dtype preservation (ADR-003).
-- Sort-before-set_index ordering (stage-manifest-transform H1, H4):
-  sort by production_date within each partition via map_partitions, then
-  set_index on LEASE_KID as the last structural operation.
-- String-operation row filtering done inside partition-level function (ADR-004).
-- Logging: dual-channel (ADR-006).
-
-Entity column: LEASE_KID (kgs_monthly_data_dictionary.csv, task spec).
-Production date column: derived from MONTH-YEAR column format "M-YYYY".
-"""
-
-from __future__ import annotations
+"""Transform stage: parse dates, cast categoricals, validate bounds, deduplicate, gap-fill."""
 
 import logging
-from typing import Any
+import os
 
 import dask.dataframe as dd
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Task T1: Partition-level cleaning function
-# ---------------------------------------------------------------------------
+def parse_production_date(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert MONTH-YEAR column to production_date (datetime64[ns]); drop unparseable rows.
 
-
-def clean_partition(df: pd.DataFrame, unit_error_threshold: float) -> pd.DataFrame:
-    """Clean a single partition from ingest output.
-
-    Operations per task spec and stage manifests:
-    1. Derive production_date (nullable datetime) from MONTH-YEAR.
-    2. Drop rows where MONTH-YEAR month component == 0 (yearly aggregate) or
-       == -1 (starting cumulative) — these are not monthly records.
-    3. Remove duplicates on (LEASE_KID, production_date, PRODUCT) — idempotent
-       per TR-15.
-    4. Replace PRODUCTION < 0 with null (TR-01 physical bound).
-    5. Replace WELLS < 0 with null.
-    6. Replace PRODUCTION above unit_error_threshold with null (TR-02).
-    7. Preserve zeros as zeros — not converted to null (TR-05).
-    8. Preserve categorical column dtypes (ADR-003, stage-manifest-transform H2).
-    9. Sort by production_date within partition (stage-manifest-transform H1).
-
-    Vectorization per ADR-002: no per-row iteration.
-
-    Parameters
-    ----------
-    df:
-        Ingest-output partition conforming to boundary-ingest-transform contract.
-    unit_error_threshold:
-        PRODUCTION values above this threshold are replaced with null (TR-02).
-        Read from config.yaml → transform.unit_error_threshold.
-
-    Returns
-    -------
-    pd.DataFrame
-        Cleaned partition with production_date added and invalid values nulled.
+    Operates on a single partition. MONTH-YEAR format is "M-YYYY".
+    Rows where month <= 0 (yearly/cumulative records) are dropped.
+    Rows where MONTH-YEAR starts with "-" (negative month) are dropped before splitting.
+    production_date is appended as the last column.
     """
-    if df.empty:
-        # Return empty DataFrame with full schema including production_date
-        result = df.copy()
-        result["production_date"] = pd.Series([], dtype="datetime64[us]")
-        return result
+    # Pre-filter: drop rows where MONTH-YEAR starts with "-" (negative month, e.g. "-1-2024")
+    valid_format = ~df["MONTH-YEAR"].str.startswith("-", na=False)
+    df = df[valid_format].copy()
 
-    df = df.copy()
+    # Extract month and year using vectorized str accessor (ADR-002)
+    parts = df["MONTH-YEAR"].str.split("-")
+    month_str = parts.str[0]
+    year_str = parts.str[1]
 
-    # Derive production_date from MONTH-YEAR (format "M-YYYY")
-    # Drop rows with month component == 0 (yearly) or == -1 (starting cumulative)
-    month_str = df["MONTH-YEAR"].str.strip().str.rsplit("-", n=1)
-    month_component = month_str.str[0]
-    year_component = month_str.str[-1]
+    numeric_mask = month_str.str.match(r"^\d+$", na=False) & year_str.str.match(r"^\d+$", na=False)
+    df = df[numeric_mask].copy()
 
-    # Exclude month == 0 or month == -1 (non-monthly records per task spec)
-    numeric_month_mask = month_component.str.match(r"^-?\d+$", na=False)
-    month_int = pd.to_numeric(month_component.where(numeric_month_mask), errors="coerce")
-    bad_month = month_int.isin([0, -1])
-    df = df[~bad_month].copy()
-    month_str = df["MONTH-YEAR"].str.strip().str.rsplit("-", n=1)
-    month_component = month_str.str[0]
-    year_component = month_str.str[-1]
+    if len(df) == 0:
+        df["production_date"] = pd.Series(dtype="datetime64[ns]", index=df.index)
+        cols = [c for c in df.columns if c != "production_date"] + ["production_date"]
+        return df[cols]
 
-    if df.empty:
-        result = df.copy()
-        result["production_date"] = pd.Series([], dtype="datetime64[us]")
-        return result
+    parts = df["MONTH-YEAR"].str.split("-")
+    month_str = parts.str[0]
+    year_str = parts.str[1]
 
-    # Build production_date: combine month + year into first-of-month date
-    month_int2 = pd.to_numeric(month_component, errors="coerce")
-    year_int = pd.to_numeric(year_component, errors="coerce")
+    month = month_str.astype(int)
+    year = year_str.astype(int)
 
-    # Only valid months/years produce a date; invalid → NaT
-    valid_date = month_int2.notna() & year_int.notna() & (month_int2 >= 1) & (month_int2 <= 12)
-    date_strings = pd.Series(index=df.index, dtype="object")
-    date_strings[valid_date] = (
-        year_int[valid_date].astype(int).astype(str)
-        + "-"
-        + month_int2[valid_date].astype(int).astype(str).str.zfill(2)
-        + "-01"
+    # Drop rows where month <= 0 (yearly record month=0)
+    valid_mask = month >= 1
+    df = df[valid_mask].copy()
+    month = month[valid_mask]
+    year = year[valid_mask]
+
+    if len(df) == 0:
+        df["production_date"] = pd.Series(dtype="datetime64[ns]", index=df.index)
+        cols = [c for c in df.columns if c != "production_date"] + ["production_date"]
+        return df[cols]
+
+    df["production_date"] = pd.to_datetime({"year": year, "month": month, "day": 1}).astype(
+        "datetime64[ns]"
     )
-    df["production_date"] = pd.to_datetime(date_strings, format="%Y-%m-%d", errors="coerce")
 
-    # Deduplicate on (LEASE_KID, production_date, PRODUCT) — idempotent (TR-15)
-    dedup_cols = ["LEASE_KID", "production_date", "PRODUCT"]
-    existing_dedup = [c for c in dedup_cols if c in df.columns]
-    if existing_dedup:
-        df = df.drop_duplicates(subset=existing_dedup)
+    # Ensure production_date is the last column (meta column order must match)
+    cols = [c for c in df.columns if c != "production_date"] + ["production_date"]
+    return df[cols]
 
-    if df.empty:
-        return df
 
-    # Replace PRODUCTION < 0 with null (TR-01); zeros preserved (TR-05)
-    if "PRODUCTION" in df.columns:
-        prod = df["PRODUCTION"]
-        # Only null out negative values; zero stays zero
-        neg_mask = prod < 0
-        if neg_mask.any():
-            df["PRODUCTION"] = prod.where(~neg_mask, other=np.nan)
+def cast_categoricals(df: pd.DataFrame, data_dict: pd.DataFrame) -> pd.DataFrame:
+    """Cast categorical columns to declared category sets; replace invalid values with pd.NA.
 
-        # Replace unit-error outliers (TR-02)
-        prod = df["PRODUCTION"]
-        outlier_mask = prod > unit_error_threshold
-        if outlier_mask.any():
-            df["PRODUCTION"] = prod.where(~outlier_mask, other=np.nan)
+    Operates on a single partition.
+    """
+    cat_rows = data_dict[data_dict["dtype"] == "categorical"]
 
-    # Replace WELLS < 0 with null; zeros preserved (TR-05)
-    if "WELLS" in df.columns:
-        wells = df["WELLS"]
-        neg_mask = wells < 0
-        if neg_mask.any():
-            df["WELLS"] = wells.where(~neg_mask, other=np.nan)
+    for _, row in cat_rows.iterrows():
+        col: str = row["column"]
+        if col not in df.columns:
+            continue
+        cats_str: str = row["categories"]
+        categories = [c.strip() for c in cats_str.split("|") if c.strip()]
+        cat_dtype = pd.CategoricalDtype(categories=categories, ordered=False)
 
-    # Sort by production_date within partition (H1 — sort must be valid at stage exit)
-    df = df.sort_values("production_date", kind="mergesort", na_position="last")
+        # Replace values not in declared set with pd.NA before casting
+        valid_mask = df[col].isin(categories)
+        df = df.copy()
+        df.loc[~valid_mask, col] = pd.NA
+        df[col] = df[col].astype(cat_dtype)
 
     return df
 
 
-# ---------------------------------------------------------------------------
-# Task T2: Meta-derivation helper for map_partitions
-# ---------------------------------------------------------------------------
+def validate_bounds(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace physically invalid PRODUCTION values with np.nan.
 
-
-def derive_meta(func: Any, meta_input: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
-    """Derive Dask meta by calling the actual function on a zero-row copy of meta_input.
-
-    ADR-003: Meta derivation and function execution must share the same code path.
-    Calling on a zero-row real DataFrame guarantees column names, order, and dtypes
-    match the live partition output exactly — separate meta construction is prohibited.
-
-    Parameters
-    ----------
-    func:
-        The partition-level function to derive meta for.
-    meta_input:
-        Zero-row copy of the upstream _meta DataFrame.
-    **kwargs:
-        Extra keyword arguments forwarded to func.
-
-    Returns
-    -------
-    pd.DataFrame
-        Zero-row output with the exact schema func will produce.
+    - Negative PRODUCTION → np.nan (all products)
+    - PRODUCTION > 50,000 BBL where PRODUCT == "O" → np.nan (unit error)
+    Operates on a single partition. Float null sentinel is np.nan (ADR-003).
     """
-    return func(meta_input, **kwargs)
+    df = df.copy()
+
+    # Replace negative production
+    neg_mask = df["PRODUCTION"] < 0
+    df.loc[neg_mask, "PRODUCTION"] = np.nan
+
+    # Replace oil production exceeding 50,000 BBL/month
+    oil_mask = df["PRODUCT"] == "O"
+    high_mask = df["PRODUCTION"] > 50_000
+    df.loc[oil_mask & high_mask, "PRODUCTION"] = np.nan
+
+    return df
 
 
-# ---------------------------------------------------------------------------
-# Task T3: Transform stage entry point
-# ---------------------------------------------------------------------------
+def deduplicate(df: pd.DataFrame, entity_col: str, date_col: str) -> pd.DataFrame:
+    """Drop duplicate (entity, production_date) rows, keeping first occurrence.
 
-
-def transform(config: dict[str, Any]) -> None:
-    """Stage entry point: read interim Parquet, clean, sort, entity-index, write.
-
-    Execution order per stage-manifest-transform:
-    1. Read interim Parquet.
-    2. Apply clean_partition via map_partitions (with T2-derived meta).
-    3. sort_values on production_date happens inside clean_partition per partition.
-    4. set_index on LEASE_KID — last structural operation before write (H4).
-    5. repartition(max(10, min(n, 50))) — last operation before write (ADR-004, H3).
-    6. Write Parquet.
-
-    Note on TR-13: ADR-004 prohibits per-entity partitioning. After set_index +
-    repartition, Dask may place multiple LEASE_KID values in one partition file.
-    TR-13's "exactly one LEASE_KID per partition" is therefore inapplicable at
-    production data volumes — see test_transform.py for the reconciliation comment.
-
-    Parameters
-    ----------
-    config:
-        Full pipeline config dict.
+    Operates on a partition already indexed on entity_col. Resets index,
+    deduplicates on (entity_col, date_col), then restores the index.
     """
-    tfm = config["transform"]
-    interim_dir = Path(tfm["interim_dir"])
-    processed_dir = Path(tfm["processed_dir"])
-    unit_error_threshold = float(tfm["unit_error_threshold"])
+    df = df.reset_index()
+    df = df.drop_duplicates(subset=[entity_col, date_col], keep="first")
+    df = df.set_index(entity_col)
+    return df
+
+
+def fill_date_gaps(df: pd.DataFrame, entity_col: str, date_col: str) -> pd.DataFrame:
+    """Insert missing monthly rows per entity with PRODUCTION=0.0 and forward-filled metadata.
+
+    Operates on a single partition indexed on entity_col.
+    """
+    if len(df) == 0:
+        return df
+
+    # Save column order from input BEFORE reset_index (entity_col is the index, not in columns).
+    # This is the authoritative output column order — restored at the end.
+    expected_cols = list(df.columns)
+
+    df = df.reset_index()
+    groups = []
+
+    for entity_id, grp in df.groupby(entity_col, sort=False):
+        grp = grp.sort_values(date_col).copy()
+        date_min = grp[date_col].min()
+        date_max = grp[date_col].max()
+
+        full_range = pd.date_range(start=date_min, end=date_max, freq="MS")
+        grp = grp.set_index(date_col).reindex(full_range)
+        grp.index.name = date_col
+
+        # Fill entity column and forward-fill other metadata
+        grp[entity_col] = entity_id
+        grp["PRODUCTION"] = grp["PRODUCTION"].fillna(0.0)
+        grp = grp.ffill()
+
+        grp = grp.reset_index()
+        groups.append(grp)
+
+    if not groups:
+        return df.set_index(entity_col)[expected_cols]
+
+    result = pd.concat(groups, ignore_index=True)
+    # set_index first (removes entity_col from columns), then enforce expected_cols order.
+    # This guarantees date_col stays in the same position as the input schema — never position 0.
+    result = result.set_index(entity_col)
+    result = result[expected_cols]
+    return result
+
+
+def apply_transformations(ddf: dd.DataFrame, data_dict: pd.DataFrame) -> dd.DataFrame:
+    """Apply parse_production_date, cast_categoricals, validate_bounds to every partition
+    via map_partitions.
+
+    Meta is derived by calling the actual function on ddf._meta.iloc[0:0] (ADR-003).
+    set_index, deduplicate, and fill_date_gaps are applied later in transform().
+    """
+    # --- parse_production_date ---
+    meta_parse = parse_production_date(ddf._meta.iloc[0:0])
+    ddf = ddf.map_partitions(parse_production_date, meta=meta_parse)
+
+    # --- cast_categoricals ---
+    meta_cat = cast_categoricals(ddf._meta.iloc[0:0], data_dict)
+    ddf = ddf.map_partitions(cast_categoricals, data_dict, meta=meta_cat)
+
+    # --- validate_bounds ---
+    meta_vb = validate_bounds(ddf._meta.iloc[0:0])
+    ddf = ddf.map_partitions(validate_bounds, meta=meta_vb)
+
+    return ddf
+
+
+def transform(config: dict) -> None:
+    """Orchestrate the full transform stage and write processed Parquet."""
+    from kgs_pipeline.ingest import load_data_dictionary
+
+    interim_dir: str = config["transform"]["interim_dir"]
+    processed_dir: str = config["transform"]["processed_dir"]
+    data_dict_path: str = config["transform"]["data_dict_path"]
+
+    entity_col = "LEASE_KID"
+    date_col = "production_date"
 
     logger.info("Transform: reading interim Parquet from %s", interim_dir)
-    ddf = dd.read_parquet(str(interim_dir))
+    ddf = dd.read_parquet(interim_dir)
+    data_dict = load_data_dictionary(data_dict_path)
 
-    # Derive meta by calling the actual function on a zero-row copy (ADR-003, T2)
-    meta = derive_meta(
-        clean_partition,
-        ddf._meta.iloc[:0].copy(),
-        unit_error_threshold=unit_error_threshold,
+    n = ddf.npartitions
+    n_partitions = max(10, min(n, 50))
+    logger.info("Transform: %d input partitions → %d output partitions", n, n_partitions)
+
+    # Apply partition-level transformations (parse, cast, validate)
+    ddf = apply_transformations(ddf, data_dict)
+
+    # Sort by production_date within partitions before set_index (H1)
+    ddf = ddf.map_partitions(
+        lambda part: part.sort_values(date_col),
+        meta=ddf._meta,
     )
 
-    # Apply cleaning via map_partitions — lazy (ADR-005)
-    ddf_clean = ddf.map_partitions(
-        clean_partition, unit_error_threshold=unit_error_threshold, meta=meta
-    )
+    # set_index is the last structural operation before writing (H4)
+    # sorted=False lets Dask handle the shuffle
+    ddf = ddf.set_index(entity_col, sort=False, drop=True)
 
-    # set_index on LEASE_KID — last structural op before write (H4)
-    # sorted=False lets Dask handle the distributed shuffle
-    ddf_indexed = ddf_clean.set_index("LEASE_KID", sorted=False, drop=True)
+    # Deduplicate after set_index (H5); derive meta via ADR-003
+    meta_dedup = deduplicate(ddf._meta.iloc[0:0], entity_col, date_col)
+    ddf = ddf.map_partitions(deduplicate, entity_col, date_col, meta=meta_dedup)
 
-    # Repartition to max(10, min(n, 50)) — last operation before write (ADR-004, H3)
-    n_source_partitions = ddf_clean.npartitions
-    n_out = max(10, min(n_source_partitions, 50))
-    ddf_final = ddf_indexed.repartition(npartitions=n_out)
+    # fill_date_gaps after set_index (partition indexed on entity_col); derive meta via ADR-003
+    meta_fill = fill_date_gaps(ddf._meta.iloc[0:0], entity_col, date_col)
+    ddf = ddf.map_partitions(fill_date_gaps, entity_col, date_col, meta=meta_fill)
 
-    processed_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Transform: writing processed Parquet to %s (%d partitions)", processed_dir, n_out)
+    # Repartition is the last operation before write (ADR-004, H3)
+    ddf = ddf.repartition(npartitions=n_partitions)
 
-    ddf_final.to_parquet(str(processed_dir), overwrite=True, write_index=True)
-    logger.info("Transform complete.")
+    os.makedirs(processed_dir, exist_ok=True)
+    logger.info("Transform: writing processed Parquet to %s", processed_dir)
+    ddf.to_parquet(processed_dir, overwrite=True)
+    logger.info("Transform: complete")

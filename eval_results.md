@@ -1,5 +1,41 @@
 
-## Eval Run at 2026-04-23 15:11:59
+## Eval Run at 2026-04-27 19:17:33
+
+**Status:** ❌ FAILED
+
+### Failures:
+- **Install:**
+```
+pip install failed — likely a build backend error in pyproject.toml.
+  error: subprocess-exited-with-error
+  
+  × Getting requirements to build editable did not run successfully.
+  │ exit code: 1
+  ╰─> [14 lines of output]
+      error: Multiple top-level packages discovered in a flat-layout: ['data', 'references', 'kgs_pipeline'].
+      
+      To avoid accidental inclusion of unwanted files or directories,
+      setuptools will not proceed with this build.
+      
+      If you are trying to create a single distribution with multiple packages
+      on purpose, you should not rely on automatic discovery.
+      Instead, consider the following options:
+      
+      1. set up custom discovery (`find` directive with `include` or `exclude`)
+      2. use a `src-layout`
+      3. explicitly set `py_modules` or `packages` with a list of names
+      
+      To find more information, look for "package discovery" on setuptools docs.
+      [end of output]
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+ERROR: Failed to build 'file:///Users/sirisurab/projects/dapi_poc/kgs' when getting requirements to build editable
+
+```
+
+---
+
+## Eval Run at 2026-04-27 19:21:32
 
 **Status:** ❌ FAILED
 
@@ -7,29 +43,27 @@
 - **Linting:**
 ```
 Linting failed. Fix these errors:
-F841 Local variable `all_cols` is assigned to but never used
-   --> tests/test_features.py:595:5
+F841 Local variable `dtype_map` is assigned to but never used
+   --> tests/test_ingest.py:401:5
     |
-593 |         "water_bbl_lag_1m",
-594 |     ]
-595 |     all_cols = list(df.columns) + [df.index.name] if df.index.name else list(df.columns)
-    |     ^^^^^^^^
-596 |     for col in tr19_cols:
-597 |         assert col in df.columns or col in (df.index.name,), f"Missing TR-19 column: {col}"
+400 |     data_dict = load_data_dictionary(DATA_DICT_PATH)
+401 |     dtype_map = build_dtype_map(data_dict)
+    |     ^^^^^^^^^
+402 |     df = dd.read_parquet(str(interim_dir)).compute()
     |
-help: Remove assignment to unused variable `all_cols`
+help: Remove assignment to unused variable `dtype_map`
 
-F841 Local variable `transform_cfg` is assigned to but never used
-   --> tests/test_transform.py:133:5
+F841 Local variable `mock_cluster` is assigned to but never used
+   --> tests/test_pipeline.py:164:69
     |
-131 |     ingest(cfg)
-132 |
-133 |     transform_cfg = {
-    |     ^^^^^^^^^^^^^
-134 |         "transform": cfg["transform"],
-135 |     }
+162 |     import distributed
+163 |
+164 |     with patch("kgs_pipeline.pipeline.distributed.LocalCluster") as mock_cluster:
+    |                                                                     ^^^^^^^^^^^^
+165 |         with patch("kgs_pipeline.pipeline.distributed.Client") as mock_client_cls:
+166 |             mock_client_instance = MagicMock(spec=distributed.Client)
     |
-help: Remove assignment to unused variable `transform_cfg`
+help: Remove assignment to unused variable `mock_cluster`
 
 Found 2 errors.
 No fixes available (2 hidden fixes can be enabled with the `--unsafe-fixes` option).
@@ -39,117 +73,20 @@ No fixes available (2 hidden fixes can be enabled with the `--unsafe-fixes` opti
 - **Type check:**
 ```
 Type check failed. Fix these errors:
-/kgs_pipeline/transform.py:126: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "NAType"  [call-overload]
-/kgs_pipeline/transform.py:126: note: Possible overload variants:
-/kgs_pipeline/transform.py:126: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/transform.py:126: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/kgs_pipeline/transform.py:132: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "NAType"  [call-overload]
-/kgs_pipeline/transform.py:132: note: Possible overload variants:
-/kgs_pipeline/transform.py:132: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/transform.py:132: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/kgs_pipeline/transform.py:139: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "NAType"  [call-overload]
-/kgs_pipeline/transform.py:139: note: Possible overload variants:
-/kgs_pipeline/transform.py:139: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/transform.py:139: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/kgs_pipeline/ingest.py:254: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "None"  [call-overload]
-/kgs_pipeline/ingest.py:254: note: Possible overload variants:
-/kgs_pipeline/ingest.py:254: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/ingest.py:254: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/kgs_pipeline/features.py:281: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "NAType"  [call-overload]
-/kgs_pipeline/features.py:281: note: Possible overload variants:
-/kgs_pipeline/features.py:281: note:     def where(self, cond: Series[float] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float]], Series[builtins.bool]] | Callable[[float], builtins.bool], other: float | Series[float] | Callable[..., float | Series[float]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/features.py:281: note:     def where(self, cond: Series[float] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float]], Series[builtins.bool]] | Callable[[float], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[float]
-/kgs_pipeline/features.py:281: note:     def where(self, cond: Series[float | Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float | Any]], Series[builtins.bool]] | Callable[[float | Any], builtins.bool], other: float | Any | Series[float | Any] | Callable[..., float | Any | Series[float | Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/features.py:281: note:     def where(self, cond: Series[float | Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float | Any]], Series[builtins.bool]] | Callable[[float | Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[float | Any]
-/kgs_pipeline/features.py:281: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/features.py:281: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/kgs_pipeline/features.py:292: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "NAType"  [call-overload]
-/kgs_pipeline/features.py:292: note: Possible overload variants:
-/kgs_pipeline/features.py:292: note:     def where(self, cond: Series[float] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float]], Series[builtins.bool]] | Callable[[float], builtins.bool], other: float | Series[float] | Callable[..., float | Series[float]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/features.py:292: note:     def where(self, cond: Series[float] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float]], Series[builtins.bool]] | Callable[[float], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[float]
-/kgs_pipeline/features.py:292: note:     def where(self, cond: Series[float | Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float | Any]], Series[builtins.bool]] | Callable[[float | Any], builtins.bool], other: float | Any | Series[float | Any] | Callable[..., float | Any | Series[float | Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/features.py:292: note:     def where(self, cond: Series[float | Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float | Any]], Series[builtins.bool]] | Callable[[float | Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[float | Any]
-/kgs_pipeline/features.py:292: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/features.py:292: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/kgs_pipeline/features.py:302: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "NAType"  [call-overload]
-/kgs_pipeline/features.py:302: note: Possible overload variants:
-/kgs_pipeline/features.py:302: note:     def where(self, cond: Series[float] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float]], Series[builtins.bool]] | Callable[[float], builtins.bool], other: float | Series[float] | Callable[..., float | Series[float]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/kgs_pipeline/features.py:302: note:     def where(self, cond: Series[float] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[float]], Series[builtins.bool]] | Callable[[float], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[float]
-/kgs_pipeline/acquire.py:196: error: Invalid index type "str" for "NavigableString"; expected type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"  [index]
-/kgs_pipeline/acquire.py:198: error: Item "list[str]" of "str | list[str]" has no attribute "startswith"  [union-attr]
-/tests/test_transform.py:80: error: No overload variant of "where" of "Series" matches argument types "Series[bool]", "None"  [call-overload]
-/tests/test_transform.py:80: note: Possible overload variants:
-/tests/test_transform.py:80: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: Any | Series[Any] | Callable[..., Any | Series[Any]] = ..., *, inplace: Literal[True], axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> None
-/tests/test_transform.py:80: note:     def where(self, cond: Series[Any] | Series[builtins.bool] | ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | Callable[[Series[Any]], Series[builtins.bool]] | Callable[[Any], builtins.bool], other: str | bytes | date | datetime | timedelta | <13 more items> = ..., *, inplace: Literal[False] = ..., axis: Literal['index', 0] | None = ..., level: Hashable | None = ...) -> Series[Any]
-/tests/test_features.py:138: error: No overload variant of "array" matches argument types "Series[Any]", "str"  [call-overload]
-/tests/test_features.py:138: note: Possible overload variants:
-/tests/test_features.py:138: note:     def array(data: Sequence[Just[float]], dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/tests/test_features.py:138: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void], copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:138: note:     def array(data: Sequence[NAType | None], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:138: note:     def array(data: Sequence[Timedelta] | Series[Timedelta] | TimedeltaArray | TimedeltaIndex | ndarray[tuple[int], dtype[timedelta64[timedelta | int | None]]], dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] | None = ..., copy: bool = ...) -> TimedeltaArray
-/tests/test_features.py:138: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | Just[float] | NAType | None], dtype: BooleanDtype | Literal['boolean'], copy: bool = ...) -> BooleanArray
-/tests/test_features.py:138: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | NAType | None], dtype: None = ..., copy: bool = ...) -> BooleanArray
-/tests/test_features.py:138: note:     def array(data: ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | BooleanArray, dtype: BooleanDtype | Literal['boolean'] | None = ..., copy: bool = ...) -> BooleanArray
-/tests/test_features.py:138: note:     def array(data: Sequence[float | integer[Any] | NAType | None], dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype, copy: bool = ...) -> IntegerArray
-/tests/test_features.py:138: note:     def array(data: Sequence[int | integer[Any] | NAType | None], dtype: None = ..., copy: bool = ...) -> IntegerArray
-/tests/test_features.py:138: note:     def array(data: ndarray[tuple[Any, ...], dtype[integer[Any]]] | IntegerArray, dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype | None = ..., copy: bool = ...) -> IntegerArray
-/tests/test_features.py:138: note:     def array(data: Sequence[float | floating[Any] | NAType | None] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/tests/test_features.py:138: note:     def array(data: tuple[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None, ...] | MutableSequence[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[Any]] | DatetimeArray, dtype: DatetimeTZDtype | Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | dtype[datetime64[date | int | None]] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'], copy: bool = ...) -> DatetimeArray
-/tests/test_features.py:138: note:     def array(data: Sequence[datetime | NaTType | None] | Sequence[datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, dtype: None = ..., copy: bool = ...) -> DatetimeArray
-/tests/test_features.py:138: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Never], copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:138: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ...) -> ArrowStringArray
-/tests/test_features.py:138: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['python']] | Literal['string[python]'], copy: bool = ...) -> StringArray
-/tests/test_features.py:138: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[None] | Literal['string'], copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:138: note:     def array(data: tuple[str | str_ | NAType | None, ...] | MutableSequence[str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[str_]] | BaseStringArray[None], dtype: None = ..., copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:138: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:138: note:     def array(data: ndarray[tuple[Any, ...], dtype[Any]] | NumpyExtensionArray | RangeIndex, dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:139: error: No overload variant of "array" matches argument types "Series[Any]", "str"  [call-overload]
-/tests/test_features.py:139: note: Possible overload variants:
-/tests/test_features.py:139: note:     def array(data: Sequence[Just[float]], dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/tests/test_features.py:139: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void], copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:139: note:     def array(data: Sequence[NAType | None], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:139: note:     def array(data: Sequence[Timedelta] | Series[Timedelta] | TimedeltaArray | TimedeltaIndex | ndarray[tuple[int], dtype[timedelta64[timedelta | int | None]]], dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] | None = ..., copy: bool = ...) -> TimedeltaArray
-/tests/test_features.py:139: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | Just[float] | NAType | None], dtype: BooleanDtype | Literal['boolean'], copy: bool = ...) -> BooleanArray
-/tests/test_features.py:139: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | NAType | None], dtype: None = ..., copy: bool = ...) -> BooleanArray
-/tests/test_features.py:139: note:     def array(data: ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | BooleanArray, dtype: BooleanDtype | Literal['boolean'] | None = ..., copy: bool = ...) -> BooleanArray
-/tests/test_features.py:139: note:     def array(data: Sequence[float | integer[Any] | NAType | None], dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype, copy: bool = ...) -> IntegerArray
-/tests/test_features.py:139: note:     def array(data: Sequence[int | integer[Any] | NAType | None], dtype: None = ..., copy: bool = ...) -> IntegerArray
-/tests/test_features.py:139: note:     def array(data: ndarray[tuple[Any, ...], dtype[integer[Any]]] | IntegerArray, dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype | None = ..., copy: bool = ...) -> IntegerArray
-/tests/test_features.py:139: note:     def array(data: Sequence[float | floating[Any] | NAType | None] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/tests/test_features.py:139: note:     def array(data: tuple[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None, ...] | MutableSequence[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[Any]] | DatetimeArray, dtype: DatetimeTZDtype | Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | dtype[datetime64[date | int | None]] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'], copy: bool = ...) -> DatetimeArray
-/tests/test_features.py:139: note:     def array(data: Sequence[datetime | NaTType | None] | Sequence[datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, dtype: None = ..., copy: bool = ...) -> DatetimeArray
-/tests/test_features.py:139: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Never], copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:139: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ...) -> ArrowStringArray
-/tests/test_features.py:139: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['python']] | Literal['string[python]'], copy: bool = ...) -> StringArray
-/tests/test_features.py:139: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[None] | Literal['string'], copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:139: note:     def array(data: tuple[str | str_ | NAType | None, ...] | MutableSequence[str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[str_]] | BaseStringArray[None], dtype: None = ..., copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:139: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:139: note:     def array(data: ndarray[tuple[Any, ...], dtype[Any]] | NumpyExtensionArray | RangeIndex, dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:140: error: No overload variant of "array" matches argument types "Series[Any]", "str"  [call-overload]
-/tests/test_features.py:140: note: Possible overload variants:
-/tests/test_features.py:140: note:     def array(data: Sequence[Just[float]], dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/tests/test_features.py:140: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void], copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:140: note:     def array(data: Sequence[NAType | None], dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:140: note:     def array(data: Sequence[Timedelta] | Series[Timedelta] | TimedeltaArray | TimedeltaIndex | ndarray[tuple[int], dtype[timedelta64[timedelta | int | None]]], dtype: Literal['timedelta64[s]', 'timedelta64[ms]', 'timedelta64[us]', 'timedelta64[ns]', 'm8[s]', 'm8[ms]', 'm8[us]', 'm8[ns]', '<m8[s]', '<m8[ms]', '<m8[us]', '<m8[ns]'] | Literal['duration[s][pyarrow]', 'duration[ms][pyarrow]', 'duration[us][pyarrow]', 'duration[ns][pyarrow]'] | None = ..., copy: bool = ...) -> TimedeltaArray
-/tests/test_features.py:140: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | Just[float] | NAType | None], dtype: BooleanDtype | Literal['boolean'], copy: bool = ...) -> BooleanArray
-/tests/test_features.py:140: note:     def array(data: Sequence[builtins.bool | numpy.bool[builtins.bool] | NAType | None], dtype: None = ..., copy: bool = ...) -> BooleanArray
-/tests/test_features.py:140: note:     def array(data: ndarray[tuple[Any, ...], dtype[numpy.bool[builtins.bool]]] | BooleanArray, dtype: BooleanDtype | Literal['boolean'] | None = ..., copy: bool = ...) -> BooleanArray
-/tests/test_features.py:140: note:     def array(data: Sequence[float | integer[Any] | NAType | None], dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype, copy: bool = ...) -> IntegerArray
-/tests/test_features.py:140: note:     def array(data: Sequence[int | integer[Any] | NAType | None], dtype: None = ..., copy: bool = ...) -> IntegerArray
-/tests/test_features.py:140: note:     def array(data: ndarray[tuple[Any, ...], dtype[integer[Any]]] | IntegerArray, dtype: Literal['Int8', 'Int16', 'Int32', 'Int64'] | Int8Dtype | Int16Dtype | Int32Dtype | Int64Dtype | Literal['UInt8', 'UInt16', 'UInt32', 'UInt64'] | UInt8Dtype | UInt16Dtype | UInt32Dtype | UInt64Dtype | None = ..., copy: bool = ...) -> IntegerArray
-/tests/test_features.py:140: note:     def array(data: Sequence[float | floating[Any] | NAType | None] | ndarray[tuple[Any, ...], dtype[floating[Any]]] | FloatingArray, dtype: Literal['Float32', 'Float64'] | Float32Dtype | Float64Dtype | None = ..., copy: bool = ...) -> FloatingArray
-/tests/test_features.py:140: note:     def array(data: tuple[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None, ...] | MutableSequence[Just[float] | str | datetime | datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[Any]] | DatetimeArray, dtype: DatetimeTZDtype | Literal['datetime64[s, UTC]', 'datetime64[ms, UTC]', 'datetime64[us, UTC]', 'datetime64[ns, UTC]'] | dtype[datetime64[date | int | None]] | Literal['datetime64[s]', 'datetime64[ms]', 'datetime64[us]', 'datetime64[ns]', 'M8[s]', 'M8[ms]', 'M8[us]', 'M8[ns]', '<M8[s]', '<M8[ms]', '<M8[us]', '<M8[ns]'], copy: bool = ...) -> DatetimeArray
-/tests/test_features.py:140: note:     def array(data: Sequence[datetime | NaTType | None] | Sequence[datetime64[date | int | None] | NaTType | None] | ndarray[tuple[Any, ...], dtype[datetime64[date | int | None]]] | DatetimeArray, dtype: None = ..., copy: bool = ...) -> DatetimeArray
-/tests/test_features.py:140: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Never], copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:140: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['pyarrow']] | Literal['string[pyarrow]'], copy: bool = ...) -> ArrowStringArray
-/tests/test_features.py:140: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[Literal['python']] | Literal['string[python]'], copy: bool = ...) -> StringArray
-/tests/test_features.py:140: note:     def array(data: tuple[Just[float] | str | str_ | NAType | None, ...] | MutableSequence[Just[float] | str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[Any]] | BaseStringArray[None], dtype: StringDtype[None] | Literal['string'], copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:140: note:     def array(data: tuple[str | str_ | NAType | None, ...] | MutableSequence[str | str_ | NAType | None] | ndarray[tuple[Any, ...], dtype[str_]] | BaseStringArray[None], dtype: None = ..., copy: bool = ...) -> BaseStringArray[None]
-/tests/test_features.py:140: note:     def array(data: tuple[Any, ...] | MutableSequence[Any], dtype: None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_features.py:140: note:     def array(data: ndarray[tuple[Any, ...], dtype[Any]] | NumpyExtensionArray | RangeIndex, dtype: type[builtins.bool] | Literal['bool'] | type[int] | Literal['int'] | type[float] | Literal['float'] | type[complex] | Literal['complex'] | type[bytes] | Literal['bytes'] | type[object] | Literal['object'] | Literal['?', 'b1', 'bool_'] | type[numpy.bool[builtins.bool]] | Literal['b', 'i1', 'int8', 'byte', 'h', 'i2', 'int16', 'short', 'i', 'i4', 'int32', 'intc', 'l', 'long', 'l', 'i8', 'int64', 'int_', 'long', 'q', 'longlong', 'p', 'intp'] | type[signedinteger[_8Bit]] | type[signedinteger[_16Bit]] | type[signedinteger[_32Bit]] | type[signedinteger[_32Bit | _64Bit]] | type[signedinteger[_64Bit]] | type[signedinteger[_32Bit | _64Bit]] | Literal['B', 'u1', 'uint8', 'ubyte', 'H', 'u2', 'uint16', 'ushort', 'I', 'u4', 'uint32', 'uintc', 'L', 'ulong', 'L', 'u8', 'uint', 'ulong', 'uint64', 'Q', 'ulonglong', 'P', 'uintp'] | type[unsignedinteger[_8Bit]] | type[unsignedinteger[_16Bit]] | type[unsignedinteger[_32Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | type[unsignedinteger[_64Bit]] | type[unsignedinteger[_32Bit | _64Bit]] | Literal['e', 'f2', '<f2', 'float16', 'half'] | type[floating[_16Bit]] | Literal['f', 'f4', 'float32', 'single', 'd', 'f8', 'float64', 'double', 'g', 'f16', 'float128', 'longdouble'] | type[floating[_32Bit]] | type[float64] | type[floating[_64Bit | _96Bit | _128Bit]] | Literal['F', 'c8', 'complex64', 'csingle', 'D', 'c16', 'complex128', 'cdouble', 'G', 'c32', 'complex256', 'clongdouble'] | type[complexfloating[_32Bit, _32Bit]] | type[complex128] | type[complexfloating[_64Bit | _96Bit | _128Bit, _64Bit | _96Bit | _128Bit]] | Literal['U', 'str_', 'unicode'] | type[str_] | Literal['S', 'bytes_'] | type[bytes_] | Literal['object_', 'O'] | type[object_] | Literal['V', 'void'] | type[void] | None = ..., copy: bool = ...) -> NumpyExtensionArray
-/tests/test_acquire.py:272: error: Argument 3 has incompatible type "*tuple[object, ...]"; expected "str"  [arg-type]
-/tests/test_acquire.py:272: error: Argument 4 has incompatible type "**dict[str, object]"; expected "str"  [arg-type]
-Found 15 errors in 7 files (checked 12 source files)
+/kgs_pipeline/features.py:98: error: No overload variant of "clip" matches argument types "NumpyExtensionArray", "float", "float"  [call-overload]
+/kgs_pipeline/features.py:98: note: Possible overload variants:
+/kgs_pipeline/features.py:98: note:     def [_ScalarT: generic[Any]] clip(a: _ScalarT, a_min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., a_max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., out: None = ..., *, min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., dtype: None = ..., where: _SupportsArray[dtype[numpy.bool[builtins.bool]]] | _NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool]]]] | builtins.bool | _NestedSequence[builtins.bool] | None = ..., order: Literal['K', 'A', 'C', 'F'] | None = ..., subok: bool = ..., signature: str | tuple[str | None, ...] = ..., casting: Literal['no', 'equiv', 'safe', 'same_kind', 'same_value', 'unsafe'] = ...) -> _ScalarT
+/kgs_pipeline/features.py:98: note:     def clip(a: complex | str | bytes | generic[Any], a_min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., a_max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., out: None = ..., *, min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., dtype: None = ..., where: _SupportsArray[dtype[numpy.bool[builtins.bool]]] | _NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool]]]] | builtins.bool | _NestedSequence[builtins.bool] | None = ..., order: Literal['K', 'A', 'C', 'F'] | None = ..., subok: bool = ..., signature: str | tuple[str | None, ...] = ..., casting: Literal['no', 'equiv', 'safe', 'same_kind', 'same_value', 'unsafe'] = ...) -> Any
+/kgs_pipeline/features.py:98: note:     def [_ScalarT: generic[Any]] clip(a: _SupportsArray[dtype[_ScalarT]] | _NestedSequence[_SupportsArray[dtype[_ScalarT]]], a_min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., a_max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., out: None = ..., *, min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., dtype: None = ..., where: _SupportsArray[dtype[numpy.bool[builtins.bool]]] | _NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool]]]] | builtins.bool | _NestedSequence[builtins.bool] | None = ..., order: Literal['K', 'A', 'C', 'F'] | None = ..., subok: bool = ..., signature: str | tuple[str | None, ...] = ..., casting: Literal['no', 'equiv', 'safe', 'same_kind', 'same_value', 'unsafe'] = ...) -> ndarray[tuple[Any, ...], dtype[_ScalarT]]
+/kgs_pipeline/features.py:98: note:     def clip(a: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str], a_min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., a_max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., out: None = ..., *, min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., dtype: None = ..., where: _SupportsArray[dtype[numpy.bool[builtins.bool]]] | _NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool]]]] | builtins.bool | _NestedSequence[builtins.bool] | None = ..., order: Literal['K', 'A', 'C', 'F'] | None = ..., subok: bool = ..., signature: str | tuple[str | None, ...] = ..., casting: Literal['no', 'equiv', 'safe', 'same_kind', 'same_value', 'unsafe'] = ...) -> ndarray[tuple[Any, ...], dtype[Any]]
+/kgs_pipeline/features.py:98: note:     def [_ArrayT: ndarray[Any, Any]] clip(a: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str], a_min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | None, a_max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | None, out: _ArrayT, *, min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., dtype: type[Any] | dtype[Any] | _HasDType[dtype[Any]] | _HasNumPyDType[dtype[Any]] | tuple[Any, Any] | list[Any] | _DTypeDict | str | None = ..., where: _SupportsArray[dtype[numpy.bool[builtins.bool]]] | _NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool]]]] | builtins.bool | _NestedSequence[builtins.bool] | None = ..., order: Literal['K', 'A', 'C', 'F'] | None = ..., subok: bool = ..., signature: str | tuple[str | None, ...] = ..., casting: Literal['no', 'equiv', 'safe', 'same_kind', 'same_value', 'unsafe'] = ...) -> _ArrayT
+/kgs_pipeline/features.py:98: note:     def [_ArrayT: ndarray[Any, Any]] clip(a: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str], a_min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., a_max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., *, out: _ArrayT, min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., dtype: type[Any] | dtype[Any] | _HasDType[dtype[Any]] | _HasNumPyDType[dtype[Any]] | tuple[Any, Any] | list[Any] | _DTypeDict | str | None = ..., where: _SupportsArray[dtype[numpy.bool[builtins.bool]]] | _NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool]]]] | builtins.bool | _NestedSequence[builtins.bool] | None = ..., order: Literal['K', 'A', 'C', 'F'] | None = ..., subok: bool = ..., signature: str | tuple[str | None, ...] = ..., casting: Literal['no', 'equiv', 'safe', 'same_kind', 'same_value', 'unsafe'] = ...) -> _ArrayT
+/kgs_pipeline/features.py:98: note:     def clip(a: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str], a_min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., a_max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., out: None = ..., *, min: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., max: Buffer | _SupportsArray[dtype[Any]] | _NestedSequence[_SupportsArray[dtype[Any]]] | complex | bytes | str | _NestedSequence[complex | bytes | str] | _NoValueType | None = ..., dtype: type[Any] | dtype[Any] | _HasDType[dtype[Any]] | _HasNumPyDType[dtype[Any]] | tuple[Any, Any] | list[Any] | _DTypeDict | str | None = ..., where: _SupportsArray[dtype[numpy.bool[builtins.bool]]] | _NestedSequence[_SupportsArray[dtype[numpy.bool[builtins.bool]]]] | builtins.bool | _NestedSequence[builtins.bool] | None = ..., order: Literal['K', 'A', 'C', 'F'] | None = ..., subok: bool = ..., signature: str | tuple[str | None, ...] = ..., casting: Literal['no', 'equiv', 'safe', 'same_kind', 'same_value', 'unsafe'] = ...) -> Any
+/kgs_pipeline/acquire.py:60: error: Item "NavigableString" of "Tag | NavigableString" has no attribute "get"  [union-attr]
+/kgs_pipeline/pipeline.py:128: error: Incompatible types in assignment (expression has type "Callable[[dict[Any, Any]], None]", variable has type "Callable[[dict[Any, Any]], list[Path | None]]")  [assignment]
+/kgs_pipeline/pipeline.py:130: error: Incompatible types in assignment (expression has type "Callable[[dict[Any, Any]], None]", variable has type "Callable[[dict[Any, Any]], list[Path | None]]")  [assignment]
+/kgs_pipeline/pipeline.py:132: error: Incompatible types in assignment (expression has type "Callable[[dict[Any, Any]], None]", variable has type "Callable[[dict[Any, Any]], list[Path | None]]")  [assignment]
+Found 5 errors in 3 files (checked 11 source files)
 
 ```
 
@@ -160,310 +97,25 @@ Unit Tests failed. Fix these errors:
 platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
 rootdir: /Users/sirisurab/projects/dapi_poc/kgs
 configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
+plugins: anyio-4.12.1, responses-0.5.1, mock-3.15.1, langsmith-0.7.35, repeat-0.9.4, cov-7.1.0, xdist-3.8.0, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 6 deselected / 80 selected
+collected 114 items
 
-tests/test_acquire.py ......F...F..                                      [ 16%]
-tests/test_features.py .....FFFFFFFFFFFF........F.F                      [ 51%]
-tests/test_ingest.py .............                                       [ 67%]
-tests/test_pipeline.py .............                                     [ 83%]
-tests/test_transform.py ......F......                                    [100%]Running teardown with pytest sessionfinish...
+tests/test_acquire.py ....................                               [ 17%]
+tests/test_features.py ......................FFFFFFFFF                   [ 44%]
+tests/test_ingest.py .....................                               [ 63%]
+tests/test_pipeline.py .....FFF....F                                     [ 74%]
+tests/test_transform.py ..FF....................FFFFF                    [100%]Running teardown with pytest sessionfinish...
 
 
 =================================== FAILURES ===================================
-______________ test_resolve_download_url_http_error_returns_none _______________
-tests/test_acquire.py:161: in test_resolve_download_url_http_error_returns_none
-    result = resolve_download_url(
-kgs_pipeline/acquire.py:190: in resolve_download_url
-    soup = BeautifulSoup(resp.text, "html.parser")
-                         ^^^^
-E   UnboundLocalError: cannot access local variable 'resp' where it is not associated with a value
-___________________ test_download_file_non_utf8_no_file_left ___________________
-../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1581: in __enter__
-    setattr(self.target, self.attribute, new_attr)
-E   TypeError: cannot set 'decode' attribute of immutable type 'bytes'
-
-During handling of the above exception, another exception occurred:
-tests/test_acquire.py:276: in test_download_file_non_utf8_no_file_left
-    with patch.object(bytes, "decode", patched_decode):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1594: in __enter__
-    if not self.__exit__(*sys.exc_info()):
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1603: in __exit__
-    setattr(self.target, self.attribute, self.temp_original)
-E   TypeError: cannot set 'decode' attribute of immutable type 'bytes'
-_____________________ test_f2_cumulative_sums_known_values _____________________
-tests/test_features.py:230: in test_f2_cumulative_sums_known_values
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-___________________ test_f2_cum_flat_across_zero_production ____________________
-tests/test_features.py:248: in test_f2_cum_flat_across_zero_production
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-___________________ test_f2_cum_stays_zero_when_not_started ____________________
-tests/test_features.py:264: in test_f2_cum_stays_zero_when_not_started
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-______________________ test_f2_gor_zero_oil_positive_gas _______________________
-tests/test_features.py:274: in test_f2_gor_zero_oil_positive_gas
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-____________________________ test_f2_gor_both_zero _____________________________
-tests/test_features.py:283: in test_f2_gor_both_zero
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-______________________ test_f2_gor_gas_zero_oil_positive _______________________2026-04-23 15:11:27,373 [INFO] distributed.core: Event loop was unresponsive in Nanny for 4.61s.  This is often caused by long-running GIL-holding functions or moving large chunks of data. This can cause timeouts and instability.
-
-tests/test_features.py:293: in test_f2_gor_gas_zero_oil_positive
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-_________________________ test_f2_water_cut_zero_water _________________________
-tests/test_features.py:304: in test_f2_water_cut_zero_water
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-_________________________ test_f2_water_cut_all_water __________________________
-tests/test_features.py:316: in test_f2_water_cut_all_water
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-_______________________ test_f2_decline_rate_clip_lower ________________________
-tests/test_features.py:333: in test_f2_decline_rate_clip_lower
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-_______________________ test_f2_decline_rate_clip_upper ________________________
-tests/test_features.py:346: in test_f2_decline_rate_clip_upper
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-______________________ test_f2_decline_rate_within_bounds ______________________
-tests/test_features.py:359: in test_f2_decline_rate_within_bounds
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-_______________ test_f2_decline_rate_shutin_then_resume_clipped ________________
-tests/test_features.py:378: in test_f2_decline_rate_shutin_then_resume_clipped
-    result = add_cumulative_features(df)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-kgs_pipeline/features.py:278: in add_cumulative_features
-    with pd.option_context("mode.use_inf_as_na", True):
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/contextlib.py:137: in __enter__
-    return next(self.gen)
-           ^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in option_context
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:512: in <genexpr>
-    undo = tuple((pat, get_option(pat)) for pat, val in ops)
-                       ^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:187: in get_option
-    key = _get_single_key(pat)
-          ^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/pandas/_config/config.py:131: in _get_single_key
-    raise OptionError(f"No such keys(s): {pat!r}")
-E   pandas.errors.OptionError: No such keys(s): 'mode.use_inf_as_na'
-_______________________ test_f5_complete_column_set_tr19 _______________________
-tests/test_features.py:569: in test_f5_complete_column_set_tr19
-    features(cfg)
-kgs_pipeline/features.py:452: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
+_____________________ test_apply_features_returns_dask_df ______________________
+tests/test_features.py:301: in test_apply_features_returns_dask_df
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
 ../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
     return to_parquet(self, path, **kwargs)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -479,13 +131,16 @@ kgs_pipeline/features.py:452: in features
 ../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
     raise ValueError(
 E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-_______________ test_f5_tr14_consistent_schema_across_partitions _______________
-tests/test_features.py:614: in test_f5_tr14_consistent_schema_across_partitions
-    features(cfg)
-kgs_pipeline/features.py:452: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_____________________ test_apply_features_does_not_compute _____________________
+tests/test_features.py:310: in test_apply_features_does_not_compute
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
 ../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
     return to_parquet(self, path, **kwargs)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -501,407 +156,618 @@ kgs_pipeline/features.py:452: in features
 ../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
     raise ValueError(
 E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-___________________ test_meta_derivation_matches_live_output ___________________
-tests/test_transform.py:237: in test_meta_derivation_matches_live_output
-    assert str(meta[col].dtype) == str(live[col].dtype), f"dtype mismatch for {col}"
-E   AssertionError: dtype mismatch for production_date
-E   assert 'datetime64[ns]' == 'datetime64[us]'
-E     
-E     - datetime64[us]
-E     ?            ^
-E     + datetime64[ns]
-E     ?            ^
-=============================== warnings summary ===============================
-tests/test_features.py::test_f1_out_of_set_product_handled
-  /tests/test_features.py:104: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
-    df["PRODUCT"] = pd.Categorical(df["PRODUCT"], categories=["O", "G"])
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+___________________ test_apply_features_meta_matches_output ____________________
+tests/test_features.py:328: in test_apply_features_meta_matches_output
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_________________________ test_features_writes_parquet _________________________
+tests/test_features.py:381: in test_features_writes_parquet
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+________________________ test_features_parquet_readable ________________________
+tests/test_features.py:398: in test_features_parquet_readable
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+____________________ test_features_expected_columns_present ____________________
+tests/test_features.py:416: in test_features_expected_columns_present
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+______________ test_features_schema_consistent_across_partitions _______________
+tests/test_features.py:451: in test_features_schema_consistent_across_partitions
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_____________________ test_features_production_nonnegative _____________________
+tests/test_features.py:471: in test_features_production_nonnegative
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_________________ test_full_pipeline_ingest_transform_features _________________
+tests/test_features.py:490: in test_full_pipeline_ingest_transform_features
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+__________________ test_init_dask_client_local_returns_client __________________
+tests/test_pipeline.py:166: in test_init_dask_client_local_returns_client
+    mock_client_instance = MagicMock(spec=distributed.Client)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:2139: in __init__
+    _safe_super(MagicMixin, self).__init__(*args, **kw)
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1121: in __init__
+    _safe_super(CallableMixin, self).__init__(
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:460: in __init__
+    self._mock_add_spec(spec, spec_set, _spec_as_instance, _eat_self)
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:511: in _mock_add_spec
+    raise InvalidSpecError(f'Cannot spec a Mock object. [object={spec!r}]')
+E   unittest.mock.InvalidSpecError: Cannot spec a Mock object. [object=<MagicMock name='Client' id='7258166176'>]
+_____________________ test_init_dask_client_logs_dashboard _____________________
+tests/test_pipeline.py:188: in test_init_dask_client_logs_dashboard
+    mock_client_instance = MagicMock(spec=distributed.Client)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:2139: in __init__
+    _safe_super(MagicMixin, self).__init__(*args, **kw)
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1121: in __init__
+    _safe_super(CallableMixin, self).__init__(
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:460: in __init__
+    self._mock_add_spec(spec, spec_set, _spec_as_instance, _eat_self)
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:511: in _mock_add_spec
+    raise InvalidSpecError(f'Cannot spec a Mock object. [object={spec!r}]')
+E   unittest.mock.InvalidSpecError: Cannot spec a Mock object. [object=<MagicMock name='Client' id='7251088240'>]
+________________ test_init_dask_client_url_connects_to_address _________________
+tests/test_pipeline.py:218: in test_init_dask_client_url_connects_to_address
+    init_dask_client(config)
+kgs_pipeline/pipeline.py:79: in init_dask_client
+    client = distributed.Client(scheduler)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1139: in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1143: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1204: in _execute_mock_call
+    result = effect(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_pipeline.py:213: in fake_client
+    m = MagicMock(spec=distributed.Client)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:2139: in __init__
+    _safe_super(MagicMixin, self).__init__(*args, **kw)
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:1121: in __init__
+    _safe_super(CallableMixin, self).__init__(
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:460: in __init__
+    self._mock_add_spec(spec, spec_set, _spec_as_instance, _eat_self)
+../../../miniconda3/envs/dapi/lib/python3.12/unittest/mock.py:511: in _mock_add_spec
+    raise InvalidSpecError(f'Cannot spec a Mock object. [object={spec!r}]')
+E   unittest.mock.InvalidSpecError: Cannot spec a Mock object. [object=<MagicMock name='Client' id='7257442544'>]
+_________________ test_full_pipeline_end_to_end_no_exceptions __________________
+tests/test_pipeline.py:377: in test_full_pipeline_end_to_end_no_exceptions
+    run_transform(
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.0.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:191 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim
+INFO     kgs_pipeline.transform:transform.py:197 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:226 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/interim/part.0.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_full_pipeline_end_to_end_0/processed/part.2.parquet
+_______________ test_parse_production_date_drops_negative_month ________________
+tests/test_transform.py:106: in test_parse_production_date_drops_negative_month
+    assert len(result) == 1
+E   assert 2 == 1
+E    +  where 2 = len(  MONTH-YEAR  PRODUCTION production_date\n0    -1-2024         0.0      2024-01-01\n1     6-2024        50.0      2024-06-01)
+_______________________ test_parse_production_date_dtype _______________________
+tests/test_transform.py:113: in test_parse_production_date_dtype
+    assert result["production_date"].dtype == np.dtype("datetime64[ns]")
+E   AssertionError: assert dtype('<M8[us]') == dtype('<M8[ns]')
+E    +  where dtype('<M8[us]') = 0   2024-03-01\nName: production_date, dtype: datetime64[us].dtype
+E    +  and   dtype('<M8[ns]') = <class 'numpy.dtype'>('datetime64[ns]')
+E    +    where <class 'numpy.dtype'> = np.dtype
+________________________ test_transform_writes_parquet _________________________
+tests/test_transform.py:454: in test_transform_writes_parquet
+    transform(transform_config)
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.0.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.1.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:191 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim
+INFO     kgs_pipeline.transform:transform.py:197 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:226 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/interim/part.0.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_writes_parquet0/processed/part.4.parquet
+_______________________ test_transform_parquet_readable ________________________
+tests/test_transform.py:482: in test_transform_parquet_readable
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.0.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.1.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:191 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim
+INFO     kgs_pipeline.transform:transform.py:197 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:226 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_parquet_readabl0/processed/part.8.parquet
+__________________________ test_transform_sort_order ___________________________
+tests/test_transform.py:508: in test_transform_sort_order
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.0.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.1.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:191 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim
+INFO     kgs_pipeline.transform:transform.py:197 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:226 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/processed/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_sort_order0/processed/part.8.parquet
+______________________ test_transform_row_count_le_input _______________________
+tests/test_transform.py:540: in test_transform_row_count_le_input
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.0.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.0.parquet
+INFO     kgs_pipeline.transform:transform.py:191 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim
+INFO     kgs_pipeline.transform:transform.py:197 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:226 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/processed/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_row_count_le_in0/interim/part.0.parquet
+_______________________ test_transform_boundary_contract _______________________
+tests/test_transform.py:566: in test_transform_boundary_contract
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:227: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.0.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:191 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim
+INFO     kgs_pipeline.transform:transform.py:197 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:226 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/processed/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-84/test_transform_boundary_contra0/interim/part.0.parquet
 =========================== short test summary info ============================
-FAILED tests/test_acquire.py::test_resolve_download_url_http_error_returns_none
-FAILED tests/test_acquire.py::test_download_file_non_utf8_no_file_left - Type...
-FAILED tests/test_features.py::test_f2_cumulative_sums_known_values - pandas....
-FAILED tests/test_features.py::test_f2_cum_flat_across_zero_production - pand...
-FAILED tests/test_features.py::test_f2_cum_stays_zero_when_not_started - pand...
-FAILED tests/test_features.py::test_f2_gor_zero_oil_positive_gas - pandas.err...
-FAILED tests/test_features.py::test_f2_gor_both_zero - pandas.errors.OptionEr...
-FAILED tests/test_features.py::test_f2_gor_gas_zero_oil_positive - pandas.err...
-FAILED tests/test_features.py::test_f2_water_cut_zero_water - pandas.errors.O...
-FAILED tests/test_features.py::test_f2_water_cut_all_water - pandas.errors.Op...
-FAILED tests/test_features.py::test_f2_decline_rate_clip_lower - pandas.error...
-FAILED tests/test_features.py::test_f2_decline_rate_clip_upper - pandas.error...
-FAILED tests/test_features.py::test_f2_decline_rate_within_bounds - pandas.er...
-FAILED tests/test_features.py::test_f2_decline_rate_shutin_then_resume_clipped
-FAILED tests/test_features.py::test_f5_complete_column_set_tr19 - ValueError:...
-FAILED tests/test_features.py::test_f5_tr14_consistent_schema_across_partitions
-FAILED tests/test_transform.py::test_meta_derivation_matches_live_output - As...
-=========== 17 failed, 63 passed, 6 deselected, 1 warning in 54.68s ============
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1164, in emit
-    self.flush()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1144, in flush
-    self.stream.flush()
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/tornado/ioloop.py", line 945, in _run
-    val = self.callback()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 608, in _measure_tick
-    logger.info(
-Message: 'Event loop was unresponsive in %s for %.2fs.  This is often caused by long-running GIL-holding functions or moving large chunks of data. This can cause timeouts and instability.'
-Arguments: ('Scheduler', 4.627989053726196)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 7614, in retire_workers
-    logger.info(
-Message: "Retire worker addresses (stimulus_id='%s') %s"
-Arguments: ('retire-workers-1776975087.829451', (0,))
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 611, in close
-    logger.info("Closing Nanny at %r. Reason: %s", self.address_safe, reason)
-Message: 'Closing Nanny at %r. Reason: %s'
-Arguments: ('tcp://127.0.0.1:56795', 'nanny-close')
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 619, in close
-    await self.kill(timeout=timeout, reason=reason)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 400, in kill
-    await self.process.kill(reason=reason, timeout=timeout)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 858, in kill
-    logger.info("Nanny asking worker to close. Reason: %s", reason)
-Message: 'Nanny asking worker to close. Reason: %s'
-Arguments: ('nanny-close',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6225, in handle_worker
-    await self.handle_stream(comm=comm, extra={"worker": worker})
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 908, in handle_stream
-    logger.info(
-Message: "Received 'close-stream' from %s; closing."
-Arguments: ('tcp://127.0.0.1:56799',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5444, in remove_worker
-    logger.info(
-Message: "Remove worker addr: tcp://127.0.0.1:56797 name: 0 (stimulus_id='handle-worker-cleanup-1776975088.318593')"
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5582, in remove_worker
-    logger.info("Lost all workers")
-Message: 'Lost all workers'
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 626, in close
-    logger.info("Nanny at %r closed.", self.address_safe)
-Message: 'Nanny at %r closed.'
-Arguments: ('tcp://127.0.0.1:56795',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4343, in close
-    logger.info("Closing scheduler. Reason: %s", reason)
-Message: 'Closing scheduler. Reason: %s'
-Arguments: ('unknown',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4371, in close
-    logger.info("Scheduler closing all comms")
-Message: 'Scheduler closing all comms'
-Arguments: ()
+FAILED tests/test_features.py::test_apply_features_returns_dask_df - ValueErr...
+FAILED tests/test_features.py::test_apply_features_does_not_compute - ValueEr...
+FAILED tests/test_features.py::test_apply_features_meta_matches_output - Valu...
+FAILED tests/test_features.py::test_features_writes_parquet - ValueError: The...
+FAILED tests/test_features.py::test_features_parquet_readable - ValueError: T...
+FAILED tests/test_features.py::test_features_expected_columns_present - Value...
+FAILED tests/test_features.py::test_features_schema_consistent_across_partitions
+FAILED tests/test_features.py::test_features_production_nonnegative - ValueEr...
+FAILED tests/test_features.py::test_full_pipeline_ingest_transform_features
+FAILED tests/test_pipeline.py::test_init_dask_client_local_returns_client - u...
+FAILED tests/test_pipeline.py::test_init_dask_client_logs_dashboard - unittes...
+FAILED tests/test_pipeline.py::test_init_dask_client_url_connects_to_address
+FAILED tests/test_pipeline.py::test_full_pipeline_end_to_end_no_exceptions - ...
+FAILED tests/test_transform.py::test_parse_production_date_drops_negative_month
+FAILED tests/test_transform.py::test_parse_production_date_dtype - AssertionE...
+FAILED tests/test_transform.py::test_transform_writes_parquet - ValueError: T...
+FAILED tests/test_transform.py::test_transform_parquet_readable - ValueError:...
+FAILED tests/test_transform.py::test_transform_sort_order - ValueError: The c...
+FAILED tests/test_transform.py::test_transform_row_count_le_input - ValueErro...
+FAILED tests/test_transform.py::test_transform_boundary_contract - ValueError...
+======================== 20 failed, 94 passed in 31.97s ========================
 
 ```
 
@@ -912,1080 +778,46 @@ Integration Tests failed. Fix these errors:
 platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
 rootdir: /Users/sirisurab/projects/dapi_poc/kgs
 configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
+plugins: anyio-4.12.1, responses-0.5.1, mock-3.15.1, langsmith-0.7.35, repeat-0.9.4, cov-7.1.0, xdist-3.8.0, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 80 deselected / 6 selected
+collected 114 items / 114 deselected / 0 selected
+Running teardown with pytest sessionfinish...
 
-tests/test_acquire.py ..                                                 [ 33%]
-tests/test_features.py F                                                 [ 50%]
-tests/test_ingest.py .                                                   [ 66%]
-tests/test_pipeline.py F                                                 [ 83%]
-tests/test_transform.py F                                                [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-___________________________ test_f5_tr26_integration ___________________________
-tests/test_features.py:722: in test_f5_tr26_integration
-    features(cfg)
-kgs_pipeline/features.py:452: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-______________________ test_e2e_ingest_transform_features ______________________
-tests/test_pipeline.py:599: in test_e2e_ingest_transform_features
-    assert 10 <= ddf_processed.npartitions <= 50
-E   assert 10 <= 2
-E    +  where 2 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(ab2243a).npartitions
-_______________________ test_transform_tr25_integration ________________________
-tests/test_transform.py:519: in test_transform_tr25_integration
-    assert 10 <= ddf.npartitions <= 50
-E   assert 10 <= 1
-E    +  where 1 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(a53bb8d).npartitions
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_tr26_integration - ValueError: The col...
-FAILED tests/test_pipeline.py::test_e2e_ingest_transform_features - assert 10...
-FAILED tests/test_transform.py::test_transform_tr25_integration - assert 10 <= 1
-================== 3 failed, 3 passed, 80 deselected in 6.43s ==================
+=========================== 114 deselected in 4.84s ============================
 
 ```
 
 ---
 
-## Eval Run at 2026-04-23 15:21:18
+## Eval Run at 2026-04-27 19:38:13
 
 **Status:** ❌ FAILED
 
 ### Failures:
-- **Unit Tests:**
+- **Linting:**
 ```
-Unit Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 6 deselected / 80 selected
+Linting failed. Fix these errors:
+F841 Local variable `data_dict` is assigned to but never used
+   --> tests/test_ingest.py:400:5
+    |
+398 |     ingest(config)
+399 |
+400 |     data_dict = load_data_dictionary(DATA_DICT_PATH)
+    |     ^^^^^^^^^
+401 |     df = dd.read_parquet(str(interim_dir)).compute()
+    |
+help: Remove assignment to unused variable `data_dict`
 
-tests/test_acquire.py .............                                      [ 16%]
-tests/test_features.py .........................F.F                      [ 51%]
-tests/test_ingest.py .............                                       [ 67%]
-tests/test_pipeline.py .............                                     [ 83%]
-tests/test_transform.py .............                                    [100%]Running teardown with pytest sessionfinish...
-2026-04-23 15:20:41,381 [INFO] distributed.core: Event loop was unresponsive in Nanny for 3.17s.  This is often caused by long-running GIL-holding functions or moving large chunks of data. This can cause timeouts and instability.
-
-
-=================================== FAILURES ===================================
-_______________________ test_f5_complete_column_set_tr19 _______________________
-tests/test_features.py:569: in test_f5_complete_column_set_tr19
-    features(cfg)
-kgs_pipeline/features.py:456: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-_______________ test_f5_tr14_consistent_schema_across_partitions _______________
-tests/test_features.py:613: in test_f5_tr14_consistent_schema_across_partitions
-    features(cfg)
-kgs_pipeline/features.py:456: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-=============================== warnings summary ===============================
-tests/test_features.py::test_f1_out_of_set_product_handled
-  /tests/test_features.py:104: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
-    df["PRODUCT"] = pd.Categorical(df["PRODUCT"], categories=["O", "G"])
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_complete_column_set_tr19 - ValueError:...
-FAILED tests/test_features.py::test_f5_tr14_consistent_schema_across_partitions
-============ 2 failed, 78 passed, 6 deselected, 1 warning in 55.88s ============
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/tornado/ioloop.py", line 945, in _run
-    val = self.callback()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 608, in _measure_tick
-    logger.info(
-Message: 'Event loop was unresponsive in %s for %.2fs.  This is often caused by long-running GIL-holding functions or moving large chunks of data. This can cause timeouts and instability.'
-Arguments: ('Nanny', 4.056612014770508)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 7614, in retire_workers
-    logger.info(
-Message: "Retire worker addresses (stimulus_id='%s') %s"
-Arguments: ('retire-workers-1776975645.4634361', (0,))
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 611, in close
-    logger.info("Closing Nanny at %r. Reason: %s", self.address_safe, reason)
-Message: 'Closing Nanny at %r. Reason: %s'
-Arguments: ('tcp://127.0.0.1:56932', 'nanny-close')
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 619, in close
-    await self.kill(timeout=timeout, reason=reason)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 400, in kill
-    await self.process.kill(reason=reason, timeout=timeout)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 858, in kill
-    logger.info("Nanny asking worker to close. Reason: %s", reason)
-Message: 'Nanny asking worker to close. Reason: %s'
-Arguments: ('nanny-close',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6225, in handle_worker
-    await self.handle_stream(comm=comm, extra={"worker": worker})
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 908, in handle_stream
-    logger.info(
-Message: "Received 'close-stream' from %s; closing."
-Arguments: ('tcp://127.0.0.1:56936',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5444, in remove_worker
-    logger.info(
-Message: "Remove worker addr: tcp://127.0.0.1:56934 name: 0 (stimulus_id='handle-worker-cleanup-1776975645.831284')"
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5582, in remove_worker
-    logger.info("Lost all workers")
-Message: 'Lost all workers'
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 626, in close
-    logger.info("Nanny at %r closed.", self.address_safe)
-Message: 'Nanny at %r closed.'
-Arguments: ('tcp://127.0.0.1:56932',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4343, in close
-    logger.info("Closing scheduler. Reason: %s", reason)
-Message: 'Closing scheduler. Reason: %s'
-Arguments: ('unknown',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4371, in close
-    logger.info("Scheduler closing all comms")
-Message: 'Scheduler closing all comms'
-Arguments: ()
+Found 1 error.
+No fixes available (1 hidden fix can be enabled with the `--unsafe-fixes` option).
 
 ```
 
-- **Integration Tests:**
-```
-Integration Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 80 deselected / 6 selected
-
-tests/test_acquire.py ..                                                 [ 33%]
-tests/test_features.py F                                                 [ 50%]
-tests/test_ingest.py .                                                   [ 66%]
-tests/test_pipeline.py F                                                 [ 83%]
-tests/test_transform.py F                                                [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-___________________________ test_f5_tr26_integration ___________________________
-tests/test_features.py:721: in test_f5_tr26_integration
-    features(cfg)
-kgs_pipeline/features.py:456: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-______________________ test_e2e_ingest_transform_features ______________________
-tests/test_pipeline.py:599: in test_e2e_ingest_transform_features
-    assert 10 <= ddf_processed.npartitions <= 50
-E   assert 10 <= 2
-E    +  where 2 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(88fa11f).npartitions
-_______________________ test_transform_tr25_integration ________________________
-tests/test_transform.py:517: in test_transform_tr25_integration
-    assert 10 <= ddf.npartitions <= 50
-E   assert 10 <= 1
-E    +  where 1 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(904f712).npartitions
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_tr26_integration - ValueError: The col...
-FAILED tests/test_pipeline.py::test_e2e_ingest_transform_features - assert 10...
-FAILED tests/test_transform.py::test_transform_tr25_integration - assert 10 <= 1
-================== 3 failed, 3 passed, 80 deselected in 6.21s ==================
-
-```
-
----
-
-## Eval Run at 2026-04-23 15:25:24
-
-**Status:** ❌ FAILED
-
-### Failures:
-- **Unit Tests:**
-```
-Unit Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 6 deselected / 80 selected
-
-tests/test_acquire.py .............                                      [ 16%]
-tests/test_features.py .........................F.F                      [ 51%]
-tests/test_ingest.py .............                                       [ 67%]
-tests/test_pipeline.py .............                                     [ 83%]
-tests/test_transform.py .............                                    [100%]Running teardown with pytest sessionfinish...
-2026-04-23 15:24:49,242 [INFO] distributed.core: Event loop was unresponsive in Nanny for 4.32s.  This is often caused by long-running GIL-holding functions or moving large chunks of data. This can cause timeouts and instability.
-
-
-=================================== FAILURES ===================================
-_______________________ test_f5_complete_column_set_tr19 _______________________
-tests/test_features.py:569: in test_f5_complete_column_set_tr19
-    features(cfg)
-kgs_pipeline/features.py:457: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-_______________ test_f5_tr14_consistent_schema_across_partitions _______________
-tests/test_features.py:613: in test_f5_tr14_consistent_schema_across_partitions
-    features(cfg)
-kgs_pipeline/features.py:457: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-=============================== warnings summary ===============================
-tests/test_features.py::test_f1_out_of_set_product_handled
-  /tests/test_features.py:104: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
-    df["PRODUCT"] = pd.Categorical(df["PRODUCT"], categories=["O", "G"])
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_complete_column_set_tr19 - ValueError:...
-FAILED tests/test_features.py::test_f5_tr14_consistent_schema_across_partitions
-============ 2 failed, 78 passed, 6 deselected, 1 warning in 53.44s ============
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/tornado/ioloop.py", line 945, in _run
-    val = self.callback()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 608, in _measure_tick
-    logger.info(
-Message: 'Event loop was unresponsive in %s for %.2fs.  This is often caused by long-running GIL-holding functions or moving large chunks of data. This can cause timeouts and instability.'
-Arguments: ('Scheduler', 6.898796081542969)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 7614, in retire_workers
-    logger.info(
-Message: "Retire worker addresses (stimulus_id='%s') %s"
-Arguments: ('retire-workers-1776975891.8797681', (0,))
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 611, in close
-    logger.info("Closing Nanny at %r. Reason: %s", self.address_safe, reason)
-Message: 'Closing Nanny at %r. Reason: %s'
-Arguments: ('tcp://127.0.0.1:56966', 'nanny-close')
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 619, in close
-    await self.kill(timeout=timeout, reason=reason)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 400, in kill
-    await self.process.kill(reason=reason, timeout=timeout)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 858, in kill
-    logger.info("Nanny asking worker to close. Reason: %s", reason)
-Message: 'Nanny asking worker to close. Reason: %s'
-Arguments: ('nanny-close',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6225, in handle_worker
-    await self.handle_stream(comm=comm, extra={"worker": worker})
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 908, in handle_stream
-    logger.info(
-Message: "Received 'close-stream' from %s; closing."
-Arguments: ('tcp://127.0.0.1:56970',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5444, in remove_worker
-    logger.info(
-Message: "Remove worker addr: tcp://127.0.0.1:56968 name: 0 (stimulus_id='handle-worker-cleanup-1776975892.2117429')"
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5582, in remove_worker
-    logger.info("Lost all workers")
-Message: 'Lost all workers'
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 626, in close
-    logger.info("Nanny at %r closed.", self.address_safe)
-Message: 'Nanny at %r closed.'
-Arguments: ('tcp://127.0.0.1:56966',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4343, in close
-    logger.info("Closing scheduler. Reason: %s", reason)
-Message: 'Closing scheduler. Reason: %s'
-Arguments: ('unknown',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4371, in close
-    logger.info("Scheduler closing all comms")
-Message: 'Scheduler closing all comms'
-Arguments: ()
-
-```
-
-- **Integration Tests:**
-```
-Integration Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 80 deselected / 6 selected
-
-tests/test_acquire.py ..                                                 [ 33%]
-tests/test_features.py F                                                 [ 50%]
-tests/test_ingest.py .                                                   [ 66%]
-tests/test_pipeline.py F                                                 [ 83%]
-tests/test_transform.py F                                                [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-___________________________ test_f5_tr26_integration ___________________________
-tests/test_features.py:721: in test_f5_tr26_integration
-    features(cfg)
-kgs_pipeline/features.py:457: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E     Extra:   ['LEASE_KID']
-E     Missing: []
-______________________ test_e2e_ingest_transform_features ______________________
-tests/test_pipeline.py:599: in test_e2e_ingest_transform_features
-    assert 10 <= ddf_processed.npartitions <= 50
-E   assert 10 <= 2
-E    +  where 2 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(8a3c02d).npartitions
-_______________________ test_transform_tr25_integration ________________________
-tests/test_transform.py:517: in test_transform_tr25_integration
-    assert 10 <= ddf.npartitions <= 50
-E   assert 10 <= 1
-E    +  where 1 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(f922d1f).npartitions
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_tr26_integration - ValueError: The col...
-FAILED tests/test_pipeline.py::test_e2e_ingest_transform_features - assert 10...
-FAILED tests/test_transform.py::test_transform_tr25_integration - assert 10 <= 1
-================== 3 failed, 3 passed, 80 deselected in 6.04s ==================
-
-```
-
----
-
-## Eval Run at 2026-04-23 15:29:59
-
-**Status:** ❌ FAILED
-
-### Failures:
 - **Type check:**
 ```
 Type check failed. Fix these errors:
-/kgs_pipeline/features.py:83: error: Argument 3 to "insert" of "DataFrame" has incompatible type "IntegerArray"; expected "str | bytes | date | datetime | timedelta | <7 more items> | complex | integer[Any] | floating[Any] | complexfloating[Any, Any] | Sequence[Any] | ndarray[tuple[int], dtype[Any]] | Series[Any] | Index[Any] | None"  [arg-type]
-Found 1 error in 1 file (checked 12 source files)
+/kgs_pipeline/features.py:98: error: "NumpyExtensionArray" has no attribute "clip"  [attr-defined]
+Found 1 error in 1 file (checked 11 source files)
 
 ```
 
@@ -1996,23 +828,73 @@ Unit Tests failed. Fix these errors:
 platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
 rootdir: /Users/sirisurab/projects/dapi_poc/kgs
 configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
+plugins: anyio-4.12.1, responses-0.5.1, mock-3.15.1, langsmith-0.7.35, repeat-0.9.4, cov-7.1.0, xdist-3.8.0, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 6 deselected / 80 selected
+collected 114 items
 
-tests/test_acquire.py .............                                      [ 16%]
-tests/test_features.py .........................F.F                      [ 51%]
-tests/test_ingest.py .............                                       [ 67%]
-tests/test_pipeline.py .............                                     [ 83%]
-tests/test_transform.py .............                                    [100%]Running teardown with pytest sessionfinish...
+tests/test_acquire.py ....................                               [ 17%]
+tests/test_features.py ...........FFFFFF.....FFFFFFFFF                   [ 44%]
+tests/test_ingest.py .....................                               [ 63%]
+tests/test_pipeline.py ............F                                     [ 74%]
+tests/test_transform.py ........................FFFFF                    [100%]Running teardown with pytest sessionfinish...
 
 
 =================================== FAILURES ===================================
-_______________________ test_f5_complete_column_set_tr19 _______________________
-tests/test_features.py:569: in test_f5_complete_column_set_tr19
-    features(cfg)
-kgs_pipeline/features.py:463: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
+___________________________ test_decline_rate_value ____________________________
+tests/test_features.py:205: in test_decline_rate_value
+    result = add_decline_rate(df)
+             ^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/features.py:98: in add_decline_rate
+    df["decline_rate"] = rate_series.clip(lower=-1.0, upper=10.0)
+                         ^^^^^^^^^^^^^^^^
+E   AttributeError: 'NumpyExtensionArray' object has no attribute 'clip'
+________________________ test_decline_rate_clipped_min _________________________
+tests/test_features.py:212: in test_decline_rate_clipped_min
+    result = add_decline_rate(df)
+             ^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/features.py:98: in add_decline_rate
+    df["decline_rate"] = rate_series.clip(lower=-1.0, upper=10.0)
+                         ^^^^^^^^^^^^^^^^
+E   AttributeError: 'NumpyExtensionArray' object has no attribute 'clip'
+________________________ test_decline_rate_clipped_max _________________________
+tests/test_features.py:219: in test_decline_rate_clipped_max
+    result = add_decline_rate(df)
+             ^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/features.py:98: in add_decline_rate
+    df["decline_rate"] = rate_series.clip(lower=-1.0, upper=10.0)
+                         ^^^^^^^^^^^^^^^^
+E   AttributeError: 'NumpyExtensionArray' object has no attribute 'clip'
+__________________ test_decline_rate_within_bounds_unchanged ___________________
+tests/test_features.py:226: in test_decline_rate_within_bounds_unchanged
+    result = add_decline_rate(df)
+             ^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/features.py:98: in add_decline_rate
+    df["decline_rate"] = rate_series.clip(lower=-1.0, upper=10.0)
+                         ^^^^^^^^^^^^^^^^
+E   AttributeError: 'NumpyExtensionArray' object has no attribute 'clip'
+___________ test_decline_rate_zero_denominator_no_unclipped_extreme ____________
+tests/test_features.py:233: in test_decline_rate_zero_denominator_no_unclipped_extreme
+    result = add_decline_rate(df)
+             ^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/features.py:98: in add_decline_rate
+    df["decline_rate"] = rate_series.clip(lower=-1.0, upper=10.0)
+                         ^^^^^^^^^^^^^^^^
+E   AttributeError: 'NumpyExtensionArray' object has no attribute 'clip'
+___________________________ test_decline_rate_dtype ____________________________
+tests/test_features.py:239: in test_decline_rate_dtype
+    result = add_decline_rate(df)
+             ^^^^^^^^^^^^^^^^^^^^
+kgs_pipeline/features.py:98: in add_decline_rate
+    df["decline_rate"] = rate_series.clip(lower=-1.0, upper=10.0)
+                         ^^^^^^^^^^^^^^^^
+E   AttributeError: 'NumpyExtensionArray' object has no attribute 'clip'
+_____________________ test_apply_features_returns_dask_df ______________________
+tests/test_features.py:301: in test_apply_features_returns_dask_df
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
 ../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
     return to_parquet(self, path, **kwargs)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -2029,13 +911,15 @@ kgs_pipeline/features.py:463: in features
     raise ValueError(
 E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
 E   Order of columns does not match.
-E   Actual:   ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file']
-E   Expected: ['LEASE_KID', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl']
-_______________ test_f5_tr14_consistent_schema_across_partitions _______________
-tests/test_features.py:613: in test_f5_tr14_consistent_schema_across_partitions
-    features(cfg)
-kgs_pipeline/features.py:463: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_____________________ test_apply_features_does_not_compute _____________________
+tests/test_features.py:310: in test_apply_features_does_not_compute
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
 ../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
     return to_parquet(self, path, **kwargs)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -2052,346 +936,555 @@ kgs_pipeline/features.py:463: in features
     raise ValueError(
 E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
 E   Order of columns does not match.
-E   Actual:   ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file']
-E   Expected: ['LEASE_KID', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl']
-=============================== warnings summary ===============================
-tests/test_features.py::test_f1_out_of_set_product_handled
-  /tests/test_features.py:104: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
-    df["PRODUCT"] = pd.Categorical(df["PRODUCT"], categories=["O", "G"])
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+___________________ test_apply_features_meta_matches_output ____________________
+tests/test_features.py:328: in test_apply_features_meta_matches_output
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_________________________ test_features_writes_parquet _________________________
+tests/test_features.py:381: in test_features_writes_parquet
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+________________________ test_features_parquet_readable ________________________
+tests/test_features.py:398: in test_features_parquet_readable
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+____________________ test_features_expected_columns_present ____________________
+tests/test_features.py:416: in test_features_expected_columns_present
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+______________ test_features_schema_consistent_across_partitions _______________
+tests/test_features.py:451: in test_features_schema_consistent_across_partitions
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_____________________ test_features_production_nonnegative _____________________
+tests/test_features.py:471: in test_features_production_nonnegative
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_________________ test_full_pipeline_ingest_transform_features _________________
+tests/test_features.py:490: in test_full_pipeline_ingest_transform_features
+    _write_and_run_ingest_transform(raw_dir, interim_dir, processed_dir)
+tests/test_features.py:367: in _write_and_run_ingest_transform
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+_________________ test_full_pipeline_end_to_end_no_exceptions __________________
+tests/test_pipeline.py:383: in test_full_pipeline_end_to_end_no_exceptions
+    run_transform(
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.0.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:189 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim
+INFO     kgs_pipeline.transform:transform.py:195 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:222 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_full_pipeline_end_to_end_0/interim/part.0.parquet
+________________________ test_transform_writes_parquet _________________________
+tests/test_transform.py:454: in test_transform_writes_parquet
+    transform(transform_config)
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.0.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:189 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim
+INFO     kgs_pipeline.transform:transform.py:195 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:222 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_writes_parquet0/interim/part.0.parquet
+_______________________ test_transform_parquet_readable ________________________
+tests/test_transform.py:482: in test_transform_parquet_readable
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.0.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:189 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim
+INFO     kgs_pipeline.transform:transform.py:195 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:222 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/processed/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_parquet_readabl0/processed/part.5.parquet
+__________________________ test_transform_sort_order ___________________________
+tests/test_transform.py:508: in test_transform_sort_order
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.0.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:189 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim
+INFO     kgs_pipeline.transform:transform.py:195 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:222 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/processed/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_sort_order0/interim/part.1.parquet
+______________________ test_transform_row_count_le_input _______________________
+tests/test_transform.py:540: in test_transform_row_count_le_input
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.0.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.1.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.0.parquet
+INFO     kgs_pipeline.transform:transform.py:189 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim
+INFO     kgs_pipeline.transform:transform.py:195 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:222 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/processed/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_row_count_le_in0/interim/part.0.parquet
+_______________________ test_transform_boundary_contract _______________________
+tests/test_transform.py:566: in test_transform_boundary_contract
+    transform(_make_transform_config(str(interim_dir), str(processed_dir)))
+kgs_pipeline/transform.py:223: in transform
+    ddf.to_parquet(processed_dir, overwrite=True)
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
+    return to_parquet(self, path, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
+    out = out.compute(**compute_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
+    (result,) = compute(self, traverse=False, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
+    results = schedule(expr, keys, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
+    raise ValueError(
+E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
+E   Order of columns does not match.
+E   Actual:   ['production_date', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file']
+E   Expected: ['LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'MONTH-YEAR', 'PRODUCT', 'WELLS', 'PRODUCTION', 'source_file', 'production_date']
+------------------------------ Captured log call -------------------------------
+INFO     kgs_pipeline.ingest:ingest.py:135 Ingest: loading data dictionary from references/kgs_monthly_data_dictionary.csv
+INFO     kgs_pipeline.ingest:ingest.py:147 Ingest: found 1 raw files → 10 partitions
+INFO     kgs_pipeline.ingest:ingest.py:155 Ingest: writing interim Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.0.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.1.parquet
+INFO     kgs_pipeline.ingest:ingest.py:157 Ingest: complete
+INFO     kgs_pipeline.transform:transform.py:189 Transform: reading interim Parquet from /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim
+INFO     kgs_pipeline.transform:transform.py:195 Transform: 10 input partitions → 10 output partitions
+INFO     kgs_pipeline.transform:transform.py:222 Transform: writing processed Parquet to /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/processed
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.9.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.4.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/processed/part.6.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/processed/part.8.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/processed/part.5.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/processed/part.3.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/processed/part.7.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/processed/part.2.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.1.parquet
+DEBUG    fsspec.local:local.py:383 open file: /private/var/folders/9m/tncsl2m94d94czq217x9sttr0000gn/T/pytest-of-sirisurab/pytest-85/test_transform_boundary_contra0/interim/part.0.parquet
 =========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_complete_column_set_tr19 - ValueError:...
-FAILED tests/test_features.py::test_f5_tr14_consistent_schema_across_partitions
-============ 2 failed, 78 passed, 6 deselected, 1 warning in 53.57s ============
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 7614, in retire_workers
-    logger.info(
-Message: "Retire worker addresses (stimulus_id='%s') %s"
-Arguments: ('retire-workers-1776976167.1735911', (0,))
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 611, in close
-    logger.info("Closing Nanny at %r. Reason: %s", self.address_safe, reason)
-Message: 'Closing Nanny at %r. Reason: %s'
-Arguments: ('tcp://127.0.0.1:57010', 'nanny-close')
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 619, in close
-    await self.kill(timeout=timeout, reason=reason)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 400, in kill
-    await self.process.kill(reason=reason, timeout=timeout)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 858, in kill
-    logger.info("Nanny asking worker to close. Reason: %s", reason)
-Message: 'Nanny asking worker to close. Reason: %s'
-Arguments: ('nanny-close',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6225, in handle_worker
-    await self.handle_stream(comm=comm, extra={"worker": worker})
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 908, in handle_stream
-    logger.info(
-Message: "Received 'close-stream' from %s; closing."
-Arguments: ('tcp://127.0.0.1:57014',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5444, in remove_worker
-    logger.info(
-Message: "Remove worker addr: tcp://127.0.0.1:57012 name: 0 (stimulus_id='handle-worker-cleanup-1776976167.674387')"
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5582, in remove_worker
-    logger.info("Lost all workers")
-Message: 'Lost all workers'
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 626, in close
-    logger.info("Nanny at %r closed.", self.address_safe)
-Message: 'Nanny at %r closed.'
-Arguments: ('tcp://127.0.0.1:57010',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4343, in close
-    logger.info("Closing scheduler. Reason: %s", reason)
-Message: 'Closing scheduler. Reason: %s'
-Arguments: ('unknown',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4371, in close
-    logger.info("Scheduler closing all comms")
-Message: 'Scheduler closing all comms'
-Arguments: ()
+FAILED tests/test_features.py::test_decline_rate_value - AttributeError: 'Num...
+FAILED tests/test_features.py::test_decline_rate_clipped_min - AttributeError...
+FAILED tests/test_features.py::test_decline_rate_clipped_max - AttributeError...
+FAILED tests/test_features.py::test_decline_rate_within_bounds_unchanged - At...
+FAILED tests/test_features.py::test_decline_rate_zero_denominator_no_unclipped_extreme
+FAILED tests/test_features.py::test_decline_rate_dtype - AttributeError: 'Num...
+FAILED tests/test_features.py::test_apply_features_returns_dask_df - ValueErr...
+FAILED tests/test_features.py::test_apply_features_does_not_compute - ValueEr...
+FAILED tests/test_features.py::test_apply_features_meta_matches_output - Valu...
+FAILED tests/test_features.py::test_features_writes_parquet - ValueError: The...
+FAILED tests/test_features.py::test_features_parquet_readable - ValueError: T...
+FAILED tests/test_features.py::test_features_expected_columns_present - Value...
+FAILED tests/test_features.py::test_features_schema_consistent_across_partitions
+FAILED tests/test_features.py::test_features_production_nonnegative - ValueEr...
+FAILED tests/test_features.py::test_full_pipeline_ingest_transform_features
+FAILED tests/test_pipeline.py::test_full_pipeline_end_to_end_no_exceptions - ...
+FAILED tests/test_transform.py::test_transform_writes_parquet - ValueError: T...
+FAILED tests/test_transform.py::test_transform_parquet_readable - ValueError:...
+FAILED tests/test_transform.py::test_transform_sort_order - ValueError: The c...
+FAILED tests/test_transform.py::test_transform_row_count_le_input - ValueErro...
+FAILED tests/test_transform.py::test_transform_boundary_contract - ValueError...
+======================== 21 failed, 93 passed in 20.28s ========================
 
 ```
 
@@ -2402,569 +1495,18 @@ Integration Tests failed. Fix these errors:
 platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
 rootdir: /Users/sirisurab/projects/dapi_poc/kgs
 configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
+plugins: anyio-4.12.1, responses-0.5.1, mock-3.15.1, langsmith-0.7.35, repeat-0.9.4, cov-7.1.0, xdist-3.8.0, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 80 deselected / 6 selected
+collected 114 items / 114 deselected / 0 selected
+Running teardown with pytest sessionfinish...
 
-tests/test_acquire.py ..                                                 [ 33%]
-tests/test_features.py F                                                 [ 50%]
-tests/test_ingest.py .                                                   [ 66%]
-tests/test_pipeline.py F                                                 [ 83%]
-tests/test_transform.py F                                                [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-___________________________ test_f5_tr26_integration ___________________________
-tests/test_features.py:721: in test_f5_tr26_integration
-    features(cfg)
-kgs_pipeline/features.py:463: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E   Order of columns does not match.
-E   Actual:   ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file']
-E   Expected: ['LEASE_KID', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl']
-______________________ test_e2e_ingest_transform_features ______________________
-tests/test_pipeline.py:599: in test_e2e_ingest_transform_features
-    assert 10 <= ddf_processed.npartitions <= 50
-E   assert 10 <= 2
-E    +  where 2 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(e688223).npartitions
-_______________________ test_transform_tr25_integration ________________________
-tests/test_transform.py:517: in test_transform_tr25_integration
-    assert 10 <= ddf.npartitions <= 50
-E   assert 10 <= 1
-E    +  where 1 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(79c089d).npartitions
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_tr26_integration - ValueError: The col...
-FAILED tests/test_pipeline.py::test_e2e_ingest_transform_features - assert 10...
-FAILED tests/test_transform.py::test_transform_tr25_integration - assert 10 <= 1
-================== 3 failed, 3 passed, 80 deselected in 5.63s ==================
+=========================== 114 deselected in 3.73s ============================
 
 ```
 
 ---
 
-## Eval Run at 2026-04-23 15:33:15
-
-**Status:** ❌ FAILED
-
-### Failures:
-- **Unit Tests:**
-```
-Unit Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 6 deselected / 80 selected
-
-tests/test_acquire.py .............                                      [ 16%]
-tests/test_features.py .........................F.F                      [ 51%]
-tests/test_ingest.py .............                                       [ 67%]
-tests/test_pipeline.py .............                                     [ 83%]
-tests/test_transform.py .............                                    [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-_______________________ test_f5_complete_column_set_tr19 _______________________
-tests/test_features.py:569: in test_f5_complete_column_set_tr19
-    features(cfg)
-kgs_pipeline/features.py:457: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E   Order of columns does not match.
-E   Actual:   ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'cum_oil', 'cum_gas', 'cum_water', 'gor', 'water_cut', 'decline_rate', 'oil_bbl_rolling_3m', 'oil_bbl_rolling_6m', 'oil_bbl_lag_1m', 'gas_mcf_rolling_3m', 'gas_mcf_rolling_6m', 'gas_mcf_lag_1m', 'water_bbl_rolling_3m', 'water_bbl_rolling_6m', 'water_bbl_lag_1m']
-E   Expected: ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'cum_oil', 'cum_gas', 'cum_water', 'gor', 'water_cut', 'decline_rate', 'oil_bbl_rolling_3m', 'oil_bbl_rolling_6m', 'gas_mcf_rolling_3m', 'gas_mcf_rolling_6m', 'water_bbl_rolling_3m', 'water_bbl_rolling_6m', 'oil_bbl_lag_1m', 'gas_mcf_lag_1m', 'water_bbl_lag_1m']
-_______________ test_f5_tr14_consistent_schema_across_partitions _______________
-tests/test_features.py:613: in test_f5_tr14_consistent_schema_across_partitions
-    features(cfg)
-kgs_pipeline/features.py:457: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E   Order of columns does not match.
-E   Actual:   ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'cum_oil', 'cum_gas', 'cum_water', 'gor', 'water_cut', 'decline_rate', 'oil_bbl_rolling_3m', 'oil_bbl_rolling_6m', 'oil_bbl_lag_1m', 'gas_mcf_rolling_3m', 'gas_mcf_rolling_6m', 'gas_mcf_lag_1m', 'water_bbl_rolling_3m', 'water_bbl_rolling_6m', 'water_bbl_lag_1m']
-E   Expected: ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'cum_oil', 'cum_gas', 'cum_water', 'gor', 'water_cut', 'decline_rate', 'oil_bbl_rolling_3m', 'oil_bbl_rolling_6m', 'gas_mcf_rolling_3m', 'gas_mcf_rolling_6m', 'water_bbl_rolling_3m', 'water_bbl_rolling_6m', 'oil_bbl_lag_1m', 'gas_mcf_lag_1m', 'water_bbl_lag_1m']
-=============================== warnings summary ===============================
-tests/test_features.py::test_f1_out_of_set_product_handled
-  /tests/test_features.py:104: Pandas4Warning: Constructing a Categorical with a dtype and values containing non-null entries not in that dtype's categories is deprecated and will raise in a future version.
-    df["PRODUCT"] = pd.Categorical(df["PRODUCT"], categories=["O", "G"])
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_complete_column_set_tr19 - ValueError:...
-FAILED tests/test_features.py::test_f5_tr14_consistent_schema_across_partitions
-============ 2 failed, 78 passed, 6 deselected, 1 warning in 52.52s ============
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/tornado/ioloop.py", line 945, in _run
-    val = self.callback()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 608, in _measure_tick
-    logger.info(
-Message: 'Event loop was unresponsive in %s for %.2fs.  This is often caused by long-running GIL-holding functions or moving large chunks of data. This can cause timeouts and instability.'
-Arguments: ('Nanny', 5.204569101333618)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 7614, in retire_workers
-    logger.info(
-Message: "Retire worker addresses (stimulus_id='%s') %s"
-Arguments: ('retire-workers-1776976362.1482189', (0,))
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 611, in close
-    logger.info("Closing Nanny at %r. Reason: %s", self.address_safe, reason)
-Message: 'Closing Nanny at %r. Reason: %s'
-Arguments: ('tcp://127.0.0.1:57043', 'nanny-close')
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 619, in close
-    await self.kill(timeout=timeout, reason=reason)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 400, in kill
-    await self.process.kill(reason=reason, timeout=timeout)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 858, in kill
-    logger.info("Nanny asking worker to close. Reason: %s", reason)
-Message: 'Nanny asking worker to close. Reason: %s'
-Arguments: ('nanny-close',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6225, in handle_worker
-    await self.handle_stream(comm=comm, extra={"worker": worker})
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 908, in handle_stream
-    logger.info(
-Message: "Received 'close-stream' from %s; closing."
-Arguments: ('tcp://127.0.0.1:57047',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5444, in remove_worker
-    logger.info(
-Message: "Remove worker addr: tcp://127.0.0.1:57045 name: 0 (stimulus_id='handle-worker-cleanup-1776976362.52229')"
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4653, in add_worker
-    await self.handle_worker(comm, address)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 6229, in handle_worker
-    await self.remove_worker(
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 823, in wrapper
-    return await func(*args, **kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 5582, in remove_worker
-    logger.info("Lost all workers")
-Message: 'Lost all workers'
-Arguments: ()
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/nanny.py", line 626, in close
-    logger.info("Nanny at %r closed.", self.address_safe)
-Message: 'Nanny at %r closed.'
-Arguments: ('tcp://127.0.0.1:57043',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4343, in close
-    logger.info("Closing scheduler. Reason: %s", reason)
-Message: 'Closing scheduler. Reason: %s'
-Arguments: ('unknown',)
---- Logging error ---
-Traceback (most recent call last):
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/logging/__init__.py", line 1163, in emit
-    stream.write(msg + self.terminator)
-ValueError: I/O operation on closed file.
-Call stack:
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1032, in _bootstrap
-    self._bootstrap_inner()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
-    self.run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/threading.py", line 1012, in run
-    self._target(*self._args, **self._kwargs)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 468, in wrapper
-    target()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/utils.py", line 576, in run_loop
-    asyncio_run(amain(), loop_factory=get_loop_factory())
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 678, in run_until_complete
-    self.run_forever()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 645, in run_forever
-    self._run_once()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/base_events.py", line 1999, in _run_once
-    handle._run()
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/asyncio/events.py", line 88, in _run
-    self._context.run(self._callback, *self._args)
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/core.py", line 834, in _handle_comm
-    result = await result
-  File "/Users/sirisurab/miniconda3/envs/dapi/lib/python3.12/site-packages/distributed/scheduler.py", line 4371, in close
-    logger.info("Scheduler closing all comms")
-Message: 'Scheduler closing all comms'
-Arguments: ()
-
-```
-
-- **Integration Tests:**
-```
-Integration Tests failed. Fix these errors:
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
-rootdir: /Users/sirisurab/projects/dapi_poc/kgs
-configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 80 deselected / 6 selected
-
-tests/test_acquire.py ..                                                 [ 33%]
-tests/test_features.py F                                                 [ 50%]
-tests/test_ingest.py .                                                   [ 66%]
-tests/test_pipeline.py F                                                 [ 83%]
-tests/test_transform.py F                                                [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-___________________________ test_f5_tr26_integration ___________________________
-tests/test_features.py:721: in test_f5_tr26_integration
-    features(cfg)
-kgs_pipeline/features.py:457: in features
-    ddf_final.to_parquet(str(features_dir), overwrite=True, write_index=False)
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/_collection.py:3325: in to_parquet
-    return to_parquet(self, path, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/dask_expr/io/parquet.py:661: in to_parquet
-    out = out.compute(**compute_kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:377: in compute
-    (result,) = compute(self, traverse=False, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/base.py:685: in compute
-    results = schedule(expr, keys, **kwargs)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../miniconda3/envs/dapi/lib/python3.12/site-packages/dask/dataframe/utils.py:403: in check_matching_columns
-    raise ValueError(
-E   ValueError: The columns in the computed data do not match the columns in the provided metadata.
-E   Order of columns does not match.
-E   Actual:   ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'cum_oil', 'cum_gas', 'cum_water', 'gor', 'water_cut', 'decline_rate', 'oil_bbl_rolling_3m', 'oil_bbl_rolling_6m', 'oil_bbl_lag_1m', 'gas_mcf_rolling_3m', 'gas_mcf_rolling_6m', 'gas_mcf_lag_1m', 'water_bbl_rolling_3m', 'water_bbl_rolling_6m', 'water_bbl_lag_1m']
-E   Expected: ['LEASE_KID', 'production_date', 'oil_bbl', 'gas_mcf', 'water_bbl', 'LEASE', 'DOR_CODE', 'API_NUMBER', 'FIELD', 'PRODUCING_ZONE', 'OPERATOR', 'COUNTY', 'TOWNSHIP', 'TWN_DIR', 'RANGE', 'RANGE_DIR', 'SECTION', 'SPOT', 'LATITUDE', 'LONGITUDE', 'source_file', 'cum_oil', 'cum_gas', 'cum_water', 'gor', 'water_cut', 'decline_rate', 'oil_bbl_rolling_3m', 'oil_bbl_rolling_6m', 'gas_mcf_rolling_3m', 'gas_mcf_rolling_6m', 'water_bbl_rolling_3m', 'water_bbl_rolling_6m', 'oil_bbl_lag_1m', 'gas_mcf_lag_1m', 'water_bbl_lag_1m']
-______________________ test_e2e_ingest_transform_features ______________________
-tests/test_pipeline.py:599: in test_e2e_ingest_transform_features
-    assert 10 <= ddf_processed.npartitions <= 50
-E   assert 10 <= 2
-E    +  where 2 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(df279a2).npartitions
-_______________________ test_transform_tr25_integration ________________________
-tests/test_transform.py:517: in test_transform_tr25_integration
-    assert 10 <= ddf.npartitions <= 50
-E   assert 10 <= 1
-E    +  where 1 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(067f263).npartitions
-=========================== short test summary info ============================
-FAILED tests/test_features.py::test_f5_tr26_integration - ValueError: The col...
-FAILED tests/test_pipeline.py::test_e2e_ingest_transform_features - assert 10...
-FAILED tests/test_transform.py::test_transform_tr25_integration - assert 10 <= 1
-================== 3 failed, 3 passed, 80 deselected in 5.83s ==================
-
-```
-
----
-
-## Eval Run at 2026-04-23 15:36:25
+## Eval Run at 2026-04-27 19:46:08
 
 **Status:** ❌ FAILED
 
@@ -2976,38 +1518,41 @@ Integration Tests failed. Fix these errors:
 platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
 rootdir: /Users/sirisurab/projects/dapi_poc/kgs
 configfile: pytest.ini
-plugins: anyio-4.12.1, mock-3.15.1, repeat-0.9.4, xdist-3.8.0, langsmith-0.7.32, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
+plugins: anyio-4.12.1, responses-0.5.1, mock-3.15.1, langsmith-0.7.35, repeat-0.9.4, cov-7.1.0, xdist-3.8.0, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 86 items / 80 deselected / 6 selected
+collected 114 items / 114 deselected / 0 selected
+Running teardown with pytest sessionfinish...
 
-tests/test_acquire.py ..                                                 [ 33%]
-tests/test_features.py .                                                 [ 50%]
-tests/test_ingest.py .                                                   [ 66%]
-tests/test_pipeline.py F                                                 [ 83%]
-tests/test_transform.py F                                                [100%]Running teardown with pytest sessionfinish...
-
-
-=================================== FAILURES ===================================
-______________________ test_e2e_ingest_transform_features ______________________
-tests/test_pipeline.py:599: in test_e2e_ingest_transform_features
-    assert 10 <= ddf_processed.npartitions <= 50
-E   assert 10 <= 2
-E    +  where 2 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(7c8b751).npartitions
-_______________________ test_transform_tr25_integration ________________________
-tests/test_transform.py:517: in test_transform_tr25_integration
-    assert 10 <= ddf.npartitions <= 50
-E   assert 10 <= 1
-E    +  where 1 = Dask DataFrame Structure:\n                LEASE DOR_CODE API_NUMBER   FIELD PRODUCING_ZONE OPERATOR  COUNTY TOWNSHIP  ......    ...        ...         ...             ...\nDask Name: read_parquet, 1 expression\nExpr=ReadParquetFSSpec(051c10e).npartitions
-=========================== short test summary info ============================
-FAILED tests/test_pipeline.py::test_e2e_ingest_transform_features - assert 10...
-FAILED tests/test_transform.py::test_transform_tr25_integration - assert 10 <= 1
-================== 2 failed, 4 passed, 80 deselected in 5.99s ==================
+=========================== 114 deselected in 5.11s ============================
 
 ```
 
 ---
 
-## Eval Run at 2026-04-23 15:39:41
+## Eval Run at 2026-04-27 19:54:51
+
+**Status:** ❌ FAILED
+
+### Failures:
+- **Integration Tests:**
+```
+Integration Tests failed. Fix these errors:
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/sirisurab/projects/dapi_poc/kgs
+configfile: pytest.ini
+plugins: anyio-4.12.1, responses-0.5.1, mock-3.15.1, langsmith-0.7.35, repeat-0.9.4, cov-7.1.0, xdist-3.8.0, asyncio-1.3.0, deepeval-3.9.7, rerunfailures-16.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 114 items / 114 deselected / 0 selected
+Running teardown with pytest sessionfinish...
+
+=========================== 114 deselected in 4.11s ============================
+
+```
+
+---
+
+## Eval Run at 2026-04-27 22:20:31
 
 **Status:** ✅ PASSED
 

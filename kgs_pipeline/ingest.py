@@ -1,357 +1,157 @@
-"""
-Ingest stage: read raw lease files, enforce canonical schema, write partitioned
-interim Parquet to data/interim/.
-
-Design decisions per ADRs and stage manifests:
-- Schema source of truth: kgs_monthly_data_dictionary.csv (ADR-003).
-- Parallelization: Dask distributed scheduler (CPU-bound stage) — ADR-001.
-  Stages reuse the pipeline's client; they do not initialize their own cluster
-  (build-env-manifest "Dask scheduler initialization").
-- Laziness: no .compute() before final write — ADR-005.
-- Partition count: max(10, min(n, 50)) as last operation before write — ADR-004.
-- Inter-stage format: Parquet only — ADR-004.
-- Absent-column semantics: nullable=yes → add all-NA; nullable=no → raise — H3.
-- Empty DataFrames must still carry the full schema — H2.
-- Logging: dual-channel — ADR-006.
-"""
-
-from __future__ import annotations
+"""Ingest stage: read raw files, enforce schema, write interim Parquet."""
 
 import logging
-from dataclasses import dataclass, field
-from pathlib import Path
+import os
 from typing import Any
 
 import dask
 import dask.dataframe as dd
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# dtype mapping per ADR-003
-# ---------------------------------------------------------------------------
-
-# Maps data-dictionary dtype tokens to pandas dtype strings.
-# nullable=yes variants use nullable-aware pandas dtypes so that integer columns
-# carrying NaN do not upcast to float (ADR-003 consequence).
-
-_DTYPE_MAP_NULLABLE: dict[str, str] = {
-    "int": "Int64",
-    "float": "Float64",
-    "string": "string",
-    "categorical": "category",
-}
-
-_DTYPE_MAP_NON_NULLABLE: dict[str, str] = {
-    "int": "int64",
-    "float": "float64",
-    "string": "string",
-    "categorical": "category",
-}
+# Known dtype labels in the data dictionary
+_KNOWN_DTYPES = {"int", "float", "string", "categorical"}
 
 
-# ---------------------------------------------------------------------------
-# Task I1: Schema object from the data dictionary
-# ---------------------------------------------------------------------------
+def load_data_dictionary(path: str) -> pd.DataFrame:
+    """Read the KGS monthly data dictionary CSV and return it as a DataFrame."""
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    expected_cols = {"column", "description", "dtype", "nullable", "categories"}
+    missing = expected_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"Data dictionary missing columns: {missing}")
+    return df[["column", "description", "dtype", "nullable", "categories"]]
 
 
-@dataclass
-class ColumnSchema:
-    """Schema descriptor for one column from the data dictionary."""
+def build_dtype_map(data_dict: pd.DataFrame) -> dict[str, Any]:
+    """Build a column-name → pandas dtype mapping from the data dictionary."""
+    mapping: dict[str, Any] = {}
+    for _, row in data_dict.iterrows():
+        col: str = row["column"]
+        dtype_label: str = row["dtype"]
+        nullable: str = row["nullable"]
 
-    name: str
-    dtype_token: str  # raw value from data dictionary: int, float, string, categorical
-    nullable: bool
-    categories: list[str] = field(default_factory=list)
-
-    @property
-    def pandas_dtype(self) -> str:
-        """Return the pandas dtype string for this column per ADR-003."""
-        if self.nullable:
-            return _DTYPE_MAP_NULLABLE[self.dtype_token]
-        return _DTYPE_MAP_NON_NULLABLE[self.dtype_token]
-
-
-@dataclass
-class Schema:
-    """Complete schema derived from the data dictionary."""
-
-    columns: list[ColumnSchema]
-
-    def __getitem__(self, name: str) -> ColumnSchema:
-        for col in self.columns:
-            if col.name == name:
-                return col
-        raise KeyError(name)
-
-    def column_names(self) -> list[str]:
-        """Return canonical column names in dictionary order."""
-        return [c.name for c in self.columns]
-
-    def dtypes_dict(self) -> dict[str, str]:
-        """Return {column_name: pandas_dtype} mapping."""
-        return {c.name: c.pandas_dtype for c in self.columns}
-
-    def has_column(self, name: str) -> bool:
-        return any(c.name == name for c in self.columns)
-
-
-def load_schema(data_dictionary_path: str | Path) -> Schema:
-    """Load kgs_monthly_data_dictionary.csv and return a Schema object.
-
-    The data dictionary is the single source of truth for all schema decisions
-    per ADR-003. Schema is never inferred from data.
-
-    Parameters
-    ----------
-    data_dictionary_path:
-        Path to kgs_monthly_data_dictionary.csv.
-
-    Returns
-    -------
-    Schema
-        Ordered schema with per-column dtype, nullable flag, and category sets.
-    """
-    df = pd.read_csv(data_dictionary_path, dtype=str)
-    columns: list[ColumnSchema] = []
-    for _, row in df.iterrows():
-        name = str(row["column"]).strip()
-        dtype_token = str(row["dtype"]).strip()
-        nullable = str(row.get("nullable", "yes")).strip().lower() == "yes"
-        cats_raw = str(row.get("categories", "")).strip()
-        cats = [c.strip() for c in cats_raw.split("|") if c.strip()] if cats_raw else []
-        columns.append(
-            ColumnSchema(name=name, dtype_token=dtype_token, nullable=nullable, categories=cats)
-        )
-    return Schema(columns=columns)
-
-
-# ---------------------------------------------------------------------------
-# Task I2: Read a single raw lease file into a typed DataFrame
-# ---------------------------------------------------------------------------
-
-
-def _make_empty_dataframe(schema: Schema, extra_cols: list[str] | None = None) -> pd.DataFrame:
-    """Return a zero-row DataFrame with the full canonical schema.
-
-    extra_cols are appended after the dictionary columns (e.g. source_file).
-    Empty DataFrames must still carry the full schema — stage-manifest-ingest H2.
-    """
-    all_cols = schema.column_names() + (extra_cols or [])
-    dtypes = schema.dtypes_dict()
-    if extra_cols:
-        for c in extra_cols:
-            dtypes[c] = "string"
-
-    empty: dict[str, pd.Series] = {}
-    for col in all_cols:
-        dtype = dtypes[col]
-        if dtype == "category":
-            # Get the declared categories for this column if available
-            if schema.has_column(col):
-                cs = schema[col]
-                if cs.categories:
-                    cat_type = pd.CategoricalDtype(categories=cs.categories, ordered=False)
-                    empty[col] = pd.Series([], dtype=cat_type)
-                    continue
-            empty[col] = pd.Series([], dtype="category")
+        if dtype_label == "int":
+            mapping[col] = pd.Int64Dtype() if nullable == "yes" else "int64"
+        elif dtype_label == "float":
+            mapping[col] = "float64"
+        elif dtype_label == "string":
+            mapping[col] = pd.StringDtype()
+        elif dtype_label == "categorical":
+            mapping[col] = pd.CategoricalDtype()
         else:
-            empty[col] = pd.Series([], dtype=dtype)
+            raise ValueError(f"Unknown dtype label '{dtype_label}' for column '{col}'")
 
-    return pd.DataFrame(empty)
+    return mapping
 
 
 def read_raw_file(
-    path: str | Path,
-    schema: Schema,
+    file_path: str,
+    dtype_map: dict[str, Any],
+    data_dict: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Read a single raw lease file and return a typed, filtered DataFrame.
+    """Read one raw .txt file, enforce schema, filter to year >= 2024."""
+    # Read with all columns as string first so we can detect absent columns
+    raw_df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
 
-    Output contract per task spec and stage-manifest-ingest H2/H3:
-    - All canonical columns present in canonical order.
-    - Every column carries its data-dictionary dtype.
-    - source_file column added (string).
-    - Rows with MONTH-YEAR year component < 2024 or non-numeric are dropped
-      (per task-writer-kgs.md <data-filtering>).
-    - Categorical columns carry only declared values; out-of-set values replaced
-      with the appropriate null sentinel before casting (ADR-003).
-    - nullable=yes absent column → add all-NA (H3).
-    - nullable=no absent column → raise (H3).
+    dd_cols = data_dict["column"].tolist()
+    nullable_flags = data_dict.set_index("column")["nullable"].to_dict()
 
-    Parameters
-    ----------
-    path:
-        Path to a raw .txt file in data/raw/.
-    schema:
-        Schema object from load_schema().
+    # Absent-column handling per stage-manifest-ingest H3
+    for col in dd_cols:
+        if col not in raw_df.columns:
+            if nullable_flags.get(col) == "no":
+                raise ValueError(f"Required column '{col}' (nullable=no) absent from {file_path}")
+            # nullable=yes — add as all-NA column (will be cast to correct dtype below)
+            raw_df[col] = pd.NA
 
-    Returns
-    -------
-    pd.DataFrame
-        Schema-conformant, filtered DataFrame.
-    """
-    path = Path(path)
-    canonical_cols = schema.column_names()
-    extra_cols = ["source_file"]
+    # Reorder to canonical schema columns only
+    canonical_cols = [c for c in dd_cols if c in raw_df.columns]
+    raw_df = raw_df[canonical_cols]
 
-    try:
-        raw = pd.read_csv(path, dtype=str, encoding="utf-8", on_bad_lines="warn")
-    except UnicodeDecodeError:
-        raw = pd.read_csv(path, dtype=str, encoding="latin-1", on_bad_lines="warn")
-    except Exception as exc:
-        logger.warning("Could not read file %s: %s. Returning empty schema.", path, exc)
-        return _make_empty_dataframe(schema, extra_cols)
+    # Filter rows: year >= 2024 using vectorized str accessor
+    year_series = raw_df["MONTH-YEAR"].str.split("-").str[-1]
+    numeric_mask = year_series.str.match(r"^\d+$", na=False)
+    raw_df = raw_df[numeric_mask].copy()
+    if len(raw_df) > 0:
+        year_series = raw_df["MONTH-YEAR"].str.split("-").str[-1]
+        raw_df = raw_df[year_series.astype(int) >= 2024].copy()
 
-    # Normalize column names
-    raw.columns = [c.strip().strip('"') for c in raw.columns]
-
-    # Check non-nullable columns are present
-    for col_schema in schema.columns:
-        if not col_schema.nullable and col_schema.name not in raw.columns:
-            raise ValueError(
-                f"Non-nullable column '{col_schema.name}' is absent from {path}. "
-                "This indicates a structural problem with the source file."
-            )
-
-    # Filter rows: extract year from MONTH-YEAR per task-writer-kgs.md
-    if "MONTH-YEAR" in raw.columns:
-        year_str = raw["MONTH-YEAR"].str.strip().str.rsplit("-", n=1).str[-1]
-        numeric_mask = year_str.str.match(r"^\d+$", na=False)
-        raw = raw[numeric_mask].copy()
-        year_str = year_str[numeric_mask]
-        year_int = year_str.astype(int)
-        raw = raw[year_int >= 2024].copy()
-
-    if raw.empty:
-        return _make_empty_dataframe(schema, extra_cols)
-
-    result_cols: dict[str, pd.Series] = {}
-
-    for col_schema in schema.columns:
-        col = col_schema.name
-        dtype = col_schema.pandas_dtype
-
-        if col not in raw.columns:
-            # nullable=yes absent column → all-NA at correct dtype (H3)
-            # nullable=no would have raised above
-            if dtype == "category":
-                if col_schema.categories:
-                    cat_type = pd.CategoricalDtype(categories=col_schema.categories, ordered=False)
-                    result_cols[col] = pd.Series(pd.NA, index=raw.index, dtype=cat_type)
-                else:
-                    result_cols[col] = pd.Series(pd.NA, index=raw.index, dtype="category")
-            else:
-                result_cols[col] = pd.Series(pd.NA, index=raw.index, dtype=dtype)
+    # Cast each column to its data-dictionary dtype
+    for col in dd_cols:
+        target_dtype = dtype_map.get(col)
+        if target_dtype is None:
             continue
+        if isinstance(target_dtype, str) and target_dtype == "int64":
+            # Non-nullable int: replace empty/NA strings with NaN then cast
+            raw_df[col] = pd.to_numeric(raw_df[col], errors="coerce").astype("int64")
+        elif isinstance(target_dtype, pd.Int64Dtype):
+            raw_df[col] = pd.to_numeric(raw_df[col], errors="coerce").astype(pd.Int64Dtype())
+        elif isinstance(target_dtype, str) and target_dtype == "float64":
+            raw_df[col] = pd.to_numeric(raw_df[col], errors="coerce").astype("float64")
+        elif isinstance(target_dtype, pd.StringDtype):
+            raw_df[col] = raw_df[col].replace("", pd.NA).astype(pd.StringDtype())
+        elif isinstance(target_dtype, pd.CategoricalDtype):
+            raw_df[col] = raw_df[col].replace("", pd.NA).astype(pd.CategoricalDtype())
 
-        series = raw[col].copy()
+    # Add source_file column
+    raw_df["source_file"] = os.path.basename(file_path)
+    raw_df["source_file"] = raw_df["source_file"].astype(pd.StringDtype())
 
-        if dtype == "category":
-            # Replace out-of-set values with null sentinel before casting (ADR-003)
-            if col_schema.categories:
-                valid = set(col_schema.categories)
-                series = series.where(series.isin(valid), other=np.nan)
-                cat_type = pd.CategoricalDtype(categories=col_schema.categories, ordered=False)
-                result_cols[col] = series.astype(cat_type)
-            else:
-                result_cols[col] = series.astype("category")
-        elif dtype in ("Int64",):
-            result_cols[col] = pd.to_numeric(series, errors="coerce").astype("Int64")
-        elif dtype in ("int64",):
-            result_cols[col] = pd.to_numeric(series, errors="coerce").astype("int64")
-        elif dtype in ("Float64",):
-            result_cols[col] = pd.to_numeric(series, errors="coerce").astype("Float64")
-        elif dtype in ("float64",):
-            result_cols[col] = pd.to_numeric(series, errors="coerce").astype("float64")
-        elif dtype == "string":
-            result_cols[col] = series.astype("string")
-        else:
-            result_cols[col] = series
-
-    # source_file column
-    result_cols["source_file"] = pd.Series(
-        [str(path.name)] * len(raw), index=raw.index, dtype="string"
-    )
-
-    all_cols = canonical_cols + extra_cols
-    df = pd.DataFrame({c: result_cols[c] for c in all_cols})
-    return df
+    return raw_df
 
 
-# ---------------------------------------------------------------------------
-# Task I3: Ingest stage entry point
-# ---------------------------------------------------------------------------
+def build_dask_dataframe(
+    raw_dir: str,
+    dtype_map: dict[str, Any],
+    data_dict: pd.DataFrame,
+) -> dd.DataFrame:
+    """Build a lazy Dask DataFrame from all .txt files in raw_dir.
 
-
-def ingest(config: dict[str, Any]) -> None:
-    """Stage entry point: read all raw files, combine, write partitioned Parquet.
-
-    Uses Dask distributed scheduler (CPU-bound) — ADR-001. Stages reuse the
-    pipeline's client; no cluster is started here.
-
-    Partition count: max(10, min(n, 50)) as the last operation before write
-    per ADR-004.
-
-    Laziness: no .compute() before the final write — ADR-005.
-
-    Parameters
-    ----------
-    config:
-        Full pipeline config dict (parsed config.yaml).
+    Meta is derived by calling read_raw_file on a real file sliced to zero rows
+    (ADR-003). Does not call .compute() (ADR-005).
     """
-    ing = config["ingest"]
-    raw_dir = Path(ing["raw_dir"])
-    interim_dir = Path(ing["interim_dir"])
-    dd_path = ing.get("data_dictionary_path", "references/kgs_monthly_data_dictionary.csv")
+    import glob as glob_mod
 
-    schema = load_schema(dd_path)
-
-    raw_files = sorted(raw_dir.glob("*.txt"))
+    raw_files = sorted(glob_mod.glob(os.path.join(raw_dir, "*.txt")))
     if not raw_files:
-        logger.warning("No raw files found in %s; ingest stage produces empty output.", raw_dir)
-        raw_files = []
+        raise FileNotFoundError(f"No .txt files found in {raw_dir}")
 
-    logger.info("Ingesting %d raw files from %s", len(raw_files), raw_dir)
+    # Derive meta by calling the actual function on a real file, sliced to zero rows
+    meta = read_raw_file(raw_files[0], dtype_map, data_dict).iloc[0:0]
 
-    # Read each file as a pandas DataFrame (failure-tolerant per task spec)
-    per_file_dfs: list[pd.DataFrame] = []
-    for f in raw_files:
-        try:
-            df = read_raw_file(f, schema)
-            per_file_dfs.append(df)
-        except Exception as exc:
-            logger.warning("Skipping unreadable file %s: %s", f, exc)
+    delayed_dfs = [dask.delayed(read_raw_file)(f, dtype_map, data_dict) for f in raw_files]
 
-    if not per_file_dfs:
-        # Build an empty Dask DataFrame with the correct schema
-        empty_pd = _make_empty_dataframe(schema, ["source_file"])
-        ddf = dd.from_pandas(empty_pd, npartitions=10)
-    else:
-        # Combine all into a single Dask DataFrame
-        meta_df = _make_empty_dataframe(schema, ["source_file"])
-        ddf = dd.from_delayed(
-            [delayed_from_pandas(df) for df in per_file_dfs],
-            meta=meta_df,
-        )
+    return dd.from_delayed(delayed_dfs, meta=meta)
 
-    n_partitions = max(10, min(len(per_file_dfs), 50))
+
+def ingest(config: dict) -> None:
+    """Orchestrate the full ingest stage and write interim Parquet output."""
+    raw_dir: str = config["ingest"]["raw_dir"]
+    interim_dir: str = config["ingest"]["interim_dir"]
+    data_dict_path: str = config["ingest"]["data_dict_path"]
+
+    logger.info("Ingest: loading data dictionary from %s", data_dict_path)
+    data_dict = load_data_dictionary(data_dict_path)
+    dtype_map = build_dtype_map(data_dict)
+
+    import glob as glob_mod
+
+    raw_files = sorted(glob_mod.glob(os.path.join(raw_dir, "*.txt")))
+    n = len(raw_files)
+    if n == 0:
+        raise FileNotFoundError(f"No raw .txt files found in {raw_dir}")
+
+    n_partitions = max(10, min(n, 50))
+    logger.info("Ingest: found %d raw files → %d partitions", n, n_partitions)
+
+    ddf = build_dask_dataframe(raw_dir, dtype_map, data_dict)
+
+    # Repartition is the last structural operation before write (ADR-004)
     ddf = ddf.repartition(npartitions=n_partitions)
 
-    interim_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Writing interim Parquet to %s (%d partitions)", interim_dir, n_partitions)
-
-    ddf.to_parquet(str(interim_dir), overwrite=True, write_index=False)
-    logger.info("Ingest complete.")
-
-
-def delayed_from_pandas(df: pd.DataFrame) -> Any:
-    """Wrap a pandas DataFrame in a dask.delayed object.
-
-    This allows building a Dask DataFrame from a list of already-computed
-    pandas DataFrames while keeping the graph lazy until final write (ADR-005).
-    TR-17 requires that intermediate Dask-returning functions return Dask
-    DataFrames rather than pandas DataFrames.
-    """
-    return dask.delayed(lambda: df)()
+    os.makedirs(interim_dir, exist_ok=True)
+    logger.info("Ingest: writing interim Parquet to %s", interim_dir)
+    ddf.to_parquet(interim_dir, overwrite=True)
+    logger.info("Ingest: complete")
