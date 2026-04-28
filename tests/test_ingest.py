@@ -183,7 +183,7 @@ def test_build_dtype_map_categorical() -> None:
         ]
     )
     mapping = build_dtype_map(data_dict)
-    assert isinstance(mapping["PRODUCT"], pd.CategoricalDtype)
+    assert mapping["PRODUCT"] == pd.StringDtype()
 
 
 # ---------------------------------------------------------------------------

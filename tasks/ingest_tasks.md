@@ -53,12 +53,7 @@ dictionary (see ADR-003). The mapping rules are:
 - `dtype="int"`, `nullable="yes"` → `pd.Int64Dtype()` (nullable integer extension type)
 - `dtype="float"`, any nullable → `"float64"` (float64; nulls represented as `np.nan`)
 - `dtype="string"`, any nullable → `pd.StringDtype()`
-- `dtype="categorical"`, any nullable → `pd.CategoricalDtype()`
-
-The `categories` column in the data dictionary defines the allowed category values for
-categorical columns (pipe-delimited, e.g., `"O|G"`). These values must be captured in the
-mapping for use in casting — but the final `CategoricalDtype` with ordered categories is
-applied during transform, not during ingest.
+- `dtype="categorical"`, any nullable → `pd.StringDtype()` (see stage-manifest-ingest.md H5)
 
 **Input:** `data_dict: pd.DataFrame` — output of `load_data_dictionary`.  
 **Output:** `dict[str, Any]` mapping column name → pandas dtype.
@@ -67,8 +62,7 @@ applied during transform, not during ingest.
 - Type mapping rules: see ADR-003. Do not infer types from column name heuristics or
   from data values.
 - Float null sentinel is `np.nan`, not `pd.NA` — see ADR-003.
-- `pd.NA` is valid only for nullable extension types (`Int64`, `StringDtype`,
-  `CategoricalDtype`) — see ADR-003.
+- `pd.NA` is valid only for nullable extension types (`Int64`, `StringDtype`) — see ADR-003.
 - No retry logic, no caching.
 
 **Test cases:**
@@ -80,8 +74,8 @@ applied during transform, not during ingest.
   `"float64"`.
 - Given a data dictionary row with `dtype="string"`, assert the mapping value is
   `pd.StringDtype()`.
-- Given a data dictionary row with `dtype="categorical"`, assert the mapping value is an
-  instance of `pd.CategoricalDtype`.
+- Given a data dictionary row with `dtype="categorical"`, assert the mapping value is
+  `pd.StringDtype()`.
 
 **Definition of done:** Function is implemented, test cases pass, ruff and mypy report no
 errors, requirements.txt updated with all third-party packages imported in this task.

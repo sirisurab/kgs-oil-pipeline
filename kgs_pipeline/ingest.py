@@ -39,7 +39,7 @@ def build_dtype_map(data_dict: pd.DataFrame) -> dict[str, Any]:
         elif dtype_label == "string":
             mapping[col] = pd.StringDtype()
         elif dtype_label == "categorical":
-            mapping[col] = pd.CategoricalDtype()
+            mapping[col] = pd.StringDtype()
         else:
             raise ValueError(f"Unknown dtype label '{dtype_label}' for column '{col}'")
 
@@ -92,8 +92,6 @@ def read_raw_file(
             raw_df[col] = pd.to_numeric(raw_df[col], errors="coerce").astype("float64")
         elif isinstance(target_dtype, pd.StringDtype):
             raw_df[col] = raw_df[col].replace("", pd.NA).astype(pd.StringDtype())
-        elif isinstance(target_dtype, pd.CategoricalDtype):
-            raw_df[col] = raw_df[col].replace("", pd.NA).astype(pd.CategoricalDtype())
 
     # Add source_file column
     raw_df["source_file"] = os.path.basename(file_path)
